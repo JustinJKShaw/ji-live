@@ -1,0 +1,1339 @@
+# JI Live — Complete Design & Implementation Reference
+
+**Version 5.1 · Archival / New-Session Ready**
+**Purpose:** If a new session (human or AI) opens this document with no prior context, they must be able to understand the project, current state, and how to proceed without asking questions.
+
+**Table of Contents**
+
+1. Executive Summary
+2. Design Rationale (Why Each Major Decision)
+3. Environment & Prerequisites
+4. Architecture
+5. Global Contract (Naming, Buses, Rules)
+6. Deep Dive on Technical Decisions
+7. Data Formats & Interfaces
+8. Stage Specifications (0–10)
+9. Current Implementation Status
+10. Working With AI Agents
+11. Testing Philosophy
+12. Failure Modes & Debugging Playbook
+13. Out of Scope
+14. Changelog
+15. Appendix
+
+---
+
+## 1. Executive Summary
+
+**What this is:** A real-time performance environment halfway between an algorithmic composition system and a DAW. It operates on just-intonation (JI) pitch-class sets that mutate during performance. Audio inputs (microphone, guitar) are snapped to a global frequency-class grid; the grid itself evolves algorithmically; loops and glitch effects operate on the quantized material. Audio is routed to **Ableton Live** for downstream VST hosting, MPE synth playback, and final mixing. **MPE MIDI is also output** to Ableton, allowing Ableton-hosted synths (initially a bass/drone voice, later polyphonic MPE melodies) to play JI frequencies via per-note pitch bend.
+
+**Who it is for:** An improvising musician (the project owner) who wants harmonic constraint without losing spontaneity, working in an electroacoustic idiom where digital timbre manipulation is part of the aesthetic.
+
+**What is done:** Stage 0 (server skeleton, 2-channel I/O, Tartini pitch tracking verification), Stage 1 (static autotune to a hardcoded JI set, single channel), and Stage 2 (decentralised pure-Python mutation engine, no audio) are complete and passing.
+
+**What is being built:** Stage 3 (OSC bridge from the mutation engine to the autotune frequency set).
+
+**Core hypothesis:** SuperCollider's `scsynth` is the correct audio backend for pitch tracking, pitch shifting, looping, and granular processing. Ableton Live is the correct downstream host for VST/AU synths and effects, final mixing, and MPE target instruments. The two communicate via a virtual audio device (BlackHole) for audio and IAC Driver for MIDI.
+
+**Constraints that shaped the project:**
+- Single user, macOS, Apple Silicon.
+- Low latency is a hard requirement (live performance).
+- ≤12 frequency classes at a time; the working target is about 7, not 12.
+- Pitch classes are octave-equivalent. Registers are local to voices, not global set members.
+- ≤2 simultaneous live input channels.
+- Formant preservation is deliberately not required (aesthetic choice).
+- Mutations are manually triggered (musician controls harmonic motion).
+- Loops must retune note-by-note to the current set, not just transpose as a whole.
+- Ableton Live is part of the performance rig, not optional.
+
+---
+
+## 2. Design Rationale
+
+This section records *why* each major decision was made. New sessions should preserve these rationales; if a decision is revisited, the rationale must be overturned, not ignored.
+
+### 2.1 Why SuperCollider, not a custom C++ engine
+
+The project owner initially considered writing the whole thing in C++. This was rejected because:
+- SuperCollider's `scsynth` already provides buffers, buses, OSC control, scheduling, and a plugin API for C++ UGens.
+- The `Tartini` pitch tracker (from sc3-plugins) provides accurate low-latency monophonic pitch tracking for free.
+- Writing these from scratch in C++ would add months and would not improve the artistic outcome.
+
+**Decision:** SuperCollider is the audio server. C++ is used *only* for custom UGens when no existing SC primitive suffices.
+
+### 2.2 Why Tartini, not Qitch
+
+A 2014 AES study compared SuperCollider's pitch detectors. Tartini had the lowest latency (~0.05 s to first estimate) and performed well on guitar. Qitch was less accurate at low pitches. Tartini is now verified working in Stage 0 and Stage 1.
+
+**Known limitation:** Tartini is monophonic. Each input channel carries one voice or one guitar at a time. Loop playback also carries one voice per loop.
+
+### 2.3 Why denominator relatedness plus Sethares roughness
+
+The mutation engine is **not** a consonance optimiser. The goal is a constantly shifting set of interrelated pitch classes, decentred but not arbitrary.
+
+Two scores are combined:
+
+1. **Denominator complexity** (primary): for each candidate class and every surviving class, approximate the relative frequency ratio as a rational number. Simpler denominators mean stronger intervallic relatedness. This term is octave-invariant and does not privilege a single fundamental.
+2. **Sethares roughness** (secondary): the Plomp-Levelt sensory-dissonance curve, evaluated on actual voiced frequencies:
+
+```
+cb(fmin) = 1.72 * fmin^0.65
+rough(f1, f2) = exp(-3.5 * Δ / cb) - exp(-5.75 * Δ / cb)
+    where Δ = |f2 - f1|
+```
+
+Roughness is register-dependent and is treated as a texture/tension term, not an objective to minimise. Ratio-complexity is now the primary relational component; Sethares is retained because it accounts for register and critical bandwidth.
+
+Candidates are generated dynamically from the current field multiplied by a vocabulary of small rational intervals, not from a fixed pool. Selection is stochastic by rank, so the engine can move toward or away from rough/simple regions without freezing at a local minimum. Cost is negligible (control layer, not audio-rate).
+
+### 2.4 Why no formant preservation
+
+Formant-preserving pitch shift is complex and CPU-heavy. This project is explicitly electroacoustic; digital timbre alteration is the point. `PitchShift` (SC's granular shifter) was used in Stage 1 and sounded great per the project owner's report. **No change to this decision.**
+
+### 2.5 Why two channels from the start
+
+Mic (0) + guitar (1). Retrofitting mono to stereo is painful. Duplicating a `SynthDef` instantiation costs one extra Tartini + PitchShift (~10% CPU).
+
+### 2.6 Why loops are raw, always retuned on playback
+
+Loop buffers store dry, un-retuned audio. Playback always routes through the same autotune chain the live input uses. Changing the set (or triggering a mutation) immediately retunes all playing loops.
+
+**Fallback if CPU fails:** store pitch contour at record time, read during playback. Do not pre-optimize.
+
+### 2.7 Why manual mutation trigger
+
+Mutations are user-triggered. Auto-clocking and audio-reactive triggering are **out of scope**. MIDI mapping (Stage 6+) is in scope.
+
+### 2.8 Why Python for control layer, sclang for Stage 1
+
+Stage 1 was small enough for sclang. From Stage 2 onward, mutation, MIDI, MPE, and UI need Python's ecosystem (`python-osc`, optionally `numpy`, `mido`, `PyQt6`). OSC is the abstraction boundary; a future port to JUCE (C++) would not require re-architecture.
+
+**Python environment decision:** use `uv` to manage the interpreter and dependencies rather than relying on a system `python3`. The target is Python 3.11+, and `uv run` can provision it project-locally. Stage 2 mutation logic uses only the standard library; `numpy` is optional and not required by the Stage 2 tests. `python-osc` is required only for the OSC listener.
+
+**Stage 2 verification note:** the harness was executed under CPython 3.12 (WASM/Pyodide) because the isolated coding workspace had no native Python interpreter. The native macOS command is `uv run --with python-osc python test_mutation.py`.
+
+### 2.9 Why PyQt6 for UI (eventually)
+
+The UI is a pure OSC control surface. PyQt6 is mature on macOS, handles threaded OSC cleanly, and packages as `.app`. JUCE only if the product needs polished standalone feel later.
+
+### 2.10 Why Ableton Live is in the rig
+
+The project owner uses Ableton Live and wants:
+- **Multi-channel audio routing** from SC into Ableton (for per-stream VST hosting, mixing, and monitoring).
+- **MPE MIDI output** to Ableton-hosted synths (bass/drone, later polyphonic melodies).
+- **VST/AU hosting** without building a VST host inside SC.
+
+Ableton dramatically reduces the SC-side work: SC no longer needs to host VSTs (Stage 7 becomes optional), and MIDI synths are provided by Ableton rather than built in SC.
+
+**Trade-off:** Routing complexity (virtual audio + Aggregate Device + MIDI IAC). This is infrastructure work, not DSP work, and is contained to Stage 5 (audio) and Stage 6 (MIDI).
+
+### 2.11 Why BlackHole (not Soundflower, not Loopback)
+
+- **Soundflower:** effectively unmaintained; fails on modern macOS.
+- **Loopback (Rogue Amoeba):** excellent, but commercial (~$100) and overkill.
+- **BlackHole:** free, open-source, maintained, supports 2/16/64 channels. The 64-channel version is sufficient for 8+ stereo streams.
+
+**Aggregate Device** (macOS built-in) is used to combine the physical interface (monitoring) with BlackHole (routing to Ableton) into one device that SC can output to.
+
+### 2.12 Why MPE for JI
+
+Standard MIDI note-on only transmits 12-TET pitches. MPE (MIDI Polyphonic Expression) gives each note its own channel with per-note pitch bend (14-bit, typically ±48 semitones). A JI frequency `f` is expressed as the nearest MIDI note `n` plus a pitch bend offset `d` in semitones. This lets Ableton-hosted synths play arbitrary JI frequencies with continuous pitch control — essential for a system where the pitch set mutates.
+
+### 2.13 Why the bass/drone is the first MPE target
+
+A monophonic, slow-moving voice is:
+- Easiest to implement (no voice allocator, no per-note channel management).
+- Musically foundational (a drone anchors a harmonic texture).
+- A natural test of MPE pitch bend correctness (single voice = audible if wrong).
+- Thematically aligned with the project (a stable consonant anchor for the shifting set).
+
+Polyphonic MPE melodies are deferred.
+
+### 2.14 Why from-source SuperCollider is a risk
+
+Prebuilt sc3-plugins and VSTPlugin binaries are compiled against a specific SC ABI. Custom from-source builds may or may not match. Stage 0 verified Tartini ABI compat. VSTPlugin ABI compat is untested; if the project uses Ableton for VST hosting, this risk becomes moot.
+
+---
+
+## 3. Environment & Prerequisites
+
+### 3.1 Hardware
+
+- macOS, Apple Silicon.
+- Audio interface with ≥2 inputs and ≥2 outputs.
+- Microphone (channel 1) and guitar/DI (channel 2).
+- MIDI controller (Stage 6+).
+
+### 3.2 Software (installed)
+
+| Component | Version | Notes |
+|---|---|---|
+| SuperCollider | 3.15 dev, built from source | Apple Silicon native. Verified. |
+| sc3-plugins | Universal build | Provides `Tartini`. **Verified Stage 0/1.** |
+| VSTPlugin | v0.5.4+ | Installed. **No longer required if Ableton hosts VSTs.** |
+| uv | current | Recommended Python manager; no system `python3` required. |
+| Python | 3.11+ via `uv` | Stage 2+ control layer. |
+| numpy | latest (optional) | Not required by Stage 2; useful later for analysis. |
+| python-osc | latest | Stage 2 OSC listener and later bridge. |
+| mido + python-rtmidi | latest | MPE MIDI output, MIDI input (Stage 6+). |
+
+### 3.3 Software (to install before Stage 5)
+
+| Component | Source | Notes |
+|---|---|---|
+| **BlackHole 64ch** | https://existential.audio/blackhole/ | Free, open-source virtual audio device. |
+| **Ableton Live** | Ableton (owner has license) | MPE support requires Live 11+ (12+ preferred). |
+| **IAC Driver** | Built into macOS (Audio MIDI Setup) | No install; must be enabled. |
+
+### 3.4 Software (to install before Stage 9)
+
+```bash
+uv pip install PyQt6
+```
+
+### 3.5 Verification commands
+
+```supercollider
+Platform.version.postln;
+Tartini.info;
+ServerOptions.devices.postln;   // must list BlackHole 64ch and the Aggregate Device
+```
+
+```bash
+uv --version
+uv run --python 3.11 python --version
+uv run --with python-osc python -c "import pythonosc; print('python-osc ok')"
+```
+
+Stage 2 does not need `numpy` or `mido`:
+
+```bash
+cd ji-live
+uv run --with python-osc python test_mutation.py
+```
+
+### 3.6 Audio device configuration (Stage 5 onward)
+
+**Two devices must exist in Audio MIDI Setup:**
+1. **Physical interface** (e.g., "Scarlett 2i2").
+2. **Aggregate Device** combining physical + BlackHole 64ch. Name it something recognizable, e.g., "JI Aggregate".
+
+**SC config:**
+```supercollider
+s.options.device_("JI Aggregate");
+s.options.numOutputBusChannels = 16;   // 8 stereo pairs (16 enough for 4 loops + input + granular)
+```
+
+**Ableton config:**
+- Audio Input Device: BlackHole 64ch.
+- Enable input channels 1–16.
+- Output: physical interface (for monitoring).
+
+### 3.7 Known gotchas
+
+- `Tartini.kr(in)` returns `[freq, hasFreq]`.
+- `Tartini` uses `ampThreshold` (not `threshold`).
+- `LeakDC.ar` before Tartini prevents DC offset confusion.
+- Gate target updates on `hasFreq > 0.5`.
+- From-source SC and prebuilt plugin ABI must match — if plugins crash, rebuild from source.
+- **BlackHole channel count:** if you only need 4 stereo pairs, install BlackHole 16ch instead; fewer channels = less room for config errors.
+- **MPE bend range:** must be matched between SC (sending) and Ableton instrument (receiving). Calibrate before trusting bass/drone pitch.
+- **IAC Driver:** must be enabled in Audio MIDI Setup → Window → Show MIDI Studio → IAC Driver → "Device is online".
+
+---
+
+## 4. Architecture
+
+### 4.1 System topology
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  CONTROL LAYER                                                │
+│  Stage 1: sclang (complete)                                   │
+│  Stages 2+: Python process (mutation, bridge, MPE, UI)        │
+│                                                               │
+│  Responsibilities:                                            │
+│  - FrequencySet state (list of ratios)                        │
+│  - Mutation engine (Sethares roughness)                       │
+│  - Bass/drone selector (most consonant member)                │
+│  - MPE voice allocator + pitch bend math                      │
+│  - Loop transport / buffer management                         │
+│  - UI / MIDI button handling                                  │
+│  - Sends OSC to scsynth                                       │
+│  - Sends MPE MIDI to IAC Driver → Ableton                     │
+└─────────────┬────────────────────────────┬────────────────────┘
+              │ OSC                        │ MIDI (MPE via IAC)
+┌─────────────▼────────────────┐  ┌────────▼─────────────────────┐
+│  AUDIO SERVER (scsynth)       │  │  ABLETON LIVE                 │
+│                               │  │                               │
+│  SoundIn(0,1) → Tartini →     │  │  - Audio input: BlackHole 64ch│
+│    AutotuneCh0/1              │  │  - MPE synth tracks           │
+│  LoopBuf[N] → Tartini →       │  │  - VST/AU hosting             │
+│    AutotuneLoop[N]            │  │  - Final mixing, monitoring   │
+│  Granular FX bus              │  │  - Bass/drone (MPE synth)     │
+│                               │  │                               │
+│  Output: Aggregate Device     │  │  Output: physical interface   │
+│  (physical + BlackHole 64ch)  │  │                               │
+└─────────────┬────────────────┘  └───────────────────────────────┘
+              │ audio (ch 1–16)
+┌─────────────▼─────────────────────────────────────────────────┐
+│  VIRTUAL ROUTING LAYER                                          │
+│  BlackHole 64ch (audio) + IAC Driver (MIDI)                    │
+│  Aggregate Device (combines physical + BlackHole)              │
+└────────────────────────────────────────────────────────────────┘
+```
+
+### 4.2 Audio channel mapping (Stage 5 onward)
+
+| SC output ch | Content | Ableton track |
+|---|---|---|
+| 1–2 | Live autotuned stereo mix | "Input Autotuned" |
+| 3–4 | Loop 1 | "Loop 1" |
+| 5–6 | Loop 2 | "Loop 2" |
+| 7–8 | Loop 3 | "Loop 3" |
+| 9–10 | Loop 4 | "Loop 4" |
+| 11–12 | Granular FX bus | "Granular" |
+| 13–14 | Dry/diagnostic | (unused, reserved) |
+| 15–16 | Reserved | (future) |
+
+### 4.3 File tree (cumulative)
+
+```
+ji-live/
+├── startup.scd
+├── synthdefs/
+│   ├── ji_tartini_debug.scd             # Stage 0
+│   ├── ji_autotune_ch.scd               # Stage 1 ✅
+│   ├── ji_freqset_receiver.scd          # Stage 3
+│   ├── ji_autotune_dual.scd             # Stage 4
+│   ├── ji_looper_recorder.scd           # Stage 4
+│   ├── ji_looper_player.scd             # Stage 4
+│   ├── ji_granular_fx.scd               # Stage 8
+│   ├── ji_vst_input.scd                 # Stage 7 (optional)
+│   └── ji_vst_output.scd                # Stage 7 (optional)
+├── control/
+│   ├── mutation.py                      # Stage 2 ✅
+│   ├── osc_server.py                    # Stage 2 ✅
+│   ├── ji_bridge.py                     # Stage 3
+│   ├── midi_mutation.py                 # Stage 8
+│   ├── mpe_output.py                    # Stage 6 (NEW)
+│   ├── bass_drone.py                    # Stage 6 (NEW)
+│   └── event_broadcast.py               # Stage 10
+├── ui/
+│   ├── ji_ui.py                         # Stage 9
+│   └── osc_bridge.py                    # Stage 9
+├── config/
+│   ├── midi_map.json                    # Stage 8
+│   └── mpe_config.json                  # Stage 6 (bend range, base note)
+├── test_tartini.scd                     # Stage 0 ✅
+├── test_autotune.scd                    # Stage 1 ✅
+├── test_mutation.py                     # Stage 2 ✅
+├── test_bridge.scd                      # Stage 3
+├── test_dual_loop.scd                   # Stage 4
+├── test_ableton_routing.scd             # Stage 5 (NEW)
+├── test_mpe.py                          # Stage 6 (NEW)
+├── test_granular.scd                    # Stage 8
+├── test_vst.scd                         # Stage 7 (optional)
+├── test_events.py                       # Stage 10
+├── README_stage0.md                     # ✅
+├── README_stage1.md                     # ✅
+├── README_stage2.md                     # ✅
+├── README_ableton.md                    # Stage 5 (NEW)
+├── README_mpe.md                        # Stage 6 (NEW)
+├── README_stage7.md
+├── README_stage9.md
+└── design_doc_10.28.10.50               # this document
+```
+
+### 4.4 Startup order (Stage 5 onward)
+
+1. Human verifies Aggregate Device and BlackHole exist (Audio MIDI Setup).
+2. Human opens Ableton, configures input as BlackHole 64ch, enables 16 input channels, arms MPE track(s).
+3. Human launches SC IDE, evaluates `startup.scd` (server boots, buses allocated, SynthDefs loaded).
+4. Human evaluates `test_autotune.scd` (Stage 1) or equivalent orchestration script.
+5. Human launches Python bridge (`python control/ji_bridge.py`).
+6. Human launches UI (`python ui/ji_ui.py`, Stage 9).
+
+---
+
+## 5. Global Contract
+
+This contract applies to **all stages**. Included verbatim in every agent prompt.
+
+### 5.1 Naming conventions
+
+| Entity | Convention | Example |
+|---|---|---|
+| SynthDef name | `\ji_` prefix, camelCase | `\ji_autotune_ch` |
+| Global variable | `~ji_*` | `~ji_autotune_freq1` |
+| Control bus | `~ji_<subsystem>_<param>` | `~ji_tartini_freq1` |
+| Audio bus | `~ji_audio_*` | `~ji_audio_loop1` |
+| Buffer | `~ji_buf_*` | `~ji_buf_loop1` |
+| SynthDef argument | camelCase | `retuneTime`, `inBus` |
+| OSC address | `/ji/<subsystem>/<action>` | `/ji/mutation/trigger` |
+| Python module | `snake_case.py` | `mutation.py` |
+| Python class | `PascalCase` | `MutationEngine` |
+| MIDI map file | `config/*.json` | `config/midi_map.json` |
+
+### 5.2 Bus allocation (cumulative, never reassign)
+
+| Bus | Name | Stage | Purpose |
+|---|---|---|---|
+| 0 | `~ji_tartini_freq1` | 0 | Debug tracker freq, ch 0 |
+| 1 | `~ji_tartini_freq2` | 0 | Debug tracker freq, ch 1 |
+| 2 | `~ji_tartini_hasfreq1` | 0 | Debug confidence, ch 0 |
+| 3 | `~ji_tartini_hasfreq2` | 0 | Debug confidence, ch 1 |
+| 4 | `~ji_cpu` | 0 | System CPU |
+| 5 | `~ji_autotune_freq1` | 1 | Autotune tracker freq, ch 0 |
+| 6 | `~ji_autotune_hasfreq1` | 1 | Autotune confidence, ch 0 |
+| 7 | `~ji_autotune_target1` | 1 | Target freq, ch 0 |
+| 8 | `~ji_autotune_freq2` | 4 | Autotune tracker freq, ch 1 |
+| 9 | `~ji_autotune_hasfreq2` | 4 | Autotune confidence, ch 1 |
+| 10 | `~ji_autotune_target2` | 4 | Target freq, ch 1 |
+| 11–14 | `~ji_loop_freq1..4` | 4 | Loop tracker freqs |
+| 15–18 | `~ji_loop_hasfreq1..4` | 4 | Loop confidences |
+
+**Audio bus allocation:** 0–1 input, 0–1 output (SC reuses indices). Loop audio buses: 10–17 (4 stereo pairs). VST/MPE do not consume global audio bus indices.
+
+### 5.3 Audio-thread rule (inviolable)
+
+**Never modify a running Synth's internal structure at runtime.** Structural changes only via SynthDef recompilation + node replacement with crossfade, or allocating a new node and freeing the old one. Parameter changes via `Synth.set` and buffer content via `Buffer.setn` are safe.
+
+### 5.4 MIDI-thread rule
+
+MPE MIDI output must not block the audio thread or the main control thread. Use a dedicated MIDI-sending thread or `mido`'s non-blocking mode. Voice allocation and pitch-bend calculation happen in the control layer, never in a SynthDef.
+
+### 5.5 Output format (for agent-generated code)
+
+1. Fenced code blocks per file, each preceded by `### FILE: <path>`.
+2. `### SELF-REVIEW` section (mandatory — see §10.4).
+3. `### ASSUMPTIONS` section (≤5 bullets).
+
+---
+
+## 6. Deep Dive on Technical Decisions
+
+### 6.1 Tartini parameters (verified Stage 0/1)
+
+Signature: `Tartini.kr(in, ampThreshold=0.01, peakThreshold=0.5, pitchMedianWindow=1, pitchQuant=1, k=1, ...)`
+
+Stage 1 verified `ampThreshold=0.9` works for guitar and voice. Returns `[freq, hasFreq]`. Gate target updates on `hasFreq > 0.5`.
+
+### 6.2 JI pitch class set representation
+
+FrequencySet is a list of **octave-reduced pitch classes** relative to a 220 Hz analysis reference. It is not a fixed chord and not a complete register map.
+
+**Stage 1 verified set (just major scale, 7-limit):**
+```
+ratios = [1/1, 9/8, 5/4, 4/3, 3/2, 5/3, 15/8]
+fundamental = 220.0 Hz
+analysis freqs = [220.0, 247.5, 275.0, 293.333, 330.0, 366.667, 412.5]
+```
+
+**Octave equivalence:** Ratios are folded into `[1, 2)`. `2/1`, `1/2`, `9/4`, etc. are the same class. Snapping an input frequency `f`:
+1. `oct = floor(log2(f / fundamental))`
+2. `fOct = f / 2^oct` (folds into `[fundamental, 2*fundamental)`)
+3. Find nearest class ratio `r` to `fOct`.
+4. Return `r * fundamental * 2^oct`.
+
+The target octave is local to the input. A guitar and a voice can instantiate the same class in different octaves. Live autotune therefore needs **no global register assignment**.
+
+**Size policy:** target ≈7 classes; hard maximum 12; soft floor 3. Twelve is a ceiling, not a goal. Add/remove/replace actions let the set breathe.
+
+**Register vs class:**
+- Pitch classes are global.
+- Octaves are per voice or per analysis instantiation.
+- Two voices playing the same class at different octaves are two voices, one class.
+- Roughness is computed on actual voiced frequencies, so it is register-dependent even though class membership is not.
+- Stage 2 keeps one representative `analysis_voicing` (class → octave) for scoring. It is not a constraint on live inputs.
+
+**Anchor:** one class is designated the drone/anchor. It is protected from removal but can move. If removed, the engine re-anchors to the nearest surviving class. The 220 Hz analysis reference remains fixed; the anchor class and its octave provide the musical drone.
+
+**Server-side representation:** Control layer converts class ratios to actual Hz values and passes them to the server as a Buffer. The server knows only Hz. This separation is what makes the system robust.
+
+### 6.3 Nearest-class lookup
+
+**Stage 1 implementation (verified):** sclang reads Tartini freq via `Bus.get` at 20 Hz, does nearest-class search, calls `Synth.set(\targetFreq, ...)`. Control latency ≤50 ms. This works and sounds great. **No change needed.**
+
+**Stage 4+ optimization (if needed):** Custom C++ UGen `NearestFreq` at audio rate. Only if control latency becomes audible.
+
+### 6.4 Pitch shifting — `PitchShift` parameters (verified Stage 1)
+
+`PitchShift.ar(in, windowSize=0.2, pitchRatio=1.0, pitchDispersion=0.0, timeDispersion=0.0)`
+
+- `windowSize` 0.1 s verified good default for guitar.
+- `pitchRatio` clamped to `[0.25, 4.0]`.
+- `Lag.kr` on ratio prevents zipper noise.
+- `retuneTime` maps directly to `Lag.kr` time constant.
+
+### 6.5 Mutation algorithm (denominator + roughness, decentralised)
+
+Given set `S` (3 ≤ |S| ≤ 12, target 7) and parameters `randomness ∈ [0,1]`, `dissonanceBias ∈ [-1,1]`, `stepwiseBias ∈ [0,1]`:
+
+**Action selection:** add/remove/replace are weighted by distance from `targetSize`; no action is forced except when at a boundary (add below 3, remove/replace at 12). The set does not fill to 12.
+
+**Candidate generation:**
+- For each current class `r` and each interval in a rational vocabulary, generate `foldOctave(r * q)`.
+- Add rational-neighbour candidates derived from current denominators.
+- Filter existing classes, near-unisons (<15 cents from surviving classes), and, for stepwise, classes closer than 10 cents or farther than ±1.5 semitones from the reference.
+- If generation is empty, an emergency rational scan finds a fresh class. The engine never refuses to mutate.
+
+The old fixed ten-ratio pool is no longer the universe; it remains one source of intervals.
+
+**Scoring:** lower is better.
+1. **Denominator complexity across all surviving pairs** (primary, register-invariant): approximate relative ratios as fractions and sum their denominators.
+2. **Sethares roughness across all actual voiced frequencies** (secondary texture): `sum(roughness(candidate, r))`.
+3. **Anchor term** (small): relation to the drone class.
+4. **Near-duplicate penalty** (small).
+
+**Selection:** sort by score; sample with
+```
+weight[i] = exp(alpha * normalized_rank[i])
+alpha = -10 * (1 - randomness) + 10 * dissonanceBias
+```
+The best score is a bias, not a mandate. Positive dissonance bias favours rougher/more complex candidates; negative favours simpler ones. The engine does not converge to a minimum.
+
+**Removal:** weighted by roughness contribution, with the anchor's weight divided by 4. If the anchor is removed, re-anchor to the nearest surviving class.
+
+**Octave/register:** separate from class mutation. `OctaveEvent` moves one class in the analysis voicing up/down an octave; `MutationEvent.new_octave` is a hint for MIDI/drone/analysis. Live autotune ignores these hints and uses the input octave.
+
+**Output:**
+```
+MutationEvent(removedRatio, newRatio, glideTime, reason, newOctave, removedOctave)
+reason ∈ {"added", "removed", "replaced", "stepwise"}
+```
+`newRatio=None` for pure removal; `removedRatio=None` for pure addition.
+
+**Manual trigger only.** No auto-clocking. MIDI mapping in Stage 8.
+
+### 6.6 Loop recording and playback
+
+**Recording:** Raw input (pre-autotune) into stereo Buffer via `RecordBuf`. `recGate` control (0/1). Buffer length `loopLength * sampleRate * 2`.
+
+**Playback:** `PlayBuf.ar` (looping) → `Tartini` → `PitchShift` → loop mix bus.
+
+**Key property:** Loops retune to the current set because playback passes through the autotune chain.
+
+**Buffer management:** Save via `Buffer.write`, load via `Buffer.read`. Format: 48 kHz, 32-bit float, `.aiff`.
+
+### 6.7 VST hosting (Stage 7, now optional)
+
+If Ableton hosts VSTs, SC-side VST hosting is unnecessary. **Decision deferred to Stage 7.** If the owner wants VSTs *before* the autotune (i.e., inside SC's input chain), use `VSTPlugin.ar`. If VSTs are only needed downstream (post-autotune), Ableton handles them.
+
+### 6.8 MIDI mutation mapping
+
+Python `mido` listens for note-on. Configurable note → action mapping via `config/midi_map.json`. Actions: `"mutate"`, `"mutate_random"`, `"mutate_stepwise"`. Mappings configurable via OSC `/ji/midi/map [noteNumber, action]`.
+
+### 6.9 Granular FX
+
+`TGrains` or `GrainBuf` with parameters: `grainSize`, `density`, `pitchRandom` (quantized to JI set), `positionJitter`, `reverseProb`, `trigger` (gate).
+
+**Pitch quantization:** Grain pitch snapped to nearest class in current set. Configurable via `quantizeToSet` (default true).
+
+**Gate:** Short fade (10 ms) on transitions to avoid clicks.
+
+### 6.10 Ableton audio routing (Stage 5, NEW)
+
+**Goal:** Send up to 8 independent stereo streams from SC to Ableton, so Ableton hosts per-stream VSTs/instruments and handles final mixing.
+
+**Setup (human, one-time):**
+
+1. Install BlackHole 64ch.
+2. Open Audio MIDI Setup → "+" at bottom-left → "Create Aggregate Device".
+3. Name it "JI Aggregate".
+4. Check physical interface (e.g., "Scarlett 2i2") and "BlackHole 64ch".
+5. Set Aggregate's clock source to the physical interface (BlackHole has no clock).
+6. Verify sample rate matches (48000).
+
+**SC config:**
+```supercollider
+s.options.device_("JI Aggregate");
+s.options.numOutputBusChannels = 16;  // 8 stereo pairs
+s.options.numInputBusChannels = 2;
+```
+
+**Ableton config:**
+- Preferences → Audio → Input Device: BlackHole 64ch.
+- Input Config: enable channels 1–16.
+- Track inputs: each track selects its stereo pair (e.g., Loop 1 = ch 3–4).
+- Monitoring: physical interface output (so you hear everything).
+
+**Test:** A dedicated `test_ableton_routing.scd` plays a 1 kHz sine on each stereo pair sequentially. In Ableton, a scope or level meter on each track confirms the signal.
+
+**Critical failures to watch:**
+- **Aggregate Device drift:** if BlackHole and physical interface have different clock sources, audio drifts. Ensure Aggregate clock master is the physical interface.
+- **No input in Ableton:** Input Config doesn't have the channels enabled, or wrong device selected.
+- **Double audio:** if SC outputs to both physical and BlackHole separately (not via Aggregate), you get doubling and possible feedback. Always use the Aggregate Device as SC's *single* output device.
+
+### 6.11 MPE MIDI output (Stage 6, NEW)
+
+**Goal:** SC/control layer sends per-note MPE MIDI to Ableton-hosted synths, allowing arbitrary JI pitches via pitch bend.
+
+**MIDI port:** IAC Driver (enabled in Audio MIDI Setup → Window → Show MIDI Studio).
+
+**MPE convention:**
+- Channel 1 (MIDI): master channel, global messages only.
+- Channels 2–16: member channels, one per note, carry note-on, per-note pitch bend, per-note pressure/slide.
+
+**Pitch bend math:**
+
+Given target frequency `f` and bend range `R` semitones:
+```
+n = round(69 + 12 * log2(f / 440))       # nearest MIDI note
+d = 12 * log2(f / mtof(n))               # deviation in semitones
+bend14 = 8192 + round(d / R * 8192)      # 14-bit value
+```
+
+`bend14` is clamped to `[0, 16383]`. If `d` exceeds `±R`, the note is unreachable — choose a lower octave or raise `R`.
+
+**Voice allocation:** For monophonic bass/drone, pin to one member channel. For polyphonic (later), use round-robin or a `ContiguousBlockAllocator` in Python.
+
+**Bend range configuration:** MPE spec default is ±48 semitones. Many soft synths default to ±2. **Configure in Ableton:**
+- In Live 11+: MIDI track → MIDI Effect → MPE → set "Pitch Bend Range".
+- In the synth plugin: set its pitch bend range parameter to match.
+
+**Calibration procedure (before implementing bass/drone):**
+1. Python sends MIDI note 60 on member channel 2 with `bend14 = 8192`. Record pitch in Ableton → should be C4 (261.63 Hz).
+2. Send `bend14 = 4096` (bend down half range). Record pitch → should be C4 minus `R/2` semitones.
+3. Send `bend14 = 12288` (bend up half range). Record pitch → should be C4 plus `R/2` semitones.
+4. Adjust `mpeBendRange` in `config/mpe_config.json` until measured pitches match.
+
+**Python implementation:** `mido.open_output('IAC Driver Bus 1')`. Send messages:
+```python
+out.send(mido.Message('note_on', channel=1, note=60, velocity=100))  # member ch 2 (0-indexed ch 1)
+out.send(mido.Message('pitchwheel', channel=1, pitch=bend14 - 8192))  # mido uses centered [-8192, 8191]
+```
+
+**Note on mido pitchwheel:** mido uses a centered representation `[-8192, 8191]`, not the raw 14-bit value. Convert accordingly.
+
+### 6.12 Bass/drone voice (Stage 6, NEW)
+
+**Behavior:**
+- Monophonic. One member channel (default 2 / index 1).
+- **Selection:** Prefer the mutation engine's protected `anchorRatio` as the drone. If no anchor exists, fall back to the class with lowest Sethares roughness contribution to the rest of the set; tie-break by smaller numerator+denominator.
+- **Register:** The drone chooses its own octave near `base_note`; this is a local voice register, not a global set property.
+- **Mutation policy:** Does NOT follow every mutation. Re-selects only when:
+  - User triggers `/ji/bass/trigger` (or MIDI note from Stage 8 mapping), OR
+  - `bassMutationInterval` mutations have elapsed since last bass change (default: 8), OR
+  - Held frequency is removed from the set (and `bassMustBeSetMember = true`).
+- **Glide:** Pitch bend smoothed over `bassGlideTime` (default 0.5 s). Set to 0 for instant jumps.
+- **Base note:** Default MIDI 36 (C2). Configurable.
+- **Output:** MPE MIDI only. Sound comes from Ableton-hosted MPE synth.
+
+**Implementation:** A `BassDrone` class in `control/bass_drone.py`:
+- `__init__(mpe_output, frequency_set, base_note=36, glide_time=0.5)`
+- `select_anchor_or_most_consonant() -> float` — returns Hz of the anchor, or the most consonant member if no anchor is present.
+- `update(frequency_set, force=False)` — re-selects if force or interval elapsed.
+- `send_mpe_note(freq)` — sends note-on + pitch bend.
+- `glide_to(freq)` — sends interpolated pitch bend over `glide_time`.
+- Runs in the bridge process (same as mutation engine) so it can directly read the current set.
+
+**Calibration dependency:** `BassDrone` reads `mpeBendRange` from `config/mpe_config.json`. If bend range is wrong, bass pitches will be wrong. Calibrate first.
+
+### 6.13 Voice allocation for polyphonic MPE (deferred)
+
+Same infrastructure as bass/drone but polyphonic. Notes derived from current set (arpeggiator, random walk, or user input). Deferred past Stage 6.
+
+---
+
+## 7. Data Formats & Interfaces
+
+### 7.1 OSC address map (cumulative)
+
+| Address | Args | Direction | Stage |
+|---|---|---|---|
+| `/ji/mutation/trigger` | none | Control → Bridge | 2 ✅ |
+| `/ji/mutation/octave` | none | Control → Bridge | 2 ✅ |
+| `/ji/mutation/set_randomness` | float [0,1] | Control → Bridge | 2 ✅ |
+| `/ji/mutation/set_dissonance_bias` | float [-1,1] | Control → Bridge | 2 ✅ |
+| `/ji/mutation/set_stepwise_bias` | float [0,1] | Control → Bridge | 2 ✅ |
+| `/ji/mutation/set_glide_time` | float ≥0 | Control → Bridge | 2 ✅ |
+| `/ji/mutation/apply` | [int, float, float] | Bridge → Server | 3 |
+| `/ji/freqset/update` | float[] | Bridge → Server | 3 |
+| `/ji/freqset/changed` | float[] | Bridge → UI | 9 |
+| `/ji/autotune/set` | [string, float] | Control → Server | 7 |
+| `/ji/loop/record` | int (index) | Control → Server | 4 |
+| `/ji/loop/stop` | int | Control → Server | 4 |
+| `/ji/loop/play` | int | Control → Server | 4 |
+| `/ji/loop/clear` | int | Control → Server | 4 |
+| `/ji/granular/trigger` | [float, float] | Control → Server | 8 |
+| `/ji/midi/map` | [int, string] | Control → Bridge | 8 |
+| `/ji/bass/trigger` | none | Control → Bridge | 6 |
+| `/ji/bass/set_note` | int (MIDI note) | Control → Bridge | 6 |
+| `/ji/bass/set_glide` | float (sec) | Control → Bridge | 6 |
+| `/ji/bass/set_interval` | int | Control → Bridge | 6 |
+| `/ji/bass/current` | float (Hz) | Bridge → UI | 6 |
+| `/ji/mpe/set_bend_range` | float (semitones) | Control → Bridge | 6 |
+| `/ji/cpu` | float | Server → UI | 9 |
+| `/ji/event/mutation` | [float, float, float[]] | Bridge → Visual | 10 |
+| `/ji/event/pitchclass` | [int, int, float] | Bridge → Visual | 10 |
+| `/ji/event/grain` | [float, float] | Bridge → Visual | 10 |
+| `/ji/event/loop` | [int, string] | Bridge → Visual | 10 |
+| `/ji/event/bass` | float (Hz) | Bridge → Visual | 10 |
+
+### 7.2 FrequencySet (control-layer object)
+
+```python
+{
+    "ratios": [1.0, 1.125, 1.25, 1.333, 1.5, 1.666, 1.875],  # octave-reduced
+    "fundamental": 220.0,
+    "targetSize": 7,
+    "minSize": 3,
+    "maxSize": 12,
+    "anchorRatio": 1.0,
+    "analysisVoicing": {1.0: 0, 1.125: 0, 1.25: 0, ...}
+}
+```
+
+`analysisVoicing` is a representative class → octave map for scoring, not a global register constraint. Live input uses its own octave. Server view is an array of Hz values, octave-unfolded to a useful range, passed via `Buffer.setn`.
+
+The runtime event shapes are:
+
+```python
+MutationEvent(
+    removed_ratio=None | float,
+    new_ratio=None | float,
+    glide_time=float,
+    reason="added" | "removed" | "replaced" | "stepwise",
+    new_octave=None | int,
+    removed_octave=None | int,
+)
+
+OctaveEvent(
+    ratio=float,
+    old_octave=int,
+    new_octave=int,
+    glide_time=float,
+    reason="octave_up" | "octave_down",
+)
+```
+
+### 7.3 Loop buffer file format
+
+48 kHz, stereo, 32-bit float, `.aiff`. Naming: `loops/loop_<index>_<timestamp>.aiff`.
+
+### 7.4 MIDI mapping file
+
+`config/midi_map.json`:
+```json
+{
+    "note_60": "mutate",
+    "note_62": "mutate_stepwise",
+    "note_64": "mutate_random",
+    "note_65": "bass_trigger",
+    "cc_1": "randomness",
+    "cc_2": "dissonance_bias"
+}
+```
+
+### 7.5 MPE configuration file (Stage 6)
+
+`config/mpe_config.json`:
+```json
+{
+    "port_name": "IAC Driver Bus 1",
+    "master_channel": 1,
+    "bass_channel": 2,
+    "bend_range_semitones": 48,
+    "bass_base_note": 36,
+    "bass_glide_time": 0.5,
+    "bass_mutation_interval": 8,
+    "bass_must_be_set_member": true
+}
+```
+
+---
+
+## 8. Stage Specifications
+
+### 8.1 Stage 0 — Skeleton, I/O, Tartini Verification ✅ COMPLETE
+
+**Delivered:** `startup.scd`, `synthdefs/ji_tartini_debug.scd`, `test_tartini.scd`, `README_stage0.md`.
+
+**Verified:** SC 3.15 dev boots, sc3-plugins + Tartini ABI-compatible, 2-ch audio interface functional, buses 0–4 readable, Tartini tracks guitar and voice accurately, passthrough clean.
+
+### 8.2 Stage 1 — Static Autotune, Single Channel ✅ COMPLETE
+
+**Delivered:** `startup.scd` (modified, buses 5–7), `synthdefs/ji_autotune_ch.scd`, `test_autotune.scd`, `README_stage1.md`.
+
+**Verified:** Chromatic scale snaps to 7 JI pitches. `retuneTime` audibly changes glide (0.005 = instant snap, 0.5 = portamento). No clicks at note boundaries. CPU < 20%. **"Sounds great" per project owner.**
+
+### 8.3 Stage 2 — Decentralised Mutation Engine ✅ COMPLETE
+
+**Delivered:** `control/mutation.py` (`MutationEngine`, `MutationEvent`, `OctaveEvent`), `control/osc_server.py` (threaded local OSC listener), `test_mutation.py` (visible demo + seven behavioural tests), `README_stage2.md`.
+
+**Design:** pitch classes are octave-reduced and global; registers are local to voices. The set targets ~7 classes (min 3, max 12), never fills to 12, and never refuses to mutate. Candidates are generated dynamically from the current field × rational intervals and scored primarily by all-pairs denominator complexity, with Sethares roughness as a secondary register-dependent texture term. Selection is stochastic by rank. The anchor/drone is protected but re-anchors if removed. Octave movement is a separate `OctaveEvent` and does not change class membership.
+
+**Acceptance test:** `uv run --with python-osc python test_mutation.py` prints the demo and seven tests, then `ALL TESTS PASSED`.
+
+**Verified:** octave folding/deduplication; size breathing around 7; no dead-end from 12; continuous class drift; stepwise bounds; octave moves without size change; anchor retention/re-anchoring. The harness was run under CPython 3.12 (WASM) in the isolated coding workspace; native macOS acceptance uses `uv`.
+
+**Not in Stage 2:** audio, scsynth, OSC bridge, per-voice registers, MIDI, UI.
+
+### 8.4 Stage 3 — Bridge (Mutation → Autotune)
+
+**Goal:** Frequency set passed to server as Buffer. Triggering mutation produces audible glide/jump on sustained note.
+
+**Deliverables:** `control/ji_bridge.py`, `synthdefs/ji_freqset_receiver.scd`, `test_bridge.scd`.
+
+**Acceptance test:**
+1. Sustained note snaps to set.
+2. Mutation produces glide/jump to new pitch.
+3. Rapid mutations cause no zipper noise or dropouts.
+4. Set size stays between 3 and 12 throughout; it is not forced to 12.
+5. A removed class retunes the held input to the nearest surviving class in the input's octave.
+
+### 8.5 Stage 4 — Dual Channel + Raw Looper
+
+**Goal:** Two independent input channels (mic 0, guitar 1). Loop recorder with raw buffers. Loops retune on playback.
+
+**Deliverables:** `synthdefs/ji_autotune_dual.scd`, `synthdefs/ji_looper_recorder.scd`, `synthdefs/ji_looper_player.scd`, `test_dual_loop.scd`.
+
+**Acceptance test:**
+1. Both channels autotune independently.
+2. Record a phrase; playback retunes when set changes.
+3. Record second loop; both retune together.
+4. CPU < 60% with 2 live + 2 loops.
+
+**Fallback if CPU fails:** store pitch contour at record time, read during playback.
+
+### 8.6 Stage 5 — Ableton Audio Integration (NEW)
+
+**Goal:** SC outputs multi-channel audio to BlackHole; Ableton receives it. Each stream (input autotune, loops, granular) goes to a dedicated Ableton track.
+
+**Deliverables:**
+- `startup.scd` (modified: Aggregate Device, 16 output channels).
+- `test_ableton_routing.scd` (plays sine on each stereo pair sequentially).
+- `README_ableton.md` (exact Audio MIDI Setup + Ableton config steps).
+- `config/ableton_routing.json` (channel map for reference).
+
+**Acceptance test:**
+1. Human creates "JI Aggregate" (physical + BlackHole 64ch).
+2. SC boots on JI Aggregate. `s.options.numOutputBusChannels = 16`.
+3. `test_ableton_routing.scd` plays 1 kHz tone on each stereo pair sequentially.
+4. In Ableton, tracks 1–8 (configured for BlackHole ch 1–16) show the tone on the matching track.
+5. Human hears the tone via Ableton's output (physical interface monitoring).
+6. No drift over 5 minutes (Aggregate clock stable).
+7. Existing Stage 1 autotune still works — the output now goes through Ableton.
+
+**Critical:** Verify clock master is the physical interface, not BlackHole.
+
+### 8.7 Stage 6 — MPE MIDI + Bass/Drone (NEW)
+
+**Goal:** Control layer sends MPE MIDI to Ableton. A bass/drone voice plays the most consonant member of the current set, updated only on explicit trigger or every N mutations.
+
+**Deliverables:**
+- `control/mpe_output.py` — `MPEOutput` class (mido, IAC Driver).
+- `control/bass_drone.py` — `BassDrone` class.
+- `config/mpe_config.json` — port name, channels, bend range, base note.
+- `test_mpe.py` — calibration + bass test.
+- `README_mpe.md` — calibration procedure, Ableton MPE setup.
+
+**Calibration (must be done first):**
+1. Python sends MIDI note 60 on member channel 2 with `bend=0` (centered). Measure pitch in Ableton. Should be C4.
+2. Send `bend=+4096` (half range up). Measure pitch. Should be C4 + R/2 semitones.
+3. Send `bend=-4096`. Measure. Should be C4 - R/2 semitones.
+4. Adjust `bend_range_semitones` in config until measured pitches match.
+
+**Acceptance test:**
+1. Calibration passes (bend range configured correctly in Ableton).
+2. `test_mpe.py` sends a slow pitch sweep from C2 to C3 via pitch bend. Ableton synth tracks continuously. No glitches.
+3. Bass/drone selects the most consonant ratio from a test set.
+4. Triggering `/ji/bass/trigger` re-selects and glides to new frequency over `bass_glide_time`.
+5. `bass_mutation_interval` works: after N mutations, bass updates automatically.
+6. Removing the bass's current frequency from the set triggers a re-selection (if `bass_must_be_set_member = true`).
+
+### 8.8 Stage 7 — Full Autotune Params + SC-Side VST (Optional)
+
+**Goal:** Expose all autotune parameters via OSC. Add VSTPlugin on input/output chains **only if the owner wants VSTs inside SC** (e.g., pre-autotune distortion). If Ableton handles all VSTs, this stage reduces to autotune parameter exposure only.
+
+**Deliverables:** `synthdefs/ji_autotune_params.scd`, optionally `ji_vst_input.scd`, `ji_vst_output.scd`, `test_vst.scd`, `README_stage7.md`.
+
+**Acceptance test:**
+1. Parameter changes via OSC audible without restart.
+2. (If VSTs) reverb on output → audible reverb on autotuned signal.
+3. (If VSTs) distortion on input → Tartini still tracks (or documented failure).
+4. (If VSTs) no dropouts when loading VSTs.
+
+**Note:** This stage is deliberately lower priority because Ableton can host VSTs. The owner may skip it or do a reduced version.
+
+### 8.9 Stage 8 — MIDI Mutation + Granular FX
+
+**Goal:** MIDI note-on triggers mutation. Triggerable granular FX with pitch quantization to current set.
+
+**Deliverables:** `control/midi_mutation.py`, `synthdefs/ji_granular_fx.scd`, `test_granular.scd`, `config/midi_map.json`.
+
+**Acceptance test:**
+1. MIDI C4 → mutation, logged.
+2. Hold D4 → granular FX processes; grains pitch-quantized to set.
+3. Release D4 → clean autotuned signal returns.
+4. No clicks at gate boundaries.
+
+### 8.10 Stage 9 — Minimal UI (PyQt6)
+
+**Goal:** Usable GUI: frequency set display, mutation button + sliders, autotune sliders, loop transport, bass/drone status.
+
+**Deliverables:** `ui/ji_ui.py`, `ui/osc_bridge.py`, `README_stage9.md`.
+
+**Acceptance test:**
+1. UI connects to bridge without errors.
+2. Frequency set display updates on mutation (UI or MIDI).
+3. Sliders affect audio in real time.
+4. Loop buttons work and UI reflects state.
+5. Bass/drone current frequency displayed and updates.
+6. UI remains responsive during audio operations.
+
+### 8.11 Stage 10 (Deferred) — Visual Event Broadcast
+
+**Goal:** Emit OSC events for external visual process. No embedded rendering.
+
+**Deliverables:** Event definitions added to bridge, `test_events.py` (OSC listener).
+
+**Acceptance test:**
+1. Mutation event within 50 ms.
+2. Pitch class events at ~10 Hz.
+3. Grain events fire on each grain trigger.
+4. Bass events on bass change.
+
+---
+
+## 9. Current Implementation Status
+
+| Stage | Status | Notes |
+|---|---|---|
+| 0 | ✅ Complete | Environment verified. Tartini works. 2ch I/O passes. |
+| 1 | ✅ Complete | Autotune sounds great. retuneTime works. CPU < 20%. |
+| 2 | ✅ Complete | Decentralised mutation engine + OSC listener. Harness passes. |
+| 3 | ⬜ Pending | Depends on Stage 2. |
+| 4 | ⬜ Pending | Depends on Stage 3 pass. |
+| 5 | ⬜ Pending | Ableton routing. Requires BlackHole install. |
+| 6 | ⬜ Pending | MPE + bass/drone. Requires IAC Driver enabled, calibration. |
+| 7 | ⬜ Optional | SC-side VST hosting. May be skipped if Ableton handles VSTs. |
+| 8 | ⬜ Pending | MIDI mutation + granular FX. |
+| 9 | ⬜ Pending | PyQt6 UI. |
+| 10 | ⬜ Deferred | Visual event broadcast. |
+
+**What Stage 0 verified:**
+- SC 3.15 dev from source runs on Apple Silicon.
+- sc3-plugins + Tartini load correctly (ABI compatible).
+- 2-channel audio interface connected and functional.
+- Buses 0–4 allocated and readable.
+- Tartini tracks guitar and voice accurately.
+- Passthrough audio clean.
+
+**What Stage 1 verified:**
+- `\ji_autotune_ch` SynthDef compiles and runs.
+- Chromatic input snaps to 7-note JI set (verified by ear and post-window log).
+- `retuneTime` audibly changes glide (0.005 = snap, 0.5 = portamento).
+- No clicks at note boundaries.
+- CPU < 20% with one channel active.
+- **Overall: "sounds great" per project owner.**
+
+**What Stage 2 verified:**
+- Octave-equivalent ratios fold and deduplicate correctly.
+- Set size breathes around 7 (observed 6–8) and never exceeds 12.
+- A full 12-class set never dead-ends; removals and replacements occur.
+- The class field keeps drifting instead of converging to a fixed chord.
+- Stepwise replacements stay within ±1.5 semitones.
+- Octave moves do not alter class membership or set size.
+- The anchor is retained far more often than ordinary classes (observed ~4.5% removal rate versus uniform), and re-anchors when removed.
+- `ALL TESTS PASSED` under CPython 3.12 WASM; native `uv` command provided.
+
+**What is still unverified:**
+- Native macOS `python-osc` import/threading (stub-tested in the isolated workspace).
+- Actual per-voice octave allocation and audio retuning (Stage 3/4).
+- Ableton audio routing (Stage 5).
+- IAC Driver MIDI output (Stage 6).
+- MPE pitch bend calibration (Stage 6).
+- Multi-channel audio stability over long sessions (Stage 5).
+- Loop + autotune CPU under load (Stage 4).
+- VSTPlugin SC-side loading (Stage 7, likely moot if Ableton hosts VSTs).
+- Real-time performance latency under full load (Stage 9).
+
+---
+
+## 10. Working With AI Agents
+
+This project is built in **stage-isolated Docker workspaces** using AI agents that cannot execute code (except where noted — Stage 2+ agents can run Python tests locally).
+
+### 10.1 The core principle: invariant vs. state
+
+Separate every agent prompt into:
+- **Invariant (stable):** project goal, Global Contract (§5), environment, output format. ~400–600 words. Identical every stage.
+- **State (per stage):** current stage spec, prior stage artifacts, stage status line.
+
+Everything else goes into this document, not into the prompt.
+
+### 10.2 Prompt skeleton
+
+```
+[PROJECT CONTEXT — 1 paragraph]
+[ENVIRONMENT — 3–5 lines]
+[GLOBAL CONTRACT — ~500 words, identical]
+[PRIOR STAGES SUMMARY — 1 line per stage]
+[CURRENT STAGE SPEC — 800–1500 words]
+[STARTING STATE — list of files to read]
+[ACCEPTANCE TEST]
+[SELF-REVIEW requirement]
+[OUTPUT FORMAT]
+```
+
+Total: 2000–3500 words.
+
+### 10.3 Discipline rules
+
+1. **One fresh agent per stage.** Never reuse sessions across stages.
+2. **Read, don't paste.** Give file paths; instruct "read `startup.scd` from workspace root."
+3. **One-line stage status.** Prepend: `Stage status: 0 ✅ · 1 ✅ · 2 ⏳ · 3–10 pending`.
+4. **Test results are one sentence.** "Stage N passed" or paste only the failing error.
+5. **Never paste full prior-stage code** unless the agent needs every line.
+6. **Hard context limit:** > 5000 words → split the stage.
+7. **Design doc lives outside the loop.** Reference it, don't paste it.
+
+### 10.4 Self-review requirement (mandatory)
+
+Every stage prompt ends with:
+
+```
+SELF-REVIEW (mandatory):
+For each acceptance-test criterion, state:
+  (a) The line(s) of code that satisfy it, OR
+  (b) A concrete concern.
+Then answer: "If I had to bet on which line of code is most likely
+to fail on the human's machine, which is it, and why? Give a
+one-line verification command."
+```
+
+### 10.5 When a stage fails
+
+1. Identify which acceptance criterion failed.
+2. Paste only: the failing criterion, the exact error, post-window lines from the last 2 seconds before failure.
+3. Do not paste success output of prior criteria.
+4. Agent produces fix. If 2 rounds don't converge, split the criterion into a smaller sub-stage.
+
+Two rounds of failure on the same criterion means the spec is ambiguous — rewrite it.
+
+### 10.6 Debugging limitation
+
+Agents in isolated workspaces **cannot execute audio code**. They can:
+- Produce code.
+- Self-review against spec.
+- Reason about API signatures from memory (unreliable).
+- Run Python tests locally via `uv run` (Stage 2+).
+
+The isolated Stage 2 workspace had no native Python interpreter; tests were executed under CPython 3.12 WASM/Pyodide. Native macOS verification uses:
+```bash
+cd ji-live
+uv run --with python-osc python test_mutation.py
+```
+
+They cannot:
+- Test SynthDef compilation.
+- Observe audio runtime behavior.
+- Detect audio silent failures.
+- Verify Ableton routing (requires human with audio hardware).
+
+**Mitigation:** Fetch SC docs if network available. Otherwise, paste help file text. For MPE and Ableton routing, the human must run tests and paste errors.
+
+### 10.7 Token budget cheat sheet
+
+| Component | Target |
+|---|---|
+| Global Contract | 400–600 words |
+| Prior stage summary | 50–100 words |
+| Current stage spec | 800–1500 words |
+| Starting state | 50–150 words |
+| Acceptance + self-review | 300–500 words |
+| **Total per stage prompt** | **2000–3500 words** |
+| This document (NOT in prompt) | 6000–8000 words |
+
+---
+
+## 11. Testing Philosophy
+
+Every stage's acceptance test is **binary**: pass or fail on specific observable outcomes. "Sounds good" is not a test — except when it is the final arbiter (as in Stage 1, where the project owner's ear is the ultimate measure of artistic viability).
+
+**Measurable proxies:**
+- **Latency:** Record a click through the system; measure sample offset.
+- **Pitch accuracy:** Play known frequency; log Tartini output and target; verify < 5 cents error.
+- **CPU:** `s.avgCPU` under load. Thresholds per stage.
+- **No zipper noise:** Spectral analysis of glide.
+- **MPE pitch accuracy:** Measure Ableton synth output frequency at known bend values; verify within 1 cent.
+
+**Test structure (all stages):**
+1. Prerequisites.
+2. Steps (exact commands).
+3. Expected output (with formatting).
+4. Failure modes table.
+5. Stop commands.
+
+**When tests fail:** Produce a failure report listing the failing criterion, observed behavior, and suspected cause. Human decides whether to debug or revert.
+
+---
+
+## 12. Failure Modes & Debugging Playbook
+
+### 12.1 Environment failures
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `UGen 'Tartini' not installed` | sc3-plugins missing or ABI incompatible | Rebuild sc3-plugins from source |
+| Server boots but no input | `s.options.device_` mismatch | Check `ServerOptions.devices` |
+| Sample rate mismatch | Input/output differ | Aggregate device or align rates |
+| Server segfaults | ABI mismatch | Rebuild plugins from source |
+
+### 12.2 Audio failures
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| No pitch detected | Input too quiet | Raise gain; lower `tartiniThreshold` |
+| Pitch wildly wrong | Low-frequency input + Tartini limits | Verify input > 80 Hz |
+| Clicks at note boundaries | `retuneTime` too small | Raise to 0.02+ |
+| Zipper noise on mutation | `Lag.kr` too short | Raise `glideTime` |
+| Granular artifacts on guitar | `PitchShift.windowSize` too small | Raise to 0.15+ |
+| Loop drifts | Buffer length mismatch | Round to exact samples |
+
+### 12.3 Control layer failures
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| OSC messages not received | Wrong port, firewall | Verify port (57120 or 9000) |
+| Bridge crashes on mutation | Duplicate ratio in set | Deduplicate before mutation |
+| UI freezes | Blocking OSC in main thread | Move to background thread |
+| MIDI not detected | Port name wrong or permission | Verify `mido.get_input_names()` |
+| MIDI jitter | Blocking calls | Use non-blocking mode |
+
+### 12.4 Ableton routing failures (Stage 5)
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| No signal in Ableton | Input Config doesn't have channels enabled | Enable channels 1–16 in Ableton Preferences |
+| No signal in Ableton | SC output device wrong | Verify `s.options.device_("JI Aggregate")` |
+| Doubled audio / feedback | SC outputs to physical AND BlackHole separately | Use Aggregate Device as SC's single output |
+| Audio drifts over minutes | Aggregate clock master is BlackHole (no clock) | Set clock master to physical interface |
+| Channels swapped | SC bus index ≠ BlackHole channel number | Recheck channel map in `config/ableton_routing.json` |
+| Aggregate won't create | BlackHole not installed | Install BlackHole 64ch, reboot |
+
+### 12.5 MPE failures (Stage 6)
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| Synth plays 12-TET only, ignores bend | MPE not enabled on Ableton track | Enable MPE, set input to "All Channels" |
+| Pitches sharp/flat by fixed cents | Bend range mismatch | Recalibrate `bend_range_semitones` |
+| Notes stuck | Note-off not sent on channel | Verify `mido` sends note_off on correct member channel |
+| All notes play at full bend | Pitch bend sent before note-on, or on wrong channel | Verify master vs. member channel discipline |
+| No MIDI received | IAC Driver offline | Audio MIDI Setup → IAC Driver → "Device is online" |
+| Note pitch differs by octave | Base note or bend direction | Check `bass_base_note`; verify `mtof` uses A4=440 |
+
+### 12.6 Intervention hierarchy
+
+When something breaks, check in this order:
+1. Environment (§12.1) — plugin/device issue?
+2. Audio (§12.2) — DSP parameter or tracking?
+3. Control layer (§12.3) — OSC or timing?
+4. **Ableton/MPE (§12.4/§12.5)** — routing or MIDI config?
+5. Agent's code — logic bug?
+
+Only after 1–4 are ruled out should you attribute failure to the agent.
+
+---
+
+## 13. Out of Scope
+
+- Custom C++ audio engine from scratch.
+- Embedded visuals in the audio process.
+- Full DAW timeline / arrangement view.
+- Cloud sync, collaboration, mobile.
+- Auto-clocked or audio-reactive mutations (manual only).
+- Formant-preserving pitch shift (aesthetic choice).
+- Polyphonic pitch tracking (monophonic per channel is sufficient).
+- More than 2 live input channels.
+- More than 12 frequency classes at a time.
+- Windows or Linux support (macOS only).
+- Polyphonic MPE melodies (deferred past Stage 6).
+- Multi-channel audio beyond 16 SC output channels.
+
+---
+
+## 14. Changelog
+
+| Ver | Date | Changes |
+|---|---|---|
+| 1.0 | — | Initial. Qitch, ratio-complexity, single channel. |
+| 2.0 | — | Tartini, Sethares roughness, no formants, 2ch from start, raw loops, macOS, Python UI. |
+| 3.0 | — | Full stage specs for agents. Global Contract. Acceptance philosophy. |
+| 3.1 | — | Stage 0 complete. Bus allocation table. Consolidated for archival. |
+| 4.0 | — | Complete archival reference. Debugging playbook, agent workflow. New-session ready. |
+| 5.0 | 2026-10-28 | Stage 0 and Stage 1 complete. **Added Ableton audio integration (Stage 5) and MPE MIDI + bass/drone (Stage 6).** Stages 5–8 renumbered to 7–10. VST stage becomes optional. BlackHole, IAC Driver, MPE calibration, bass/drone spec added. |
+| 5.1 | 2026-10-28 | **Stage 2 complete.** Mutation redesigned around a decentralised, continuously drifting field: target size 7 (max 12), octave-equivalent classes, global classes vs local registers, dynamic candidates, denominator relatedness primary + Sethares roughness secondary, stochastic rank selection, protected anchor, separate octave events, no dead-ends. Updated Python setup to `uv` (3.11+, no system Python required; numpy optional). Added `README_stage2.md`, updated OSC map, status, file tree, tests, and design rationale. |
+
+---
+
+## 15. Appendix
+
+### 15.1 Key JI ratios reference
+
+| Ratio | Name | Cents | Character |
+|---|---|---|---|
+| 1/1 | Unison | 0 | Fundamental |
+| 16/15 | Minor second | 111.7 | Dissonant |
+| 9/8 | Major second | 203.9 | Mildly consonant |
+| 6/5 | Minor third | 315.6 | Consonant |
+| 5/4 | Major third | 386.3 | Very consonant |
+| 4/3 | Perfect fourth | 498.0 | Very consonant |
+| 45/32 | Tritone | 590.2 | Dissonant |
+| 3/2 | Perfect fifth | 702.0 | Very consonant |
+| 8/5 | Minor sixth | 813.7 | Consonant |
+| 5/3 | Major sixth | 884.4 | Very consonant |
+| 9/5 | Minor seventh | 1017.6 | Mildly consonant |
+| 15/8 | Major seventh | 1088.3 | Dissonant |
+| 2/1 | Octave | 1200 | Perfect consonance |
+
+### 15.2 Sethares roughness — worked example
+
+Compare major third (5/4) vs. minor third (6/5) at 220 Hz:
+
+```
+Major third: f1=220, f2=275
+  cb = 1.72 * 220^0.65 ≈ 57.3 Hz
+  Δ = 55
+  roughness = exp(-3.36) - exp(-5.51) ≈ 0.0306
+
+Minor third: f1=220, f2=264
+  Δ = 44
+  roughness = exp(-2.69) - exp(-4.41) ≈ 0.0558
+```
+
+Major third is less rough. Matches common perception.
+
+In Stage 2 this is a **secondary texture term**. The primary mutation score is denominator relatedness across the field; the engine is allowed to choose the rougher option. The worked example explains the sensory model, not a target to minimise.
+
+### 15.3 Useful SuperCollider snippets
+
+```supercollider
+// Allocate control buses
+~ji_tartini_freq1 = Bus.control(s, 1);  // bus 0
+~ji_autotune_target1 = Bus.control(s, 1);  // bus 7
+
+// Load all SynthDefs
+(PathName(thisProcess.nowExecutingPath).parentPath ++ "synthdefs/").pathMatch.do(_.load);
+
+// Read control bus
+~ji_tartini_freq1.get;
+
+// OSCdef for incoming messages
+OSCdef(\ji_freqset_update, { |msg|
+    var freqs = msg[1..];
+    ~ji_buf_freqset.setn(0, freqs);
+}, '/ji/freqset/update');
+
+// Configure Aggregate Device output (Stage 5)
+s.options.device_("JI Aggregate");
+s.options.numOutputBusChannels = 16;
+s.options.numInputBusChannels = 2;
+```
+
+### 15.4 Useful Python snippets
+
+Run these with `uv run --with python-osc --with mido python ...` as needed.
+
+```python
+# OSC listener (Stage 2 uses a daemon thread around this server)
+from pythonosc.dispatcher import Dispatcher
+from pythonosc.osc_server import ThreadingOSCUDPServer
+dispatcher = Dispatcher()
+dispatcher.map("/ji/mutation/trigger", on_mutation_trigger)
+server = ThreadingOSCUDPServer(("127.0.0.1", 9000), dispatcher)
+server.serve_forever()
+
+# Sethares roughness
+import math
+def roughness(f1, f2):
+    fmin, fmax = min(f1, f2), max(f1, f2)
+    cb = 1.72 * (fmin ** 0.65)
+    delta = fmax - fmin
+    return math.exp(-3.5 * delta / cb) - math.exp(-5.75 * delta / cb)
+
+# MPE pitch bend (Stage 6)
+import mido
+def freq_to_mpe(freq, bend_range=48):
+    import math
+    n = round(69 + 12 * math.log2(freq / 440))
+    target_midi_freq = 440 * 2 ** ((n - 69) / 12)
+    dev_semitones = 12 * math.log2(freq / target_midi_freq)
+    if abs(dev_semitones) > bend_range:
+        raise ValueError(f"deviation {dev_semitones} exceeds bend range {bend_range}")
+    bend_centered = round(dev_semitones / bend_range * 8192)  # mido range [-8192, 8191]
+    return n, bend_centered
+
+out = mido.open_output("IAC Driver Bus 1")
+note, bend = freq_to_mpe(275.0)  # 5/4 above A4 = 275 Hz
+out.send(mido.Message("note_on", channel=1, note=note, velocity=100))
+out.send(mido.Message("pitchwheel", channel=1, pitch=bend))
+
+# MIDI listener
+import mido
+with mido.open_input("Your Port") as port:
+    for msg in port:
+        if msg.type == "note_on" and msg.velocity > 0:
+            print(f"Note {msg.note}")
+```
+
+### 15.5 Ableton + BlackHole setup checklist
+
+**Audio MIDI Setup (macOS):**
+1. Install BlackHole 64ch (reboot).
+2. Window → Show MIDI Studio → IAC Driver → "Device is online" (for Stage 6).
+3. Click "+" bottom-left → "Create Aggregate Device".
+4. Name: "JI Aggregate". Check: physical interface + BlackHole 64ch.
+5. Clock source: physical interface (NOT BlackHole).
+6. Verify sample rate 48000 Hz.
+
+**Ableton Live:**
+1. Preferences → Audio → Input Device: BlackHole 64ch.
+2. Input Config: enable channels 1–16.
+3. Each track: select its stereo pair as input.
+4. (Stage 6) Preferences → Link/Tempo/MIDI: enable Track + MPE on IAC Driver.
+5. (Stage 6) MPE track: input from IAC, load MPE-capable synth, set pitch bend range.
+
+### 15.6 MPE pitch bend calibration procedure (Stage 6)
+
+Before building bass/drone, run this 5-minute calibration:
+
+1. Set up a MIDI track in Ableton with an MPE-capable synth.
+2. Set the synth's pitch bend range to a known value `R` (e.g., 48 semitones). Note the value.
+3. From Python, send on member channel 2 (0-indexed 1):
+   - `note_on` pitch 60, velocity 100, then
+   - `pitchwheel` centered (0 in mido representation).
+4. Measure pitch in Ableton (tuner plugin or frequency analyzer). Should be ~261.63 Hz (C4).
+5. Send `pitchwheel` with pitch = `+R/2 * (8192/R)` in mido representation, i.e., +4096 for R=48. Measure. Should be ~370 Hz (C4 + 24 semitones, or F#6).
+6. Send pitch = -4096. Measure. Should be ~185 Hz (C4 - 24 semitones, or F#2).
+7. If measured pitches match expected, calibration passes. Otherwise, adjust `bend_range_semitones` in `config/mpe_config.json` until they match.
+
+Record the verified `bend_range_semitones` in the config file. All subsequent bass/drone pitch calculations depend on this value.
+
+### 15.7 External references
+
+- SuperCollider documentation: https://doc.sccode.org/
+- `Tartini` help: https://doc.sccode.org/Classes/Tartini.html
+- sc3-plugins: https://github.com/supercollider/sc3-plugins
+- VSTPlugin: https://git.iem.at/pd/vstplugin
+- BlackHole: https://existential.audio/blackhole/
+- Ableton MPE docs: https://www.ableton.com/en/live-manual/ (search "MPE")
+- Sethares, *Tuning, Timbre, Spectrum, Scale* (Springer, 2005)
+- Plomp & Levelt, "Tonal Consonance and Critical Bandwidth" (JASA, 1965)
+- MPE specification: https://midi.org/mpe-midi-polyphonic-expression
+
+### 15.8 Contact and ownership
+
+This project is a personal artistic tool. There is no team, no release schedule, and no external users. All decisions are made by the project owner based on personal aesthetic goals and pragmatic development capacity. This document exists to maintain coherence across sessions and to interface with AI agents.
+
+---
+
+**End of document.**
+
+---
+
+**How to use this document in a new session:**
+
+If you are a human or AI opening this for the first time: read §1 (Executive Summary), §9 (Current Implementation Status), and §8 (Stage Specifications) for the stage you are working on. Everything else is reference. If you are an AI agent, the human should still give you a fresh stage prompt following §10; do not treat this document as your prompt. It is the reference the human reads from when composing your prompt.
