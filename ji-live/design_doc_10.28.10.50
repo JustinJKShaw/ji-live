@@ -1,6 +1,6 @@
 # JI Live — Complete Design & Implementation Reference
 
-**Version 5.1 · Archival / New-Session Ready**
+**Version 5.3 · Archival / New-Session Ready**
 **Purpose:** If a new session (human or AI) opens this document with no prior context, they must be able to understand the project, current state, and how to proceed without asking questions.
 
 **Table of Contents**
@@ -29,9 +29,9 @@
 
 **Who it is for:** An improvising musician (the project owner) who wants harmonic constraint without losing spontaneity, working in an electroacoustic idiom where digital timbre manipulation is part of the aesthetic.
 
-**What is done:** Stage 0 (server skeleton, 2-channel I/O, Tartini pitch tracking verification), Stage 1 (static autotune to a hardcoded JI set, single channel), and Stage 2 (decentralised pure-Python mutation engine, no audio) are complete and passing.
+**What is done:** Stage 0 (server skeleton, 2-channel I/O, Tartini pitch tracking verification), Stage 1 (static autotune to a hardcoded JI set, single channel), Stage 2 (decentralised pure-Python mutation engine, no audio), and Stage 3 (mutation → autotune bridge) are complete and accepted by the project owner (audio and Python↔sclang communication working).
 
-**What is being built:** Stage 3 (OSC bridge from the mutation engine to the autotune frequency set).
+**What is being built:** the Stage 3 mutation-control extension (multi-edit batches, temperature, anchor mobility) is implemented — awaiting human audio acceptance. Stage 4 (dual channel + raw looper) follows.
 
 **Core hypothesis:** SuperCollider's `scsynth` is the correct audio backend for pitch tracking, pitch shifting, looping, and granular processing. Ableton Live is the correct downstream host for VST/AU synths and effects, final mixing, and MPE target instruments. The two communicate via a virtual audio device (BlackHole) for audio and IAC Driver for MIDI.
 
@@ -210,6 +210,7 @@ Stage 2 does not need `numpy` or `mido`:
 ```bash
 cd ji-live
 uv run --with python-osc python test_mutation.py
+uv run --with python-osc python test_mutation_controls.py
 ```
 
 ### 3.6 Audio device configuration (Stage 5 onward)
@@ -304,7 +305,6 @@ ji-live/
 ├── synthdefs/
 │   ├── ji_tartini_debug.scd             # Stage 0
 │   ├── ji_autotune_ch.scd               # Stage 1 ✅
-│   ├── ji_freqset_receiver.scd          # Stage 3
 │   ├── ji_autotune_dual.scd             # Stage 4
 │   ├── ji_looper_recorder.scd           # Stage 4
 │   ├── ji_looper_player.scd             # Stage 4
@@ -312,9 +312,9 @@ ji-live/
 │   ├── ji_vst_input.scd                 # Stage 7 (optional)
 │   └── ji_vst_output.scd                # Stage 7 (optional)
 ├── control/
-│   ├── mutation.py                      # Stage 2 ✅
-│   ├── osc_server.py                    # Stage 2 ✅
-│   ├── ji_bridge.py                     # Stage 3
+│   ├── mutation.py                      # Stage 2 ✅ + Stage 3.5 controls 🟡
+│   ├── osc_server.py                    # Stage 2 ✅ + Stage 3/3.5 callbacks
+│   ├── ji_bridge.py                     # Stage 3 ✅ + controls 🟡
 │   ├── midi_mutation.py                 # Stage 8
 │   ├── mpe_output.py                    # Stage 6 (NEW)
 │   ├── bass_drone.py                    # Stage 6 (NEW)
@@ -328,7 +328,8 @@ ji-live/
 ├── test_tartini.scd                     # Stage 0 ✅
 ├── test_autotune.scd                    # Stage 1 ✅
 ├── test_mutation.py                     # Stage 2 ✅
-├── test_bridge.scd                      # Stage 3
+├── test_mutation_controls.py            # Stage 3.5 🟡 awaiting audio acceptance
+├── test_bridge.scd                      # Stage 3 ✅
 ├── test_dual_loop.scd                   # Stage 4
 ├── test_ableton_routing.scd             # Stage 5 (NEW)
 ├── test_mpe.py                          # Stage 6 (NEW)
@@ -338,6 +339,7 @@ ji-live/
 ├── README_stage0.md                     # ✅
 ├── README_stage1.md                     # ✅
 ├── README_stage2.md                     # ✅
+├── README_stage3.md                     # Stage 3 ✅ + controls 🟡
 ├── README_ableton.md                    # Stage 5 (NEW)
 ├── README_mpe.md                        # Stage 6 (NEW)
 ├── README_stage7.md
@@ -345,12 +347,17 @@ ji-live/
 └── design_doc_10.28.10.50               # this document
 ```
 
+Stage 3 deliberately has **no** `synthdefs/ji_freqset_receiver.scd`; the OSC
+receiver in `test_bridge.scd` supersedes the old server-buffer lookup. The
+12-slot Hz Buffer mirror is written for future stages but is not read by any
+SynthDef yet.
+
 ### 4.4 Startup order (Stage 5 onward)
 
 1. Human verifies Aggregate Device and BlackHole exist (Audio MIDI Setup).
 2. Human opens Ableton, configures input as BlackHole 64ch, enables 16 input channels, arms MPE track(s).
 3. Human launches SC IDE, evaluates `startup.scd` (server boots, buses allocated, SynthDefs loaded).
-4. Human evaluates `test_autotune.scd` (Stage 1) or equivalent orchestration script.
+4. Human evaluates `test_autotune.scd` (Stage 1) or `test_bridge.scd` (Stage 3).
 5. Human launches Python bridge (`python control/ji_bridge.py`).
 6. Human launches UI (`python ui/ji_ui.py`, Stage 9).
 
@@ -447,13 +454,15 @@ The target octave is local to the input. A guitar and a voice can instantiate th
 - Roughness is computed on actual voiced frequencies, so it is register-dependent even though class membership is not.
 - Stage 2 keeps one representative `analysis_voicing` (class → octave) for scoring. It is not a constraint on live inputs.
 
-**Anchor:** one class is designated the drone/anchor. It is protected from removal but can move. If removed, the engine re-anchors to the nearest surviving class. The 220 Hz analysis reference remains fixed; the anchor class and its octave provide the musical drone.
+**Anchor:** one class is designated the drone/anchor. `anchor_mobility` controls its removal weight: 0.0 = never removed by a mutation, 0.25 = the old 1/4 weight (default), 1.0 = the same weight as any class with random re-anchoring among survivors. Below 1.0, if removed it re-anchors to the nearest surviving class. The 220 Hz analysis reference remains fixed; the anchor class and its octave provide the musical drone.
 
-**Server-side representation:** Control layer converts class ratios to actual Hz values and passes them to the server as a Buffer. The server knows only Hz. This separation is what makes the system robust.
+**Server-side representation:** Python sends the octave-reduced ratio set, the fundamental, and the glide time to sclang over `/ji/freqset/update`. sclang owns the nearest-class lookup (the verified Stage 1 routine) and writes the current Hz values into a 12-slot Buffer mirror for future stages. No SynthDef reads that mirror in Stage 3. A server-side nearest-class SynthDef is deferred.
 
 ### 6.3 Nearest-class lookup
 
 **Stage 1 implementation (verified):** sclang reads Tartini freq via `Bus.get` at 20 Hz, does nearest-class search, calls `Synth.set(\targetFreq, ...)`. Control latency ≤50 ms. This works and sounds great. **No change needed.**
+
+**Stage 3 implementation:** Python sends the complete set on every mutation; sclang updates `~ji_ji_set_ratios` / `~ji_ji_fundamental`, stores the pending glide, and reuses the Stage 1 lookup in the input's own octave. When the target changes, sclang sets `retuneTime = max(glide, 0.005)` before setting `targetFreq`, then clears the pending glide.
 
 **Stage 4+ optimization (if needed):** Custom C++ UGen `NearestFreq` at audio rate. Only if control latency becomes audible.
 
@@ -468,12 +477,16 @@ The target octave is local to the input. A guitar and a voice can instantiate th
 
 ### 6.5 Mutation algorithm (denominator + roughness, decentralised)
 
-Given set `S` (3 ≤ |S| ≤ 12, target 7) and parameters `randomness ∈ [0,1]`, `dissonanceBias ∈ [-1,1]`, `stepwiseBias ∈ [0,1]`:
+Given set `S` (3 ≤ |S| ≤ 12, target 7) and parameters `randomness ∈ [0,1]`, `dissonanceBias ∈ [-1,1]`, `stepwiseBias ∈ [0,1]`, `temperature ∈ [0,1]`, and batch width `changeCount ∈ [1, maxChanges]`:
 
 **Action selection:** add/remove/replace are weighted by distance from `targetSize`; no action is forced except when at a boundary (add below 3, remove/replace at 12). The set does not fill to 12.
 
+**Batch width:** `changeCount` selects how many sequential edits one trigger applies. `MutationEngine.mutate_many()` generates each edit against the evolving set, applies all of them, and rolls the engine back if any step fails. The bridge sends one final `/ji/freqset/update`, so a batch is one audible retune, not several intermediate sets. `maxChanges` is a constructor/CLI ceiling (default 3, maximum 12); the OSC change-count is clamped to it. Action policy still keeps the set at 3–12.
+
 **Candidate generation:**
 - For each current class `r` and each interval in a rational vocabulary, generate `foldOctave(r * q)`.
+- At `temperature = 0`, the vocabulary is the Stage 2 `INTERVAL_POOL` and rational neighbours use denominator limit 16.
+- Above 0, higher-limit intervals from `EXTENDED_INTERVAL_POOL` (primes 17, 19, 23, 29, 31) are admitted probabilistically, and the rational-neighbour denominator limit grows to 32 at `temperature = 1`.
 - Add rational-neighbour candidates derived from current denominators.
 - Filter existing classes, near-unisons (<15 cents from surviving classes), and, for stepwise, classes closer than 10 cents or farther than ±1.5 semitones from the reference.
 - If generation is empty, an emergency rational scan finds a fresh class. The engine never refuses to mutate.
@@ -486,14 +499,21 @@ The old fixed ten-ratio pool is no longer the universe; it remains one source of
 3. **Anchor term** (small): relation to the drone class.
 4. **Near-duplicate penalty** (small).
 
+Temperature relaxes the first three weights by `(1 - 0.5 * temperature)`; the near-duplicate penalty stays fixed. At `temperature = 0` the Stage 2 score is unchanged. The scoring denominator limit also grows with temperature.
+
 **Selection:** sort by score; sample with
 ```
+effectiveRandomness = randomness + temperature * (1 - randomness)
 weight[i] = exp(alpha * normalized_rank[i])
-alpha = -10 * (1 - randomness) + 10 * dissonanceBias
+alpha = -10 * (1 - effectiveRandomness) + 10 * dissonanceBias
 ```
-The best score is a bias, not a mandate. Positive dissonance bias favours rougher/more complex candidates; negative favours simpler ones. The engine does not converge to a minimum.
+The best score is a bias, not a mandate. Positive dissonance bias favours rougher/more complex candidates; negative favours simpler ones. At `temperature = 1` and `dissonanceBias = 0` every rank is equally likely; extended/high-limit classes can win. The engine does not converge to a minimum.
 
-**Removal:** weighted by roughness contribution, with the anchor's weight divided by 4. If the anchor is removed, re-anchor to the nearest surviving class.
+**Removal:** weighted by roughness contribution. The anchor's weight is multiplied by `anchorMobility`:
+- `0.0` — anchor never removed or replaced by a mutation; octave moves also avoid it.
+- `0.25` — default; the old 1/4 removal weight, so anchor shifts are rare.
+- `1.0` — same removal weight as any class; if removed, a random surviving class becomes the new anchor (no positional precedence).
+Below 1.0, re-anchoring goes to the class nearest the old anchor. The 220 Hz analysis reference does not drift; only the anchor class moves.
 
 **Octave/register:** separate from class mutation. `OctaveEvent` moves one class in the analysis voicing up/down an octave; `MutationEvent.new_octave` is a hint for MIDI/drone/analysis. Live autotune ignores these hints and uses the input octave.
 
@@ -501,8 +521,10 @@ The best score is a bias, not a mandate. Positive dissonance bias favours roughe
 ```
 MutationEvent(removedRatio, newRatio, glideTime, reason, newOctave, removedOctave)
 reason ∈ {"added", "removed", "replaced", "stepwise"}
+
+MutationBatch(events: tuple[MutationEvent, ...], glideTime)
 ```
-`newRatio=None` for pure removal; `removedRatio=None` for pure addition.
+`newRatio=None` for pure removal; `removedRatio=None` for pure addition. A single-change trigger still returns a `MutationEvent`; a batch trigger returns `MutationBatch` with the already-applied edits.
 
 **Manual trigger only.** No auto-clocking. MIDI mapping in Stage 8.
 
@@ -648,8 +670,10 @@ Same infrastructure as bass/drone but polyphonic. Notes derived from current set
 | `/ji/mutation/set_dissonance_bias` | float [-1,1] | Control → Bridge | 2 ✅ |
 | `/ji/mutation/set_stepwise_bias` | float [0,1] | Control → Bridge | 2 ✅ |
 | `/ji/mutation/set_glide_time` | float ≥0 | Control → Bridge | 2 ✅ |
-| `/ji/mutation/apply` | [int, float, float] | Bridge → Server | 3 |
-| `/ji/freqset/update` | float[] | Bridge → Server | 3 |
+| `/ji/mutation/set_change_count` | number (clamped 1..max_changes) | Control → Bridge | 3.5 🟡 |
+| `/ji/mutation/set_temperature` | float [0,1] | Control → Bridge | 3.5 🟡 |
+| `/ji/mutation/set_anchor_mobility` | float [0,1] | Control → Bridge | 3.5 🟡 |
+| `/ji/freqset/update` | [float fundamental, float glide_time, float ratio_1 … ratio_N] | Bridge → sclang | 3 ✅ |
 | `/ji/freqset/changed` | float[] | Bridge → UI | 9 |
 | `/ji/autotune/set` | [string, float] | Control → Server | 7 |
 | `/ji/loop/record` | int (index) | Control → Server | 4 |
@@ -671,6 +695,8 @@ Same infrastructure as bass/drone but polyphonic. Notes derived from current set
 | `/ji/event/loop` | [int, string] | Bridge → Visual | 10 |
 | `/ji/event/bass` | float (Hz) | Bridge → Visual | 10 |
 
+Stage 3 does **not** send `/ji/mutation/apply` or any message directly to scsynth. The complete set is sent on `/ji/freqset/update`; sclang applies it to the verified nearest-class lookup. A multi-edit batch sends one `/ji/freqset/update` with the final set and one glide time, not intermediate sets. Rows for later stages remain future work.
+
 ### 7.2 FrequencySet (control-layer object)
 
 ```python
@@ -685,7 +711,7 @@ Same infrastructure as bass/drone but polyphonic. Notes derived from current set
 }
 ```
 
-`analysisVoicing` is a representative class → octave map for scoring, not a global register constraint. Live input uses its own octave. Server view is an array of Hz values, octave-unfolded to a useful range, passed via `Buffer.setn`.
+`analysisVoicing` is a representative class → octave map for scoring, not a global register constraint. Live input uses its own octave. The bridge sends octave-reduced ratios plus fundamental and glide to sclang; sclang writes the Hz mirror via `Buffer.setn`. That mirror is not read by any SynthDef in Stage 3.
 
 The runtime event shapes are:
 
@@ -697,6 +723,11 @@ MutationEvent(
     reason="added" | "removed" | "replaced" | "stepwise",
     new_octave=None | int,
     removed_octave=None | int,
+)
+
+MutationBatch(
+    events=tuple[MutationEvent, ...],  # already applied
+    glide_time=float,
 )
 
 OctaveEvent(
@@ -770,18 +801,40 @@ OctaveEvent(
 
 **Not in Stage 2:** audio, scsynth, OSC bridge, per-voice registers, MIDI, UI.
 
-### 8.4 Stage 3 — Bridge (Mutation → Autotune)
+### 8.4 Stage 3 — Mutation → Autotune Bridge ✅ COMPLETE
 
-**Goal:** Frequency set passed to server as Buffer. Triggering mutation produces audible glide/jump on sustained note.
+**Goal:** A held live input retunes on the next lookup tick when a mutation changes its nearest class, with the event's glide time.
 
-**Deliverables:** `control/ji_bridge.py`, `synthdefs/ji_freqset_receiver.scd`, `test_bridge.scd`.
+**Architecture:** Python owns the MutationEngine and sends the complete octave-reduced class set, fundamental, and glide time to sclang on `/ji/freqset/update`. sclang keeps the verified Stage 1 nearest-class lookup, updates `~ji_ji_set_ratios` / `~ji_ji_fundamental`, stores the pending glide, and writes a 12-slot Hz Buffer mirror (not read by any SynthDef in Stage 3). No server-side nearest-class SynthDef is added. Live autotune uses the input's own octave; `new_octave` is not used.
 
-**Acceptance test:**
-1. Sustained note snaps to set.
-2. Mutation produces glide/jump to new pitch.
-3. Rapid mutations cause no zipper noise or dropouts.
-4. Set size stays between 3 and 12 throughout; it is not forced to 12.
-5. A removed class retunes the held input to the nearest surviving class in the input's octave.
+**Deliverables:** `control/ji_bridge.py`, `control/osc_server.py` (public trigger/octave/glide API and callbacks), `test_bridge.scd`, `README_stage3.md`. `synthdefs/ji_freqset_receiver.scd` is deliberately not created; that old server-lookup deliverable is deferred/superseded.
+
+**Acceptance test:** start `startup.scd`, evaluate `test_bridge.scd`, then run `uv run --with python-osc python control/ji_bridge.py --interactive --glide-time 0.15`; hold a note and press `m` until its class is removed/replaced.
+
+1. A sustained note snaps to the current set.
+2. A mutation retunes it without replay.
+3. The target changes to a member of the new set and stays in the input's octave.
+4. The transition follows the event's glide time.
+5. Rapid mutations produce no clicks, dropouts, or zipper noise.
+6. Set size stays between 3 and 12.
+7. `o` moves only the analysis voicing, not the class set or live target.
+
+**Status:** accepted by the project owner — audio and Python↔sclang communication are working. The agent could not hear audio; owner acceptance is the authority.
+
+### 8.4.1 Stage 3 mutation-control extension 🟡 IMPLEMENTED — AWAITING HUMAN AUDIO ACCEPTANCE
+
+**Goal:** Make the mutation gesture width, harmonic adventurousness, and anchor freedom controllable without changing the accepted audio path.
+
+**Controls:**
+- `change_count` / `max_changes` (`1..12`, default max 3): number of sequential class edits per trigger. `MutationEngine.mutate_many()` applies them atomically and returns a `MutationBatch`; the bridge sends one final `/ji/freqset/update`.
+- `temperature` (`0..1`): at 0 the Stage 2 palette/scoring is unchanged; above 0, higher-limit intervals from `EXTENDED_INTERVAL_POOL`, a larger rational-neighbour denominator limit, relaxed complexity/roughness/anchor weights, and flatter rank selection are enabled. At 1 with `dissonance_bias=0`, all extended intervals are available and rank selection is uniform.
+- `anchor_mobility` (`0..1`): 0 = the anchor is never removed/replaced by a mutation; 0.25 = old 1/4 removal weight; 1 = the same removal weight as any class and random re-anchoring among survivors. The 220 Hz analysis reference does not drift; the anchor class moves.
+
+**OSC:** `/ji/mutation/set_change_count`, `/ji/mutation/set_temperature`, `/ji/mutation/set_anchor_mobility` (plus the existing Stage 2 addresses).
+
+**CLI:** `--change-count`, `--max-changes`, `--temperature`, `--anchor-mobility`; interactive `c`, `t`, `a`.
+
+**Harness:** `uv run --with python-osc python test_mutation_controls.py` prints `ALL CONTROL TESTS PASSED`. It covers batch width, temperature palette expansion, anchor mobility 0/1, server clamping/batch callbacks, and the bridge's one-update-per-batch behaviour. Python-level acceptance passed; audible acceptance of the new controls is still for the human.
 
 ### 8.5 Stage 4 — Dual Channel + Raw Looper
 
@@ -904,8 +957,9 @@ OctaveEvent(
 | 0 | ✅ Complete | Environment verified. Tartini works. 2ch I/O passes. |
 | 1 | ✅ Complete | Autotune sounds great. retuneTime works. CPU < 20%. |
 | 2 | ✅ Complete | Decentralised mutation engine + OSC listener. Harness passes. |
-| 3 | ⬜ Pending | Depends on Stage 2. |
-| 4 | ⬜ Pending | Depends on Stage 3 pass. |
+| 3 | ✅ Complete | Bridge accepted by owner: audio and Python↔sclang working. |
+| 3.5 | 🟡 Implemented — awaiting audio acceptance | Mutation batch width, temperature, anchor mobility. Python harness passes. |
+| 4 | ⬜ Pending | Depends on Stage 3 / 3.5 acceptance. |
 | 5 | ⬜ Pending | Ableton routing. Requires BlackHole install. |
 | 6 | ⬜ Pending | MPE + bass/drone. Requires IAC Driver enabled, calibration. |
 | 7 | ⬜ Optional | SC-side VST hosting. May be skipped if Ableton handles VSTs. |
@@ -939,8 +993,21 @@ OctaveEvent(
 - The anchor is retained far more often than ordinary classes (observed ~4.5% removal rate versus uniform), and re-anchors when removed.
 - `ALL TESTS PASSED` under CPython 3.12 WASM; native `uv` command provided.
 
+**What Stage 3 verified (owner accepted):**
+- Python bridge sends the full set plus glide at startup and after every mutation.
+- sclang validates the update, applies the set, writes the 12-slot Hz mirror, and reuses the Stage 1 lookup.
+- A removed/replaced held class retunes on the next 20 Hz lookup tick, with `retuneTime = max(glide, 0.005)` set before `targetFreq`.
+- Octave events and `new_octave` remain analysis-only; live input uses its own octave.
+- Owner reports audio and Python↔sclang communication working.
+
+**What Stage 3.5 implements (awaiting audio acceptance):**
+- `change_count`/`max_changes` batches (default max 3), applied atomically, one final set update.
+- `temperature` broadening the palette/relaxing scoring and flattening rank selection.
+- `anchor_mobility` 0..1: anchor fixed, old 1/4 default, or no precedence with random re-anchoring.
+- `test_mutation_controls.py` passes under CPython 3.12/Pyodide.
+
 **What is still unverified:**
-- Native macOS `python-osc` import/threading (stub-tested in the isolated workspace).
+- **Stage 3.5 audible acceptance** (batch width, temperature, anchor mobility).
 - Actual per-voice octave allocation and audio retuning (Stage 3/4).
 - Ableton audio routing (Stage 5).
 - IAC Driver MIDI output (Stage 6).
@@ -1166,6 +1233,8 @@ Only after 1–4 are ruled out should you attribute failure to the agent.
 | 4.0 | — | Complete archival reference. Debugging playbook, agent workflow. New-session ready. |
 | 5.0 | 2026-10-28 | Stage 0 and Stage 1 complete. **Added Ableton audio integration (Stage 5) and MPE MIDI + bass/drone (Stage 6).** Stages 5–8 renumbered to 7–10. VST stage becomes optional. BlackHole, IAC Driver, MPE calibration, bass/drone spec added. |
 | 5.1 | 2026-10-28 | **Stage 2 complete.** Mutation redesigned around a decentralised, continuously drifting field: target size 7 (max 12), octave-equivalent classes, global classes vs local registers, dynamic candidates, denominator relatedness primary + Sethares roughness secondary, stochastic rank selection, protected anchor, separate octave events, no dead-ends. Updated Python setup to `uv` (3.11+, no system Python required; numpy optional). Added `README_stage2.md`, updated OSC map, status, file tree, tests, and design rationale. |
+| 5.2 | 2026-10-28 | **Stage 3 implemented — awaiting human audio acceptance.** Added `control/ji_bridge.py` (`/ji/freqset/update` with fundamental, glide, full ratio set), `test_bridge.scd` (OSC receiver, set update, 12-slot Hz mirror, Stage 1 nearest-class lookup with pending glide), and `README_stage3.md`. `control/osc_server.py` gained public `trigger()` / `octave()` / `set_glide_time()` and post-apply callbacks. The old `synthdefs/ji_freqset_receiver.scd` server-side lookup is deferred/superseded. **Audio not verified in the agent environment; Stage 3 is not marked complete.** |
+| 5.3 | 2026-10-28 | **Stage 3 bridge accepted by owner; mutation-control extension added.** `mutation.py` gained `MutationBatch`/`mutate_many()` (atomic multi-edit batches), `max_changes`, `temperature` (extended higher-limit palette, relaxed scoring, flattened selection), and `anchor_mobility` (0 = fixed anchor, 0.25 = old weight, 1 = no precedence and random re-anchoring). `osc_server.py` gained change-count/temperature/anchor-mobility setters and batch callbacks; `ji_bridge.py` gained CLI/interactive controls and one-update-per-batch handling. Added `test_mutation_controls.py` and `README_stage3.md` §12. **Stage 3.5 audible acceptance is still pending.** |
 
 ---
 
@@ -1221,10 +1290,19 @@ In Stage 2 this is a **secondary texture term**. The primary mutation score is d
 // Read control bus
 ~ji_tartini_freq1.get;
 
-// OSCdef for incoming messages
+// Stage 3 OSCdef: fundamental, glide, then 1..12 octave-reduced ratios
 OSCdef(\ji_freqset_update, { |msg|
-    var freqs = msg[1..];
-    ~ji_buf_freqset.setn(0, freqs);
+    var fundamental = msg[1].asFloat;
+    var glide = msg[2].asFloat;
+    var ratios = if (msg.size > 3) { msg.copyRange(3, msg.size - 1) } { [] };
+    if (ratios.size >= 1 and: { ratios.size <= 12 }) {
+        ~ji_ji_fundamental = fundamental;
+        ~ji_ji_set_ratios = ratios;
+        ~ji_pending_glide = glide;
+        ~ji_buf_freqset.setn(0,
+            (ratios.collect { |r| r * fundamental })
+            ++ Array.fill(12 - ratios.size, { 0.0 }));
+    };
 }, '/ji/freqset/update');
 
 // Configure Aggregate Device output (Stage 5)

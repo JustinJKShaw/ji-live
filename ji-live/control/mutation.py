@@ -14,15 +14,18 @@ Mutation is intentionally probabilistic and relational:
 2. Candidates are scored by (a) denominator complexity of their ratios to all
    current classes, (b) Sethares roughness of the actual voiced frequencies,
    and (c) a small anchor term and near-duplicate penalty.
-3. Candidates are sampled by rank with a temperature derived from
-   ``randomness`` and ``dissonance_bias``.  The best score is a bias, not a
-   mandate.
+3. Candidates are sampled by rank with ``randomness``, ``dissonance_bias`` and
+   an explicit ``temperature``.  The best score is a bias, not a mandate.
 4. The set size breathes around ``target_size`` (default 7), within
    ``min_size`` and ``max_size`` (12).  Add, remove and replace actions are all
    possible.  The engine never refuses to mutate.
-5. One class is designated the anchor/drone.  It is less likely to be removed,
-   but it can move, and if it is removed a new anchor is chosen from the
-   surviving set.
+5. One class is designated the anchor/drone.  ``anchor_mobility`` controls how
+   likely it is to leave the set: 0.0 = never, 1.0 = the same removal weight as
+   any other class.  At 1.0 the anchor is also re-chosen freely when removed.
+   The 220 Hz analysis reference itself does not drift.
+6. One trigger can contain several edits (``MutationBatch``).  ``max_changes``
+   caps the batch width.  ``temperature`` broadens the candidate vocabulary and
+   flattens rank selection, allowing more complex/rougher intervals.
 
 Roughness model
 ---------------
@@ -53,7 +56,9 @@ from typing import Iterable, Sequence
 MAX_SET_SIZE = 12
 DEFAULT_TARGET_SIZE = 7
 DEFAULT_MIN_SIZE = 3
-DEFAULT_ANCHOR_WEIGHT = 4.0
+DEFAULT_ANCHOR_MOBILITY = 0.25   # equivalent to the old 1/4 removal weight
+DEFAULT_ANCHOR_WEIGHT = 4.0      # legacy inverse view of the default mobility
+DEFAULT_MAX_CHANGES = 3
 MIN_CLASS_SEPARATION_CENTS = 15.0
 MIN_STEPWISE_MOVE_CENTS = 10.0
 
@@ -62,6 +67,7 @@ STEPWISE_HIGH = 1.091
 _FLOAT_TOLERANCE = 1e-12
 _CLASS_DECIMALS = 12
 _DENOMINATOR_LIMIT = 16
+_TEMPERATURE_DENOMINATOR_LIMIT = 32
 _DENOMINATOR_ERROR = 0.03
 _INVALID_DENOMINATOR = 32.0
 
@@ -102,6 +108,49 @@ INTERVAL_POOL: tuple[float, ...] = (
     13.0 / 7.0,
     15.0 / 7.0,
     16.0 / 7.0,
+)
+
+#: Higher-limit intervals unlocked by temperature.  These are deliberately
+#: stranger than INTERVAL_POOL: primes 17, 19, 23, 29 and 31 are represented.
+#: At temperature 0 none are used, so the Stage 2 palette is unchanged.
+EXTENDED_INTERVAL_POOL: tuple[float, ...] = (
+    17.0 / 16.0,
+    19.0 / 16.0,
+    21.0 / 16.0,
+    23.0 / 16.0,
+    25.0 / 16.0,
+    27.0 / 16.0,
+    29.0 / 16.0,
+    31.0 / 16.0,
+    17.0 / 12.0,
+    19.0 / 12.0,
+    23.0 / 12.0,
+    25.0 / 12.0,
+    11.0 / 7.0,
+    13.0 / 7.0,
+    15.0 / 7.0,
+    16.0 / 7.0,
+    17.0 / 10.0,
+    19.0 / 10.0,
+    21.0 / 10.0,
+    23.0 / 10.0,
+    11.0 / 6.0,
+    13.0 / 6.0,
+    17.0 / 6.0,
+    19.0 / 6.0,
+    13.0 / 5.0,
+    17.0 / 5.0,
+    19.0 / 5.0,
+    17.0 / 9.0,
+    19.0 / 9.0,
+    23.0 / 9.0,
+    19.0 / 8.0,
+    21.0 / 8.0,
+    23.0 / 8.0,
+    25.0 / 8.0,
+    27.0 / 8.0,
+    29.0 / 8.0,
+    31.0 / 8.0,
 )
 
 
@@ -154,6 +203,23 @@ class MutationEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class MutationBatch:
+    """Several ordered edits applied by one trigger.
+
+    ``events`` are already applied when a batch is returned by
+    :meth:`MutationEngine.mutate_many`.  The batch carries one glide time, so
+    the bridge sends one final FrequencySet instead of intermediate sets.
+    """
+
+    events: tuple[MutationEvent, ...]
+    glide_time: float
+
+    @property
+    def count(self) -> int:
+        return len(self.events)
+
+
+@dataclass(frozen=True, slots=True)
 class OctaveEvent:
     """A voicing-only move: one class changes register by one octave."""
 
@@ -180,6 +246,11 @@ class MutationEngine:
         octave_min/octave_max: Allowed voicing octaves relative to the
             fundamental.  Must include 0.
         seed: Optional RNG seed for reproducible runs.
+        max_changes: Maximum edits in one :meth:`mutate_many` batch (default
+            3; the OSC/bridge change-count control is clamped to this).
+        anchor_mobility: 0..1.  Relative removal weight of the anchor class:
+            0.0 = never removed by a mutation, 0.25 = old 1/4 weight,
+            1.0 = same weight as any other class, and free re-anchoring.
     """
 
     def __init__(
@@ -193,6 +264,8 @@ class MutationEngine:
         octave_min: int = -1,
         octave_max: int = 2,
         seed: int | None = None,
+        max_changes: int = DEFAULT_MAX_CHANGES,
+        anchor_mobility: float = DEFAULT_ANCHOR_MOBILITY,
     ) -> None:
         self.fundamental = _as_positive_float(fundamental, "fundamental")
 
@@ -208,6 +281,13 @@ class MutationEngine:
             raise TypeError("min_size must be an integer")
         if not 1 <= min_size <= target_size:
             raise ValueError("min_size must be between 1 and target_size")
+        if isinstance(max_changes, bool) or not isinstance(max_changes, int):
+            raise TypeError("max_changes must be an integer")
+        if not 1 <= max_changes <= MAX_SET_SIZE:
+            raise ValueError(f"max_changes must be between 1 and {MAX_SET_SIZE}")
+        anchor_mobility = _as_bounded_float(
+            anchor_mobility, "anchor_mobility", 0.0, 1.0
+        )
 
         if isinstance(octave_min, bool) or not isinstance(octave_min, int):
             raise TypeError("octave_min must be an integer")
@@ -221,9 +301,10 @@ class MutationEngine:
         self.target_size = target_size
         self.max_size = max_size
         self.min_size = min_size
+        self.max_changes = max_changes
         self.octave_min = octave_min
         self.octave_max = octave_max
-        self.anchor_weight = DEFAULT_ANCHOR_WEIGHT
+        self._anchor_mobility = anchor_mobility
 
         self._rng = random.Random(seed)
         self._ratios: list[float] = []
@@ -275,6 +356,31 @@ class MutationEngine:
         """The protected drone class, if any."""
 
         return self._anchor_ratio
+
+    @property
+    def anchor_mobility(self) -> float:
+        """Relative removal weight of the anchor class (0.0 .. 1.0)."""
+
+        return self._anchor_mobility
+
+    @property
+    def anchor_weight(self) -> float:
+        """Legacy inverse view: 4.0 at the default mobility of 0.25."""
+
+        if self._anchor_mobility <= 0.0:
+            return math.inf
+        return 1.0 / self._anchor_mobility
+
+    def set_anchor_mobility(self, value: float) -> None:
+        """Set how freely the anchor class may leave the set.
+
+        ``0.0`` makes the anchor unremovable by mutation; ``1.0`` gives it the
+        same removal weight as every other class and re-anchors freely.
+        """
+
+        self._anchor_mobility = _as_bounded_float(
+            value, "anchor_mobility", 0.0, 1.0
+        )
 
     @property
     def last_removed_ratio(self) -> float | None:
@@ -342,11 +448,17 @@ class MutationEngine:
         dissonance_bias: float = 0.0,
         stepwise_bias: float = 0.25,
         glide_time: float = 0.0,
+        temperature: float = 0.0,
     ) -> MutationEvent:
         """Propose one add, remove, or replace without changing state.
 
         The method never raises because it ran out of palette.  Candidate
         classes are regenerated from the current field every time.
+
+        ``temperature`` (0..1) unlocks higher-limit intervals and flattens the
+        rank selection.  At 0.0 the Stage 2 palette/scoring is unchanged; at
+        1.0 extended intervals are available and every rank is equally likely
+        when ``dissonance_bias`` is 0.
         """
 
         randomness = _as_bounded_float(randomness, "randomness", 0.0, 1.0)
@@ -355,6 +467,7 @@ class MutationEngine:
         )
         stepwise_bias = _as_bounded_float(stepwise_bias, "stepwise_bias", 0.0, 1.0)
         glide_time = _as_nonnegative_float(glide_time, "glide_time")
+        temperature = _as_bounded_float(temperature, "temperature", 0.0, 1.0)
 
         current = list(self._ratios)
         if not current:
@@ -393,7 +506,7 @@ class MutationEngine:
             )
 
         remaining = [ratio for ratio in current if ratio != removed]
-        generated = self._generate_candidates(current)
+        generated = self._generate_candidates(current, temperature)
         candidates = generated
         if action == "replace":
             step_reference = removed
@@ -440,12 +553,15 @@ class MutationEngine:
                 octave = removed_octave if removed_octave is not None else 0
             else:
                 octave = self._choose_new_octave(candidate, current)
-            score = self._candidate_score(candidate, remaining, octave)
+            score = self._candidate_score(
+                candidate, remaining, octave, temperature
+            )
             scored.append((score, candidate, octave))
         scored.sort(key=lambda item: item[0])
 
+        effective_randomness = randomness + temperature * (1.0 - randomness)
         _, selected, selected_octave = self._weighted_rank_choice(
-            scored, randomness, dissonance_bias
+            scored, effective_randomness, dissonance_bias
         )
 
         if action == "replace":
@@ -461,6 +577,55 @@ class MutationEngine:
             new_octave=selected_octave,
             removed_octave=removed_octave,
         )
+
+    def mutate_many(
+        self,
+        count: int = 1,
+        randomness: float = 0.55,
+        dissonance_bias: float = 0.0,
+        stepwise_bias: float = 0.25,
+        glide_time: float = 0.0,
+        temperature: float = 0.0,
+    ) -> MutationBatch:
+        """Apply ``count`` sequential edits and return them as one batch.
+
+        The edits are generated against the evolving set, so later edits see
+        earlier ones.  If any step fails, the engine is rolled back to its
+        starting state and the exception is re-raised.  ``count`` is capped by
+        ``max_changes``; action policy still keeps the set within 3..12.
+        """
+
+        if isinstance(count, bool) or not isinstance(count, int):
+            raise TypeError("count must be an integer")
+        if not 1 <= count <= self.max_changes:
+            raise ValueError(f"count must be between 1 and {self.max_changes}")
+
+        randomness = _as_bounded_float(randomness, "randomness", 0.0, 1.0)
+        dissonance_bias = _as_bounded_float(
+            dissonance_bias, "dissonance_bias", -1.0, 1.0
+        )
+        stepwise_bias = _as_bounded_float(stepwise_bias, "stepwise_bias", 0.0, 1.0)
+        glide_time = _as_nonnegative_float(glide_time, "glide_time")
+        temperature = _as_bounded_float(temperature, "temperature", 0.0, 1.0)
+
+        snapshot = self._snapshot()
+        events: list[MutationEvent] = []
+        try:
+            for _ in range(count):
+                event = self.propose_mutation(
+                    randomness=randomness,
+                    dissonance_bias=dissonance_bias,
+                    stepwise_bias=stepwise_bias,
+                    glide_time=glide_time,
+                    temperature=temperature,
+                )
+                self.apply(event)
+                events.append(event)
+        except Exception:
+            self._restore(snapshot)
+            raise
+
+        return MutationBatch(tuple(events), glide_time)
 
     def apply(self, event: MutationEvent) -> None:
         """Commit a mutation event to the class set and voicing."""
@@ -537,8 +702,9 @@ class MutationEngine:
     ) -> OctaveEvent:
         """Propose moving one class up or down one octave.
 
-        This does not alter the class set or its size.  The anchor can move,
-        but is less likely to be chosen than an ordinary class.
+        This does not alter the class set or its size.  ``anchor_mobility``
+        controls how likely the anchor is to be chosen: at 0.0 it is never
+        moved, at 1.0 it has no precedence.
         """
 
         glide_time = _as_nonnegative_float(glide_time, "glide_time")
@@ -560,9 +726,13 @@ class MutationEngine:
             ratios = [chosen]
         else:
             weights = [
-                1.0 / self.anchor_weight if r == self._anchor_ratio else 1.0
+                self._anchor_mobility if r == self._anchor_ratio else 1.0
                 for r in self._ratios
             ]
+            if sum(weights) <= 0.0:
+                # Only the anchor exists and mobility is 0: there is no other
+                # class to move, so allow the anchor rather than dead-ending.
+                weights = [1.0 for _ in self._ratios]
             chosen = self._rng.choices(self._ratios, weights=weights, k=1)[0]
             ratios = [chosen] + [r for r in self._ratios if r != chosen]
 
@@ -648,7 +818,7 @@ class MutationEngine:
         return self._rng.choices(actions, weights=weights, k=1)[0]
 
     def _choose_removal(self, current: Sequence[float]) -> float:
-        """Choose a class to remove, protecting the anchor but not freezing it."""
+        """Choose a class to remove, weighted by ``anchor_mobility``."""
 
         frequencies = {
             ratio: self._frequency(ratio, self._octaves[ratio])
@@ -663,16 +833,24 @@ class MutationEngine:
             )
             weight = 1.0 + contribution
             if ratio == self._anchor_ratio:
-                weight /= self.anchor_weight
+                weight *= self._anchor_mobility
             weights.append(weight)
+        if sum(weights) <= 0.0:
+            # Only the anchor is present and mobility is 0; allow it rather
+            # than raising from random.choices.
+            weights = [1.0 for _ in current]
         return self._rng.choices(list(current), weights=weights, k=1)[0]
 
-    def _generate_candidates(self, current: Sequence[float]) -> list[float]:
+    def _generate_candidates(
+        self, current: Sequence[float], temperature: float = 0.0
+    ) -> list[float]:
         """Generate new classes from the current field.
 
-        The result is deliberately larger than the final palette: the scoring
-        stage decides what is useful.  A final rational scan guarantees a
-        non-empty result.
+        At ``temperature`` 0 this is the Stage 2 palette.  Above 0, some
+        higher-limit intervals are admitted (all of them at 1.0) and rational
+        neighbours are scanned with a higher denominator limit.  The result is
+        deliberately larger than the final palette; scoring decides what is
+        useful, and a final rational scan guarantees a non-empty result.
         """
 
         current_set = set(current)
@@ -686,12 +864,19 @@ class MutationEngine:
         for base in current:
             for interval in INTERVAL_POOL:
                 add(base * interval)
+            if temperature > 0.0:
+                for interval in EXTENDED_INTERVAL_POOL:
+                    if temperature >= 1.0 or self._rng.random() < temperature:
+                        add(base * interval)
 
+        denominator_limit = _DENOMINATOR_LIMIT + int(
+            round(temperature * (_TEMPERATURE_DENOMINATOR_LIMIT - _DENOMINATOR_LIMIT))
+        )
         seeds = list(current)
         if self._anchor_ratio is not None and self._anchor_ratio not in seeds:
             seeds.append(self._anchor_ratio)
         for base in seeds:
-            fraction = Fraction(base).limit_denominator(_DENOMINATOR_LIMIT)
+            fraction = Fraction(base).limit_denominator(denominator_limit)
             for delta in (-2, -1, 1, 2):
                 numerator = fraction.numerator + delta * fraction.denominator
                 if numerator > 0:
@@ -706,10 +891,14 @@ class MutationEngine:
         candidate: float,
         other_ratios: Sequence[float],
         octave: int,
+        temperature: float = 0.0,
     ) -> float:
+        denominator_limit = _DENOMINATOR_LIMIT + int(
+            round(temperature * (_TEMPERATURE_DENOMINATOR_LIMIT - _DENOMINATOR_LIMIT))
+        )
         if other_ratios:
             denominator = sum(
-                self._relative_denominator(candidate, other)
+                self._relative_denominator(candidate, other, denominator_limit)
                 for other in other_ratios
             ) / len(other_ratios)
             novelty = min(
@@ -723,7 +912,7 @@ class MutationEngine:
         anchor_term = 0.0
         if self._anchor_ratio is not None:
             anchor_term = self._relative_denominator(
-                candidate, self._anchor_ratio
+                candidate, self._anchor_ratio, denominator_limit
             )
 
         candidate_frequency = self._frequency(candidate, octave)
@@ -737,7 +926,17 @@ class MutationEngine:
         close_penalty = max(0.0, 25.0 - novelty) / 25.0
 
         # Denominator is primary; roughness is texture, not the objective.
-        return denominator + 0.35 * rough + 0.15 * anchor_term + 0.35 * close_penalty
+        # Temperature relaxes the complexity/roughness/anchor penalties so
+        # stranger intervals can rank higher before selection is flattened.
+        complexity_weight = 1.0 - 0.5 * temperature
+        roughness_weight = 0.35 * (1.0 - 0.5 * temperature)
+        anchor_weight = 0.15 * (1.0 - 0.5 * temperature)
+        return (
+            complexity_weight * denominator
+            + roughness_weight * rough
+            + anchor_weight * anchor_term
+            + 0.35 * close_penalty
+        )
 
     def _weighted_rank_choice(
         self,
@@ -790,6 +989,10 @@ class MutationEngine:
             return None
         if self._anchor_ratio in self._ratios:
             return self._anchor_ratio
+        if self._anchor_mobility >= 1.0:
+            # Maximum mobility: the new anchor is not biased toward the old
+            # one; any surviving class can become the drone.
+            return self._rng.choice(self._ratios)
         if old_anchor is not None:
             return min(
                 self._ratios,
@@ -798,6 +1001,26 @@ class MutationEngine:
         if 1.0 in self._ratios:
             return 1.0
         return self._ratios[0]
+
+    def _snapshot(
+        self,
+    ) -> tuple[list[float], dict[float, int], float | None, float | None]:
+        return (
+            list(self._ratios),
+            dict(self._octaves),
+            self._anchor_ratio,
+            self._last_removed_ratio,
+        )
+
+    def _restore(
+        self,
+        snapshot: tuple[list[float], dict[float, int], float | None, float | None],
+    ) -> None:
+        ratios, octaves, anchor, last_removed = snapshot
+        self._ratios = list(ratios)
+        self._octaves = dict(octaves)
+        self._anchor_ratio = anchor
+        self._last_removed_ratio = last_removed
 
     def _emergency_candidate(self, current: Sequence[float]) -> float:
         current_set = set(current)
@@ -812,9 +1035,13 @@ class MutationEngine:
         return float(ratio * self.fundamental * (2.0 ** octave))
 
     @staticmethod
-    def _relative_denominator(first: float, second: float) -> float:
+    def _relative_denominator(
+        first: float,
+        second: float,
+        limit: int = _DENOMINATOR_LIMIT,
+    ) -> float:
         relative = max(first / second, second / first)
-        fraction = Fraction(relative).limit_denominator(_DENOMINATOR_LIMIT)
+        fraction = Fraction(relative).limit_denominator(limit)
         error = abs(relative - float(fraction))
         if error > _DENOMINATOR_ERROR:
             return _INVALID_DENOMINATOR

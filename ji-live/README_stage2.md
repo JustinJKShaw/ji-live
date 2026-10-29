@@ -8,6 +8,10 @@ autotune/frequency bridge.
 Stage 1's static seven-note ratio set still snaps input to the nearest member.
 Stage 2 makes that set move.
 
+> **Post-Stage-2 extension:** `mutation.py` now also supports multi-edit
+> batches, temperature, and anchor mobility. Defaults preserve the behaviour
+> described in this file. See `README_stage3.md` §12 for the controls.
+
 ---
 
 ## 1. What a mutation is
@@ -196,10 +200,12 @@ The set can therefore breathe rather than filling to its maximum.
 
 ### Anchor
 
-The anchor is one current class. Removal weight is divided by
-`anchor_weight` (4.0). If the anchor is removed, the engine re-anchors to the
-class nearest the old anchor. The anchor is therefore grounding without being
-immovable.
+The anchor is one current class. Removal weight is multiplied by
+`anchor_mobility` (default 0.25, equivalent to the old 1/4 `anchor_weight`).
+At 0.0 the anchor is never removed; at 1.0 it has the same removal weight as
+any other class and re-anchors freely from the survivors. At the default it
+re-anchors to the class nearest the old anchor. The anchor is therefore
+grounding without being immovable.
 
 ---
 
