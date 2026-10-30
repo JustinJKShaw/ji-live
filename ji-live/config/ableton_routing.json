@@ -1,0 +1,67 @@
+{
+  "sample_rate": 48000,
+  "block_size": 64,
+  "in_device": "MiniFuse 2",
+  "out_device": "BlackHole 16ch",
+  "sc_input_channels": 2,
+  "sc_output_channels": 16,
+  "aggregate_device_required": false,
+  "design_doc_reference": "design_doc_10.28.10.50 §4.2 (audio channel mapping)",
+  "notes": [
+    "SC output channel numbers are 0-based bus indices; Ableton input channels are 1-based hardware channels.",
+    "SC bus 0/1 is BlackHole input 1/2 in Ableton, bus 2/3 is input 3/4, and so on.",
+    "Stage 5 verifies the 16-channel infrastructure. Stage 4 live/loop audio stays on SC bus 0/1 (Ableton track 1).",
+    "Pairs 2-5 (tracks 2-5) are reserved for per-loop routing in Stage 8; they are not produced by Stage 4 yet.",
+    "Track 6 is reserved for the Stage 8 granular FX bus; tracks 7-8 are reserved."
+  ],
+  "pairs": [
+    {
+      "ableton_track": 1,
+      "sc_channels": [0, 1],
+      "ableton_input_channels": [1, 2],
+      "content": "live autotuned stereo mix (Stage 4 current audio)"
+    },
+    {
+      "ableton_track": 2,
+      "sc_channels": [2, 3],
+      "ableton_input_channels": [3, 4],
+      "content": "Loop 1 (reserved for Stage 8)"
+    },
+    {
+      "ableton_track": 3,
+      "sc_channels": [4, 5],
+      "ableton_input_channels": [5, 6],
+      "content": "Loop 2 (reserved for Stage 8)"
+    },
+    {
+      "ableton_track": 4,
+      "sc_channels": [6, 7],
+      "ableton_input_channels": [7, 8],
+      "content": "Loop 3 (reserved for Stage 8)"
+    },
+    {
+      "ableton_track": 5,
+      "sc_channels": [8, 9],
+      "ableton_input_channels": [9, 10],
+      "content": "Loop 4 (reserved for Stage 8)"
+    },
+    {
+      "ableton_track": 6,
+      "sc_channels": [10, 11],
+      "ableton_input_channels": [11, 12],
+      "content": "Granular FX (Stage 8, reserved)"
+    },
+    {
+      "ableton_track": 7,
+      "sc_channels": [12, 13],
+      "ableton_input_channels": [13, 14],
+      "content": "dry/diagnostic (reserved)"
+    },
+    {
+      "ableton_track": 8,
+      "sc_channels": [14, 15],
+      "ableton_input_channels": [15, 16],
+      "content": "reserved"
+    }
+  ]
+}

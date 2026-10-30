@@ -1,6 +1,6 @@
 # JI Live — Complete Design & Implementation Reference
 
-**Version 5.4 · Archival / New-Session Ready**
+**Version 5.7 · Archival / New-Session Ready**
 **Purpose:** If a new session (human or AI) opens this document with no prior context, they must be able to understand the project, current state, and how to proceed without asking questions.
 
 **Table of Contents**
@@ -29,9 +29,9 @@
 
 **Who it is for:** An improvising musician (the project owner) who wants harmonic constraint without losing spontaneity, working in an electroacoustic idiom where digital timbre manipulation is part of the aesthetic.
 
-**What is done:** Stage 0 (server skeleton, 2-channel I/O, Tartini pitch tracking verification), Stage 1 (static autotune to a hardcoded JI set, single channel), Stage 2 (decentralised pure-Python mutation engine, no audio), and Stage 3 (mutation → autotune bridge) are complete and accepted by the project owner (audio and Python↔sclang communication working). Stage 4 (dual-channel autotune + raw looper) is implemented in sclang/SynthDefs and awaiting human audio acceptance.
+**What is done:** Stage 0 (server skeleton, 2-channel I/O, Tartini pitch tracking verification), Stage 1 (static autotune to a hardcoded JI set, single channel), Stage 2 (decentralised pure-Python mutation engine, no audio), and Stage 3 (mutation → autotune bridge) are complete and accepted by the project owner (audio and Python↔sclang communication working). Stage 4 (dual-channel autotune + raw looper) is implemented in sclang/SynthDefs; its audio acceptance is deferred to the Stage 5 BlackHole → Ableton monitoring path.
 
-**What is being built:** human audio acceptance of the Stage 3 mutation-control extension (batch width, temperature, anchor mobility) and of Stage 4 (two live channels + raw loops). Stage 5 (Ableton audio routing) follows.
+**What is built and awaiting listening:** Stage 5 (BlackHole 16-channel output + Ableton audio routing) is implemented: MiniFuse 2 as the two-channel input, BlackHole 16ch as the 16-channel output, 2 in / 16 out, `test_ableton_routing.scd`, and the Ableton channel map. Stage 5.5 adds `test_live_rig.scd`: two autotuned live inputs plus two loop voices on SC 0/1/2/3, with the Python mutation bridge. The owner reports the 8-pair Ableton routing test works; Stage 3.5/4/5/5.5 audio acceptance remains pending the live listening test. Stage 3.5 Python controls remain accepted at the Python level.
 
 **Core hypothesis:** SuperCollider's `scsynth` is the correct audio backend for pitch tracking, pitch shifting, looping, and granular processing. Ableton Live is the correct downstream host for VST/AU synths and effects, final mixing, and MPE target instruments. The two communicate via a virtual audio device (BlackHole) for audio and IAC Driver for MIDI.
 
@@ -125,15 +125,15 @@ The project owner uses Ableton Live and wants:
 
 Ableton dramatically reduces the SC-side work: SC no longer needs to host VSTs (Stage 7 becomes optional), and MIDI synths are provided by Ableton rather than built in SC.
 
-**Trade-off:** Routing complexity (virtual audio + Aggregate Device + MIDI IAC). This is infrastructure work, not DSP work, and is contained to Stage 5 (audio) and Stage 6 (MIDI).
+**Trade-off:** Routing complexity (virtual audio via BlackHole + MIDI IAC). This is infrastructure work, not DSP work, and is contained to Stage 5 (audio) and Stage 6 (MIDI).
 
 ### 2.11 Why BlackHole (not Soundflower, not Loopback)
 
 - **Soundflower:** effectively unmaintained; fails on modern macOS.
 - **Loopback (Rogue Amoeba):** excellent, but commercial (~$100) and overkill.
-- **BlackHole:** free, open-source, maintained, supports 2/16/64 channels. The 64-channel version is sufficient for 8+ stereo streams.
+- **BlackHole:** free, open-source, maintained, supports 2/16/64 channels. **BlackHole 16ch** is the project choice: 8 stereo pairs, no extra channels to misconfigure.
 
-**Aggregate Device** (macOS built-in) is used to combine the physical interface (monitoring) with BlackHole (routing to Ableton) into one device that SC can output to.
+**Separate devices, not Aggregate:** scsynth can read the MiniFuse 2 and write BlackHole 16ch directly through `ServerOptions.inDevice` / `outDevice` (scsynth `-H in out`). An Aggregate Device is a fallback, not the primary setup.
 
 ### 2.12 Why MPE for JI
 
@@ -177,13 +177,13 @@ Prebuilt sc3-plugins and VSTPlugin binaries are compiled against a specific SC A
 | python-osc | latest | Stage 2 OSC listener and later bridge. |
 | mido + python-rtmidi | latest | MPE MIDI output, MIDI input (Stage 6+). |
 
-### 3.3 Software (to install before Stage 5)
+### 3.3 Software (required for Stage 5)
 
 | Component | Source | Notes |
 |---|---|---|
-| **BlackHole 64ch** | https://existential.audio/blackhole/ | Free, open-source virtual audio device. |
-| **Ableton Live** | Ableton (owner has license) | MPE support requires Live 11+ (12+ preferred). |
-| **IAC Driver** | Built into macOS (Audio MIDI Setup) | No install; must be enabled. |
+| **BlackHole 16ch** | https://existential.audio/blackhole/ | Free, open-source virtual audio device; 8 stereo pairs. |
+| **Ableton Live** | Ableton (owner has license) | Live 11+ preferred; separate input/output devices and 16 input channels required. |
+| **IAC Driver** | Built into macOS (Audio MIDI Setup) | No install; must be enabled (Stage 6). |
 
 ### 3.4 Software (to install before Stage 9)
 
@@ -196,7 +196,9 @@ uv pip install PyQt6
 ```supercollider
 Platform.version.postln;
 Tartini.info;
-ServerOptions.devices.postln;   // must list BlackHole 64ch and the Aggregate Device
+ServerOptions.devices.postln;      // all devices
+ServerOptions.inDevices.postln;    // must list MiniFuse 2
+ServerOptions.outDevices.postln;   // must list BlackHole 16ch
 ```
 
 ```bash
@@ -213,22 +215,67 @@ uv run --with python-osc python test_mutation.py
 uv run --with python-osc python test_mutation_controls.py
 ```
 
-### 3.6 Audio device configuration (Stage 5 onward)
+### 3.6 Audio device configuration (Stage 5, implemented)
 
-**Two devices must exist in Audio MIDI Setup:**
-1. **Physical interface** (e.g., "Scarlett 2i2").
-2. **Aggregate Device** combining physical + BlackHole 64ch. Name it something recognizable, e.g., "JI Aggregate".
+**Separate input and output devices are supported.** `ServerOptions` has
+`inDevice` and `outDevice`; use `inDevice_` / `outDevice_` to split them
+(`device_("...")` sets both to one device). scsynth receives
+`-H <in> <out>` when they differ. Use `ServerOptions.inDevices` /
+`outDevices` for exact names.
 
-**SC config:**
+**Project routing (Stage 5):**
+- Input: **MiniFuse 2**, 2 channels.
+- Output: **BlackHole 16ch**, 16 channels (8 stereo pairs).
+- No Aggregate Device is required. It remains a fallback if the macOS/SC
+  version cannot open separate devices, or if Ableton cannot select separate
+  input/output devices.
+
+**SC config (`startup.scd`):**
 ```supercollider
-s.options.device_("JI Aggregate");
-s.options.numOutputBusChannels = 16;   // 8 stereo pairs (16 enough for 4 loops + input + granular)
+var inDeviceName  = "MiniFuse 2";
+var outDeviceName = "BlackHole 16ch";
+
+s.options.inDevice_(inDeviceName);
+s.options.outDevice_(outDeviceName);
+s.options.numInputBusChannels = 2;
+s.options.numOutputBusChannels = 16;   // 8 stereo pairs
+s.options.blockSize = 64;
+s.options.sampleRate = 0;  // 0 = use the devices' Audio MIDI Setup rate; do not force 48000
+```
+Set both hardware devices to 48 kHz in Audio MIDI Setup, then reboot the server.
+Do **not** force `s.options.sampleRate = 48000` with BlackHole as a separate
+output device: on macOS that has made scsynth exit with code 0 immediately
+after "server ready". `sampleRate = 0` is the default and also clears an old
+forced value on re-evaluation. The device rate is authoritative;
+`startup.scd` checks `s.sampleRate` after boot and warns if it is not 48000 Hz.
+If the names differ on the machine, use the exact entries from
+`ServerOptions.inDevices` / `outDevices`. `startup.scd` prints the available
+lists and verifies both names before boot (comparing by value, not identity):
+
+```text
+inDevice=MiniFuse 2 outDevice=BlackHole 16ch
+Audio I/O: 2 in / 16 out, 48000 Hz, blockSize 64
 ```
 
+If a name is not found, it prints a warning plus the available list and does
+**not** substitute another physical device. A `singleDeviceName` fallback exists
+for an Aggregate or a shared interface; it is documented in `README_stage5.md`
+§9 and is not the primary path.
+
 **Ableton config:**
-- Audio Input Device: BlackHole 64ch.
+- Audio Input Device: **BlackHole 16ch**.
 - Enable input channels 1–16.
-- Output: physical interface (for monitoring).
+- Audio Output Device: **MiniFuse 2** (or headphones on it) for monitoring.
+- Eight stereo tracks, track N = BlackHole channels 2N-1/2N, Monitor **In**.
+- SC writes to BlackHole; Ableton must monitor BlackHole and send its master to
+  the MiniFuse. SC's own output is not audible without that monitor path.
+
+**Aggregate fallback:** if separate devices fail, create one Aggregate Device
+containing the MiniFuse 2 and BlackHole 16ch, set `singleDeviceName` to the
+aggregate name in `startup.scd` (or select the aggregate in Ableton only), and
+use 2 input / 16 output bus channels. Verify the aggregate's output channel
+order before trusting the SC bus ↔ Ableton input map. The primary path is the
+separate `inDevice`/`outDevice` configuration.
 
 ### 3.7 Known gotchas
 
@@ -237,7 +284,7 @@ s.options.numOutputBusChannels = 16;   // 8 stereo pairs (16 enough for 4 loops 
 - `LeakDC.ar` before Tartini prevents DC offset confusion.
 - Gate target updates on `hasFreq > 0.5`.
 - From-source SC and prebuilt plugin ABI must match — if plugins crash, rebuild from source.
-- **BlackHole channel count:** if you only need 4 stereo pairs, install BlackHole 16ch instead; fewer channels = less room for config errors.
+- **BlackHole channel count:** Stage 5 requires **BlackHole 16ch** (8 stereo pairs); do not install the 2ch or 64ch build for this stage.
 - **MPE bend range:** must be matched between SC (sending) and Ableton instrument (receiving). Calibrate before trusting bass/drone pitch.
 - **IAC Driver:** must be enabled in Audio MIDI Setup → Window → Show MIDI Studio → IAC Driver → "Device is online".
 
@@ -267,41 +314,67 @@ s.options.numOutputBusChannels = 16;   // 8 stereo pairs (16 enough for 4 loops 
 ┌─────────────▼────────────────┐  ┌────────▼─────────────────────┐
 │  AUDIO SERVER (scsynth)       │  │  ABLETON LIVE                 │
 │                               │  │                               │
-│  SoundIn(0,1) → Tartini →     │  │  - Audio input: BlackHole 64ch│
-│    AutotuneCh0/1              │  │  - MPE synth tracks           │
-│  LoopBuf[N] → Tartini →       │  │  - VST/AU hosting             │
-│    AutotuneLoop[N]            │  │  - Final mixing, monitoring   │
-│  Granular FX bus              │  │  - Bass/drone (MPE synth)     │
-│                               │  │                               │
-│  Output: Aggregate Device     │  │  Output: physical interface   │
-│  (physical + BlackHole 64ch)  │  │                               │
+│  In: MiniFuse 2 (2 ch)        │  │  - Audio input: BlackHole 16ch│
+│  SoundIn(0,1) → Tartini →     │  │  - MPE synth tracks           │
+│    AutotuneCh0/1              │  │  - VST/AU hosting             │
+│  LoopBuf[N] → Tartini →       │  │  - Final mixing, monitoring   │
+│    AutotuneLoop[N]            │  │  - Bass/drone (MPE synth)     │
+│  Granular FX bus              │  │                               │
+│                               │  │  Output: MiniFuse 2/headphones│
+│  Out: BlackHole 16ch (16 ch)  │  │                               │
 └─────────────┬────────────────┘  └───────────────────────────────┘
               │ audio (ch 1–16)
 ┌─────────────▼─────────────────────────────────────────────────┐
 │  VIRTUAL ROUTING LAYER                                          │
-│  BlackHole 64ch (audio) + IAC Driver (MIDI)                    │
-│  Aggregate Device (combines physical + BlackHole)              │
+│  BlackHole 16ch (audio) + IAC Driver (MIDI)                    │
+│  No Aggregate Device: scsynth uses inDevice/outDevice directly │
 └────────────────────────────────────────────────────────────────┘
 ```
 
-### 4.2 Audio channel mapping (Stage 5 onward)
+### 4.2 Audio channel mapping (Stage 5, implemented)
 
-| SC output ch | Content | Ableton track |
-|---|---|---|
-| 1–2 | Live autotuned stereo mix | "Input Autotuned" |
-| 3–4 | Loop 1 | "Loop 1" |
-| 5–6 | Loop 2 | "Loop 2" |
-| 7–8 | Loop 3 | "Loop 3" |
-| 9–10 | Loop 4 | "Loop 4" |
-| 11–12 | Granular FX bus | "Granular" |
-| 13–14 | Dry/diagnostic | (unused, reserved) |
-| 15–16 | Reserved | (future) |
+SC output bus indices are 0-based; Ableton hardware input channels are 1-based.
+
+| SC output bus | Ableton track | Ableton input ch | Content |
+|---|---|---|---|
+| 0–1 | 1 | 1/2 | Live autotuned stereo mix (Stage 4 current audio) |
+| 2–3 | 2 | 3/4 | Loop 1 (reserved — Stage 8) |
+| 4–5 | 3 | 5/6 | Loop 2 (reserved — Stage 8) |
+| 6–7 | 4 | 7/8 | Loop 3 (reserved — Stage 8) |
+| 8–9 | 5 | 9/10 | Loop 4 (reserved — Stage 8) |
+| 10–11 | 6 | 11/12 | Granular FX (Stage 8, reserved) |
+| 12–13 | 7 | 13/14 | Dry/diagnostic (reserved) |
+| 14–15 | 8 | 15/16 | Reserved (future) |
+
+The same map is machine-readable in `config/ableton_routing.json`. Stage 5
+verifies the 16-channel infrastructure with test tones. Stage 4 live/loop audio
+remains on pair 0/1 (Ableton track 1) for the first sound check. The loop and
+granular pairs are reserved for later routing (Stage 8 for loop
+transport/routing and granular FX), not delivered as per-loop tracks in Stage 5.
+
+### 4.2.1 Live-rig four-channel map (Stage 5.5, implemented)
+
+`test_live_rig.scd` is the immediate product map: four **mono** outputs on the
+first four BlackHole channels.
+
+| SC output bus | Ableton track | Ableton input ch | Content |
+|---|---|---|---|
+| 0 | 1 | 1 | autotuned input 0 (mic) |
+| 1 | 2 | 2 | autotuned input 1 (guitar) |
+| 2 | 3 | 3 | loop 1 (autotuned playback) |
+| 3 | 4 | 4 | loop 2 (autotuned playback) |
+
+The map is machine-readable in `config/live_rig_routing.json`. It deliberately
+differs from the Stage 5 8-pair infrastructure map above: here the two live
+channels are separate mono signals, and the two loop voices have their own
+channels. Loops 3/4 (optional Stage 4 extras) sum into SC 2/3. The Python
+`/ji/freqset/update` receiver and lookup are unchanged.
 
 ### 4.3 File tree (cumulative)
 
 ```
 ji-live/
-├── startup.scd                            # Stage 0-4 buses 0-18
+├── startup.scd                            # Stage 0-5 buses 0-18; MiniFuse 2 in / BlackHole 16ch out
 ├── synthdefs/
 │   ├── ji_tartini_debug.scd               # Stage 0
 │   ├── ji_autotune_ch.scd                 # Stage 1 ✅ (reused twice in Stage 4)
@@ -322,6 +395,8 @@ ji-live/
 │   ├── ji_ui.py                         # Stage 9
 │   └── osc_bridge.py                    # Stage 9
 ├── config/
+│   ├── ableton_routing.json             # Stage 5 🟡 awaiting audio acceptance
+│   ├── live_rig_routing.json            # Stage 5.5 🟡 awaiting audio acceptance
 │   ├── midi_map.json                    # Stage 8
 │   └── mpe_config.json                  # Stage 6 (bend range, base note)
 ├── test_tartini.scd                     # Stage 0 ✅
@@ -329,18 +404,21 @@ ji-live/
 ├── test_mutation.py                     # Stage 2 ✅
 ├── test_mutation_controls.py            # Stage 3.5 🟡 awaiting audio acceptance
 ├── test_bridge.scd                      # Stage 3 ✅
-├── test_dual_loop.scd                   # Stage 4 🟡 awaiting audio acceptance
-├── test_ableton_routing.scd             # Stage 5 (NEW)
+├── test_dual_loop.scd                   # Stage 4 🟡 audio acceptance deferred
+├── test_ableton_routing.scd             # Stage 5 🟡 awaiting audio acceptance
+├── test_live_rig.scd                    # Stage 5.5 🟡 awaiting audio acceptance
 ├── test_mpe.py                          # Stage 6 (NEW)
 ├── test_granular.scd                    # Stage 8
 ├── test_vst.scd                         # Stage 7 (optional)
 ├── test_events.py                       # Stage 10
+├── PROMPT_stage5.md                     # Stage 5 handoff prompt
 ├── README_stage0.md                     # ✅
 ├── README_stage1.md                     # ✅
 ├── README_stage2.md                     # ✅
 ├── README_stage3.md                     # Stage 3 ✅ + controls 🟡
 ├── README_stage4.md                     # Stage 4 🟡 awaiting audio acceptance
-├── README_ableton.md                    # Stage 5 (NEW)
+├── README_stage5.md                     # Stage 5 🟡 awaiting audio acceptance
+├── README_live_rig.md                   # Stage 5.5 🟡 awaiting audio acceptance
 ├── README_mpe.md                        # Stage 6 (NEW)
 ├── README_stage7.md
 ├── README_stage9.md
@@ -356,12 +434,23 @@ Stage 4 likewise has **no** `synthdefs/ji_autotune_dual.scd`: it starts two
 instances of the verified `\ji_autotune_ch` graph, one per input channel, so
 there is no second autotune DSP definition to maintain.
 
+Stage 5 adds **no** SynthDef file and no Python/OSC code: it changes
+`startup.scd` to the separate-device 2-in/16-out configuration, adds
+`test_ableton_routing.scd`, `config/ableton_routing.json`, and
+`README_stage5.md`. Stage 4 audio stays on output pair 0/1; the remaining pairs
+are reserved.
+
+Stage 5.5 adds **no** SynthDef or Python/OSC code: `test_live_rig.scd` reuses
+the verified Stage 4 orchestration and receiver, moves the loop outputs to
+SC 2/3, and maps the two live channels to SC 0/1. It adds
+`config/live_rig_routing.json` and `README_live_rig.md`.
+
 ### 4.4 Startup order (Stage 5 onward)
 
-1. Human verifies Aggregate Device and BlackHole exist (Audio MIDI Setup).
-2. Human opens Ableton, configures input as BlackHole 64ch, enables 16 input channels, arms MPE track(s).
-3. Human launches SC IDE, evaluates `startup.scd` (server boots, buses allocated, SynthDefs loaded).
-4. Human evaluates `test_autotune.scd` (Stage 1), `test_bridge.scd` (Stage 3), or `test_dual_loop.scd` (Stage 4).
+1. Human verifies MiniFuse 2 and BlackHole 16ch exist at 48 kHz (Audio MIDI Setup).
+2. Human opens Ableton, configures input as BlackHole 16ch (inputs 1–16) and output as MiniFuse 2/headphones.
+3. Human launches SC IDE, evaluates `startup.scd` (server boots with separate in/out devices, buses allocated, SynthDefs loaded).
+4. Human evaluates `test_ableton_routing.scd` (Stage 5 infrastructure), then `test_live_rig.scd` (Stage 5.5 product), `test_autotune.scd` (Stage 1), `test_bridge.scd` (Stage 3), or `test_dual_loop.scd` (Stage 4).
 5. Human launches Python bridge (`python control/ji_bridge.py`).
 6. Human launches UI (`python ui/ji_ui.py`, Stage 9).
 
@@ -404,7 +493,7 @@ This contract applies to **all stages**. Included verbatim in every agent prompt
 | 11–14 | `~ji_loop_freq1..4` | 4 | Loop tracker freqs |
 | 15–18 | `~ji_loop_hasfreq1..4` | 4 | Loop confidences |
 
-**Audio bus allocation:** Stage 4 keeps 0–1 input and 0–1 output (SC reuses indices); mono loops sum to output 0 or 1, so no internal loop audio buses are allocated. The Stage 5 plan reserves loop audio buses 10–17 (4 stereo pairs) for separate Ableton streams. VST/MPE do not consume global audio bus indices.
+**Audio bus allocation:** Stage 4 keeps 0–1 input and 0–1 output (SC reuses indices); mono loops sum to output 0 or 1, so no internal loop audio buses are allocated. Stage 5 sets 2 input / 16 output bus channels; output buses 0–15 are the eight stereo pairs routed to BlackHole. No internal loop audio buses are needed. VST/MPE do not consume global audio bus indices.
 
 ### 5.3 Audio-thread rule (inviolable)
 
@@ -540,7 +629,7 @@ MutationBatch(events: tuple[MutationEvent, ...], glideTime)
 
 **Key property:** Loops retune to the current set because playback passes through the autotune chain. The buffer itself stays dry.
 
-**Deferred:** stereo loop buffers, `~ji_buf_*` `.aiff` persistence via `Buffer.write`/`Buffer.read`, and per-loop routing are later-stage work (Stage 5 for routing/persistence formats).
+**Deferred:** stereo loop buffers, `~ji_buf_*` `.aiff` persistence via `Buffer.write`/`Buffer.read`, and per-loop output pairs beyond loops 1/2 are later-stage work (Stage 8 for stereo/per-loop routing and persistence formats). Stage 5 provides the 16-channel infrastructure and keeps `test_dual_loop.scd` on pair 0/1; Stage 5.5 gives loops 1/2 dedicated mono channels on SC 2/3.
 
 ### 6.7 VST hosting (Stage 7, now optional)
 
@@ -558,38 +647,89 @@ Python `mido` listens for note-on. Configurable note → action mapping via `con
 
 **Gate:** Short fade (10 ms) on transitions to avoid clicks.
 
-### 6.10 Ableton audio routing (Stage 5, NEW)
+### 6.10 Ableton audio routing (Stage 5, implemented)
 
-**Goal:** Send up to 8 independent stereo streams from SC to Ableton, so Ableton hosts per-stream VSTs/instruments and handles final mixing.
+**Goal:** Send up to 8 independent stereo streams from SC to Ableton, so Ableton hosts per-stream VSTs/instruments and handles final mixing. Stage 5 implements the infrastructure; Stage 4 live/loop audio still occupies pair 0/1.
 
-**Setup (human, one-time):**
+**Primary setup (human, one-time):**
 
-1. Install BlackHole 64ch.
-2. Open Audio MIDI Setup → "+" at bottom-left → "Create Aggregate Device".
-3. Name it "JI Aggregate".
-4. Check physical interface (e.g., "Scarlett 2i2") and "BlackHole 64ch".
-5. Set Aggregate's clock source to the physical interface (BlackHole has no clock).
-6. Verify sample rate matches (48000).
+1. Install **BlackHole 16ch**.
+2. In Audio MIDI Setup, set the **MiniFuse 2** and **BlackHole 16ch** to 48000 Hz.
+3. No Aggregate Device is needed: SC reads the MiniFuse 2 and writes the
+   BlackHole 16ch with separate `inDevice`/`outDevice` settings.
+4. Ableton input is BlackHole 16ch with inputs 1–16 enabled; Ableton output is
+   the MiniFuse 2/headphones for monitoring.
 
-**SC config:**
+**SC config (`startup.scd`):**
 ```supercollider
-s.options.device_("JI Aggregate");
-s.options.numOutputBusChannels = 16;  // 8 stereo pairs
+var inDeviceName  = "MiniFuse 2";
+var outDeviceName = "BlackHole 16ch";
+
+s.options.inDevice_("MiniFuse 2");
+s.options.outDevice_("BlackHole 16ch");
 s.options.numInputBusChannels = 2;
+s.options.numOutputBusChannels = 16;  // 8 stereo pairs
+s.options.blockSize = 64;
+s.options.sampleRate = 0;  // 0 = use the devices' Audio MIDI Setup rate; do not force 48000
 ```
 
-**Ableton config:**
-- Preferences → Audio → Input Device: BlackHole 64ch.
-- Input Config: enable channels 1–16.
-- Track inputs: each track selects its stereo pair (e.g., Loop 1 = ch 3–4).
-- Monitoring: physical interface output (so you hear everything).
+`startup.scd` verifies both names against `ServerOptions.inDevices` /
+`outDevices` (comparing by value), prints the available lists, and prints on
+boot:
 
-**Test:** A dedicated `test_ableton_routing.scd` plays a 1 kHz sine on each stereo pair sequentially. In Ableton, a scope or level meter on each track confirms the signal.
+```text
+inDevice=MiniFuse 2 outDevice=BlackHole 16ch
+Audio I/O: 2 in / 16 out, 48000 Hz, blockSize 64
+```
+
+The 48 kHz rate comes from Audio MIDI Setup, not from a forced
+`s.options.sampleRate`. Forcing 48000 with a separate BlackHole output can make
+scsynth exit with code 0 after "server ready"; `sampleRate = 0` uses the device
+rate and clears any old forced value. The post-boot check warns if the actual
+rate is not 48000 Hz. If a name is not found it warns and lists the available
+devices; it does not substitute another physical device. A `singleDeviceName`
+fallback supports a shared/Aggregate device and is documented in
+`README_stage5.md` §9.
+
+**Ableton config:**
+- Preferences → Audio → Audio Input Device: BlackHole 16ch.
+- Input Config: enable channels 1–16.
+- Audio Output Device: MiniFuse 2 (or its headphones); sample rate 48000 Hz.
+- Create 8 stereo audio tracks. Track N input = BlackHole channels 2N-1/2N,
+  Monitor **In**, Audio To Master.
+- Master output → MiniFuse 2 1/2 (or headphones). Do not route the master back
+  to BlackHole.
+
+**Test:** `test_ableton_routing.scd` plays a 1 kHz sine on each of the eight
+stereo pairs sequentially (about 1 s per pair, with a release and an explicit
+free between pairs) and prints:
+
+```text
+[ROUTING] pair 1 (Ableton track 1) -> SC ch 0/1
+...
+[ROUTING] pair 8 (Ableton track 8) -> SC ch 14/15
+[ROUTING] done
+```
+
+In Ableton, the matching track meters in order and the tone is audible through
+the master output. Run a 5-minute drift/dropout check with both devices at
+48 kHz.
+
+**Stage 5 scope note:** the routing infrastructure (separate devices, 16 output
+buses, all 8 pairs tested) is Stage 5. Stage 4 live/loop audio stays on pair 0/1
+(Ableton track 1) for the first sound check. Stage 5.5's live rig gives loops
+1/2 dedicated mono channels (SC 2/3); stereo/per-loop pair routing beyond that
+is deferred to Stage 8. The Stage 5 map is in §4.2 and
+`config/ableton_routing.json`; the live-rig map is §4.2.1 and
+`config/live_rig_routing.json`.
 
 **Critical failures to watch:**
-- **Aggregate Device drift:** if BlackHole and physical interface have different clock sources, audio drifts. Ensure Aggregate clock master is the physical interface.
-- **No input in Ableton:** Input Config doesn't have the channels enabled, or wrong device selected.
-- **Double audio:** if SC outputs to both physical and BlackHole separately (not via Aggregate), you get doubling and possible feedback. Always use the Aggregate Device as SC's *single* output device.
+- **Device-name mismatch:** use `ServerOptions.inDevices` / `outDevices` for exact names. A typo makes scsynth fall back or fail.
+- **No input in Ableton:** Input Config doesn't have channels 1–16 enabled, or the wrong device is selected.
+- **No monitoring:** SC writes to BlackHole, which is virtual; Ableton must monitor BlackHole and send its master to the MiniFuse/headphones.
+- **Separate-device drift:** MiniFuse 2 and BlackHole have independent clocks; both must be 48 kHz. Test a 5-minute run. An Aggregate Device is the fallback if separate-device mode is unstable.
+- **Shared devices:** SC and Ableton use the MiniFuse 2 and BlackHole in opposite directions (SC: MiniFuse input, BlackHole output; Ableton: BlackHole input, MiniFuse output). If CoreAudio/Ableton cannot open them concurrently, or the Live version cannot select separate input/output devices, use the Aggregate fallback documented in `README_stage5.md` §9. Do not make it the primary path.
+- **Feedback:** routing Ableton's master or a track back to BlackHole, or monitoring BlackHole twice, causes a loop.
 
 ### 6.11 MPE MIDI output (Stage 6, NEW)
 
@@ -856,30 +996,75 @@ OctaveEvent(
 5. Loop target changes without restarting playback and follows the event glide.
 6. No clicks/dropouts/zipper noise during mutations and loop start/stop.
 
-**Status:** implemented in sclang/SynthDefs; **audio not testable in the agent environment**, so Stage 4 is not marked accepted. Acceptance is audible and belongs to the project owner.
+**Status:** implemented in sclang/SynthDefs; functional loop-index bugs were fixed. **Audio acceptance is deferred to Stage 5**, where SC's BlackHole output is monitored through Ableton. Stage 4 is not marked accepted until that sound test. Acceptance is audible and belongs to the project owner.
 
 **Fallback if CPU fails:** store pitch contour at record time, read during playback. Do not add a server-side nearest-class lookup or C++ UGen without measurements.
 
-### 8.6 Stage 5 — Ableton Audio Integration (NEW)
+### 8.6 Stage 5 — BlackHole 16ch + Ableton Audio Integration 🟡 IMPLEMENTED — AWAITING HUMAN AUDIO ACCEPTANCE
 
-**Goal:** SC outputs multi-channel audio to BlackHole; Ableton receives it. Each stream (input autotune, loops, granular) goes to a dedicated Ableton track.
+**Goal:** SC reads the **MiniFuse 2** (2 input channels) and writes **BlackHole 16ch** (16 output channels). Ableton receives BlackHole inputs 1–16 on 8 stereo tracks, monitors there, and sends its master to the MiniFuse 2/headphones. No Aggregate Device is required; `ServerOptions.inDevice` / `outDevice` split the devices.
+
+**Current state:** `startup.scd` sets `inDevice_("MiniFuse 2")`, `outDevice_("BlackHole 16ch")`, 2 input / 16 output bus channels, blockSize 64; the 48 kHz rate is set on both devices in Audio MIDI Setup. `s.options.sampleRate` is set to **0** (SC's default = use the device rate), not 48000: forcing 48000 with BlackHole as a separate output device can make scsynth exit with code 0 after "server ready". The script verifies the names against `ServerOptions.inDevices` / `outDevices` (by value, not SC's identity-based `includes`), warns and lists devices on a real mismatch, checks `s.sampleRate` after boot, and prints `inDevice=... outDevice=...` / `Audio I/O: 2 in / 16 out...`. Control buses remain 0–18. Stage 4 live/loop audio remains on SC outputs 0/1 and is the first sound-check path through Ableton track 1. The 16-channel infrastructure, not per-loop routing, is the Stage 5 acceptance target. The reserved map is:
+- 0–1: live autotuned stereo mix (Stage 4 current audio)
+- 2–3: Loop 1 (reserved, Stage 8)
+- 4–5: Loop 2 (reserved, Stage 8)
+- 6–7: Loop 3 (reserved, Stage 8)
+- 8–9: Loop 4 (reserved, Stage 8)
+- 10–11: Granular FX (Stage 8)
+- 12–13: dry/diagnostic
+- 14–15: reserved
+
+Dedicated stereo/per-loop pair routing beyond Stage 5.5's live rig is deferred to Stage 8; Stage 4 mono loops keep their current pair-0/1 behavior in `test_dual_loop.scd` and do not appear on tracks 2–5 of the 8-pair map. Stage 5.5's `test_live_rig.scd` puts loops 1/2 on SC 2/3 (mono).
 
 **Deliverables:**
-- `startup.scd` (modified: Aggregate Device, 16 output channels).
-- `test_ableton_routing.scd` (plays sine on each stereo pair sequentially).
-- `README_ableton.md` (exact Audio MIDI Setup + Ableton config steps).
-- `config/ableton_routing.json` (channel map for reference).
+- `startup.scd` (modified: separate `inDevice_("MiniFuse 2")` / `outDevice_("BlackHole 16ch")`, 2 input / 16 output bus channels, blockSize 64; 48 kHz set on the devices and checked after boot, with `s.options.sampleRate = 0` (device rate) instead of a forced 48000; device-name validation by value and I/O print; single-device/Aggregate fallback variable).
+- `test_ableton_routing.scd` (1 kHz sine on each of the 8 stereo pairs sequentially, ~1 s per pair, `[ROUTING] pair N (Ableton track N) -> SC ch X/Y` lines, explicit stop path, safe to re-run).
+- `config/ableton_routing.json` (SC bus ↔ Ableton track map and device names).
+- `README_stage5.md` (BlackHole/Ableton setup, monitoring, test procedure, shared-device/Aggregate fallback, 5-minute drift check, failure modes, limitations).
+- `README_stage4.md` (UPDATED monitor path; Stage 4 DSP/loop behavior unchanged).
+- `design_doc_10.28.10.50` (§3.6, §4.2, §6.10, §8.6, §9, §14).
+
+No Python, OSC, SynthDef, or loop-routing change. `synthdefs/ji_autotune_ch.scd`, `test_bridge.scd`, `test_autotune.scd`, `test_tartini.scd`, and `test_dual_loop.scd` remain unchanged.
 
 **Acceptance test:**
-1. Human creates "JI Aggregate" (physical + BlackHole 64ch).
-2. SC boots on JI Aggregate. `s.options.numOutputBusChannels = 16`.
-3. `test_ableton_routing.scd` plays 1 kHz tone on each stereo pair sequentially.
-4. In Ableton, tracks 1–8 (configured for BlackHole ch 1–16) show the tone on the matching track.
-5. Human hears the tone via Ableton's output (physical interface monitoring).
-6. No drift over 5 minutes (Aggregate clock stable).
-7. Existing Stage 1 autotune still works — the output now goes through Ableton.
+1. `ServerOptions.inDevices` / `outDevices` list the exact MiniFuse 2 and BlackHole 16ch names.
+2. `startup.scd` boots with 2 in / 16 out; the post window prints `inDevice=MiniFuse 2 outDevice=BlackHole 16ch` and `Audio I/O: 2 in / 16 out, 48000 Hz, blockSize 64`; buses 0–18 and all SynthDefs are present.
+3. `test_ableton_routing.scd` plays a tone on each of the 8 stereo pairs in turn.
+4. In Ableton (input BlackHole 16ch, inputs 1–16 enabled, 8 stereo tracks, Monitor In), tracks 1–8 meter the matching pair.
+5. The human hears the tone through Ableton's master output to the MiniFuse 2/headphones.
+6. No drift/dropouts over a 5-minute run with both devices at 48 kHz.
+7. `test_dual_loop.scd` still runs; live autotune is audible through Ableton track 1, completing the deferred Stage 4 sound check. Stage 4 loops also remain on track 1, not tracks 2–5.
+8. An Aggregate Device is not used; it remains a documented fallback only.
 
-**Critical:** Verify clock master is the physical interface, not BlackHole.
+**Status:** implemented in sclang/config/docs. **Audio was not testable in the agent environment; Stage 5 is not marked accepted.** Human listening is the arbiter, and the Stage 4 sound check is part of the same acceptance.
+
+**Critical:** use exact device names, set both devices to 48000 Hz, and remember BlackHole is virtual — SC alone is silent without Ableton's monitor path. Stage 5 does not reroute loops or add per-loop tracks.
+
+### 8.6.1 Stage 5.5 — Live-Rig Integration (2 inputs + 2 loops → 4 outputs) 🟡 IMPLEMENTED — AWAITING HUMAN AUDIO ACCEPTANCE
+
+**Goal:** One playable rig combining the accepted Stage 1/3/4 autotune and loop code with the Stage 5 monitoring path and the Stage 2/3 Python mutation bridge. Four mono outputs on the first four BlackHole channels: two autotuned live inputs and two loop voices.
+
+**Map:**
+- SC 0 → Ableton track 1: autotuned MiniFuse 2 input 0 (mic)
+- SC 1 → Ableton track 2: autotuned MiniFuse 2 input 1 (guitar)
+- SC 2 → Ableton track 3: loop 1 (autotuned playback)
+- SC 3 → Ableton track 4: loop 2 (autotuned playback)
+
+**Implementation:** `test_live_rig.scd` is a copy of the accepted Stage 4 orchestration with `~ji_loop_outbus = [2, 3, 2, 3]`, a distinct receiver key (`\ji_freqset_update_live_rig`), and live `[AUTOTUNE ch=...]` status lines enabled. It keeps the Stage 3 `/ji/freqset/update` validation, the 20 Hz multi-voice lookup, broadcast glide, per-voice `lastTarget`, and the Stage 4 loop-index fix. Loops 3/4 remain optional and sum into SC 2/3; loop recording uses input 0 for loops 1/3 and input 1 for loops 2/4. No SynthDef, Python, or OSC protocol change.
+
+**Deliverables:** `test_live_rig.scd`, `config/live_rig_routing.json`, `README_live_rig.md`; updates to `README_stage5.md`, `README_stage4.md`, and this document.
+
+**Acceptance test:**
+1. Stage 5 startup prints `inDevice=MiniFuse 2 outDevice=BlackHole 16ch` and `Audio I/O: 2 in / 16 out, 48000 Hz, blockSize 64`.
+2. `test_live_rig.scd` starts two live autotune voices, the set receiver, four loop buffers, and the 20 Hz lookup; prints `[RIG] Ready`.
+3. Ableton has four mono tracks from BlackHole inputs 1, 2, 3, 4, Monitor In, master to MiniFuse 2. Tracks 1/2 carry the live autotuned inputs; tracks 3/4 carry loops 1/2.
+4. Python bridge runs; `m` sends the complete set; live and playing loops retune without replay.
+5. Loop 1 records input 0 and plays on SC 2/track 3; loop 2 records input 1 and plays on SC 3/track 4.
+6. CPU < 60% with 2 live + 2 loops.
+7. No clicks/dropouts during mutations or loop start/stop.
+8. The human hears all four channels through Ableton and can confirm the deferred Stage 1/3.5/4/5 sound checks.
+
+**Status:** implemented in sclang/config/docs. **Audio was not testable in the agent environment; Stage 5.5 is not marked accepted.** Human listening remains the arbiter.
 
 ### 8.7 Stage 6 — MPE MIDI + Bass/Drone (NEW)
 
@@ -969,8 +1154,9 @@ OctaveEvent(
 | 2 | ✅ Complete | Decentralised mutation engine + OSC listener. Harness passes. |
 | 3 | ✅ Complete | Bridge accepted by owner: audio and Python↔sclang working. |
 | 3.5 | 🟡 Implemented — awaiting audio acceptance | Mutation batch width, temperature, anchor mobility. Python harness passes. |
-| 4 | 🟡 Implemented — awaiting audio acceptance | Dual live autotune, dry mono loop recorder, four loop voices with independent Tartini/PitchShift chains, broadcast glide. |
-| 5 | ⬜ Pending | Ableton routing. Requires BlackHole install. |
+| 4 | 🟡 Implemented — audio acceptance deferred | Dual live autotune, dry mono loop recorder, four loop voices with independent Tartini/PitchShift chains, broadcast glide; loop-index bugs fixed. Sound check is heard through the Stage 5 monitoring path. |
+| 5 | 🟡 Implemented — awaiting human audio acceptance | MiniFuse 2 input / BlackHole 16ch output via `inDevice_`/`outDevice_`, 2 in / 16 out; `test_ableton_routing.scd` exercises all 8 stereo pairs; `config/ableton_routing.json`; no Aggregate required. Stage 4 sound check is part of acceptance. |
+| 5.5 | 🟡 Implemented — awaiting human audio acceptance | Live rig: two autotuned inputs + two loops on SC 0/1/2/3, Python mutation bridge; `test_live_rig.scd`, `config/live_rig_routing.json`, `README_live_rig.md`. Four mono tracks in Ableton. |
 | 6 | ⬜ Pending | MPE + bass/drone. Requires IAC Driver enabled, calibration. |
 | 7 | ⬜ Optional | SC-side VST hosting. May be skipped if Ableton handles VSTs. |
 | 8 | ⬜ Pending | MIDI mutation + granular FX. |
@@ -1016,7 +1202,7 @@ OctaveEvent(
 - `anchor_mobility` 0..1: anchor fixed, old 1/4 default, or no precedence with random re-anchoring.
 - `test_mutation_controls.py` passes under CPython 3.12/Pyodide.
 
-**What Stage 4 implements (awaiting audio acceptance):**
+**What Stage 4 implements (audio acceptance deferred to Stage 5 monitoring):**
 - `startup.scd` allocates the cumulative buses 0–18 and reports the full map.
 - Two independent live autotune voices on input 0/out 0 and input 1/out 1, each with its own tracker buses and target.
 - `\ji_looper_recorder` captures the dry, pre-autotune input into a mono buffer (overwrite, no overdub) with a `run` gate and an explicit stop path.
@@ -1024,15 +1210,35 @@ OctaveEvent(
 - One 20 Hz lookup services every active live/loop voice with the verified nearest-class arithmetic and a per-voice `lastTarget`.
 - Set updates broadcast the event glide to all active voices; a mutation can retune both live channels and all playing loops without replay.
 - Loop transport is sclang-only; no Python loop OSC control and no new Python protocol.
+- Loop-index bugs fixed: records/plays/stops use `[i - 1]` for the 0-based loop arrays.
+
+**What Stage 5 implements (awaiting human audio acceptance):**
+- `startup.scd` boots MiniFuse 2 input / BlackHole 16ch output via `inDevice_`/`outDevice_`, with 2 input / 16 output bus channels, 48 kHz, blockSize 64.
+- Device names are checked against `ServerOptions.inDevices`/`outDevices`; a missing name prints a warning and the available list, with no silent physical-device substitution.
+- The startup prints `inDevice=MiniFuse 2 outDevice=BlackHole 16ch` and `Audio I/O: 2 in / 16 out, 48000 Hz, blockSize 64`.
+- `test_ableton_routing.scd` plays a 1 kHz sine on each of the eight stereo pairs in turn, prints the pair/track/channel line, releases and frees each tone before the next, and can be re-run safely.
+- `config/ableton_routing.json` records the reserved SC bus ↔ Ableton track map; the design reference is §4.2.
+- `README_stage5.md` documents the no-Aggregate primary path, Ableton 8-track monitoring setup, shared-device concurrency, Aggregate fallback, 5-minute drift check, failure modes, and limitations.
+- No Python/OSC/SynthDef change. Stage 4 live/loop audio remains on pair 0/1; per-loop pairs are reserved for Stage 8.
+
+**What Stage 5.5 implements (awaiting human audio acceptance):**
+- `test_live_rig.scd` combines two autotuned live inputs (SC 0/1) with two loop voices (SC 2/3) and the Stage 3 `/ji/freqset/update` receiver.
+- The 20 Hz multi-voice lookup, broadcast glide, per-voice `lastTarget`, and Stage 4 loop-index fix are preserved.
+- Loop 1 records MiniFuse 2 input 0 and plays on SC 2; loop 2 records input 1 and plays on SC 3. Optional loops 3/4 sum into SC 2/3.
+- `config/live_rig_routing.json` and `README_live_rig.md` document four mono Ableton tracks on BlackHole inputs 1–4.
+- The Python bridge is unchanged: `m` mutates the set and both live channels plus playing loops retune without replay.
+- No SynthDef, Python, OSC, or protocol change.
 
 **What is still unverified:**
-- **Stage 4 audible acceptance** (dual independent autotune, raw loop recording, per-loop retune without restart, loop start/stop clicks, measured CPU with 2 live + 2 loops).
-- **Stage 3.5 audible acceptance** (batch width, temperature, anchor mobility).
+- **Stage 5.5 audible acceptance** — four channels through Ableton, live mutation, loop record/playback, and CPU with 2 live + 2 loops.
+- **Stage 5 audible acceptance** — the owner reports the 8-pair routing test works; the 5-minute drift/dropout record and final acceptance note are still pending.
+- **Stage 4 audible acceptance** — to be heard through the Stage 5.5 live rig or the Stage 5 monitor path.
+- **Stage 3.5 audible acceptance** — likewise available once the live rig is running.
 - Actual per-voice octave allocation and audio retuning (Stage 3/4).
-- Ableton audio routing (Stage 5).
 - IAC Driver MIDI output (Stage 6).
 - MPE pitch bend calibration (Stage 6).
 - Multi-channel audio stability over long sessions (Stage 5).
+- Per-loop dedicated pair routing beyond loops 1/2 (Stage 8).
 - VSTPlugin SC-side loading (Stage 7, likely moot if Ableton hosts VSTs).
 - Real-time performance latency under full load (Stage 9).
 
@@ -1164,8 +1370,8 @@ Every stage's acceptance test is **binary**: pass or fail on specific observable
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `UGen 'Tartini' not installed` | sc3-plugins missing or ABI incompatible | Rebuild sc3-plugins from source |
-| Server boots but no input | `s.options.device_` mismatch | Check `ServerOptions.devices` |
-| Sample rate mismatch | Input/output differ | Aggregate device or align rates |
+| Server boots but no input | `s.options.inDevice`/`device_` mismatch | Check `ServerOptions.inDevices` and the exact name |
+| Sample rate mismatch | Separate input/output devices differ | Set both devices to 48000 Hz, or align them |
 | Server segfaults | ABI mismatch | Rebuild plugins from source |
 
 ### 12.2 Audio failures
@@ -1194,11 +1400,16 @@ Every stage's acceptance test is **binary**: pass or fail on specific observable
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | No signal in Ableton | Input Config doesn't have channels enabled | Enable channels 1–16 in Ableton Preferences |
-| No signal in Ableton | SC output device wrong | Verify `s.options.device_("JI Aggregate")` |
-| Doubled audio / feedback | SC outputs to physical AND BlackHole separately | Use Aggregate Device as SC's single output |
-| Audio drifts over minutes | Aggregate clock master is BlackHole (no clock) | Set clock master to physical interface |
-| Channels swapped | SC bus index ≠ BlackHole channel number | Recheck channel map in `config/ableton_routing.json` |
-| Aggregate won't create | BlackHole not installed | Install BlackHole 64ch, reboot |
+| No signal in Ableton | SC output device wrong or name mismatch | Verify `s.options.outDevice_("BlackHole 16ch")` and `ServerOptions.outDevices` |
+| No sound at all | BlackHole is virtual and nothing monitors it | Set Ableton monitor path from BlackHole to MiniFuse 2/headphones |
+| Doubled audio / feedback | Same device used for input and output/monitoring twice | Use separate `inDevice`/`outDevice`; do not monitor BlackHole directly |
+| Audio drifts over minutes | Separate devices have independent clocks | Set both to 48 kHz; test; Aggregate is fallback |
+| Channels swapped | SC bus index ≠ BlackHole channel number | Recheck map in `config/ableton_routing.json`; SC bus 0/1 = Ableton input 1/2 |
+| Only track 1 works | scsynth booted with 2 outputs, or old startup was not re-evaluated | Confirm `Audio I/O: 2 in / 16 out` and `numOutputBusChannels == 16`; `s.quit`, re-evaluate `startup.scd` |
+| scsynth prints "server ready" then exits with code 0 | `s.options.sampleRate` or `hardwareBufferSize` forced with a separate BlackHole output | Set `s.options.sampleRate = 0`; leave `hardwareBufferSize` nil; set both devices to 48 kHz in Audio MIDI Setup; see `README_stage5.md` §4 |
+| Device-name warning despite the name being in the list | old startup used identity-based `includes` | Use the current `startup.scd`, which compares device names by value |
+| Stage 4 loops missing from tracks 2–5 | Stage 5 does not reroute loops | Expected: loops sum on pair 0/1 (track 1); per-loop pairs are Stage 8 |
+| Separate devices fail to open | macOS/SC/Live version limitation | Use an Aggregate Device as fallback (`README_stage5.md` §9) |
 
 ### 12.5 MPE failures (Stage 6)
 
@@ -1257,7 +1468,11 @@ Only after 1–4 are ruled out should you attribute failure to the agent.
 | 5.4 | 2026-10-29 | **Stage 4 implemented — awaiting human audio acceptance.** `startup.scd` now allocates cumulative buses 8–18 (channel-1 autotune tracker/target; four loop tracker pairs) with reuse/sanity checks. Added `synthdefs/ji_looper_recorder.scd` (dry mono `RecordBuf`, overwrite, explicit/auto stop) and `synthdefs/ji_looper_player.scd` (`PlayBuf → Tartini → PitchShift`, per-loop tracker buses). Added `test_dual_loop.scd`: two verified `\ji_autotune_ch` instances on input 0/1, the Stage 3 `/ji/freqset/update` receiver, one 20 Hz multi-voice lookup with per-voice `lastTarget`, broadcast `retuneTime`, raw loop record/play/stop functions, and status/CPU lines. No `ji_autotune_dual.scd`; no Python or protocol changes. Added `README_stage4.md`. **Audio not verified in the agent environment; Stage 4 is not marked accepted.** |
 | 5.4.1 | 2026-10-29 | **Fixed Stage 4 loop indexing.** The loop number is 1-based (`1..4`) but `~ji_buf_loop`, `~ji_loop_states`, `~ji_loop_players`, and `~ji_loop_recorders` are 0-based arrays. `~ji_record_loop`/`~ji_play_loop`/stop now use `[i - 1]`, matching the status/voice indices. Previously loop 1 read loop 2's buffer slot and freed it, so a successful recording was followed by "no buffer" on play. No SynthDef or protocol change. |
 | 5.4.2 | 2026-10-29 | Added an `Audio I/O: ... in / ... out` startup line and documented that `/n_free Node ... not found` after a server reboot is a harmless stale-node message from sclang's old Synth objects. Added a sine/`SoundIn` passthrough routing check to `README_stage4.md`. |
-| 5.4.3 | 2026-10-29 | Documented separate input/output devices via a macOS Aggregate Device. scsynth still opens one CoreAudio device; the aggregate must present the interface inputs as 0/1 and the headphone/DAC outputs as 0/1. Added channel-order, clock/drift, and Bluetooth caveats to `startup.scd` and `README_stage4.md`. No audio-code change. |
+| 5.4.3 | 2026-10-29 | **Corrected separate-device documentation.** `ServerOptions` has `inDevice`/`outDevice`; use `inDevice_`/`outDevice_` to split them (`device_("...")` sets both). `ServerOptions.inDevices`/`outDevices` list exact names; scsynth uses `-H in out`. Removed the incorrect "one device only" claim; Aggregate Device is now a fallback. |
+| 5.5 | 2026-10-29 | **Stage 5 handoff defined: MiniFuse 2 input / BlackHole 16ch output.** Updated the Stage 5 spec, Ableton routing setup, device configuration, status table, and `README_stage4.md`; Stage 4 audio acceptance is deferred to the Stage 5 BlackHole → Ableton monitor path. Added `PROMPT_stage5.md`. Stage 5 keeps Stage 4 audio on pair 0/1 for the first sound check; per-loop dedicated pairs are deferred to Stage 8. |
+| 5.6 | 2026-10-29 | **Stage 5 implemented — awaiting human audio acceptance.** `startup.scd` now uses separate `inDevice_("MiniFuse 2")` / `outDevice_("BlackHole 16ch")` with 2 input / 16 output bus channels, 48 kHz, blockSize 64; it validates the exact names against `ServerOptions.inDevices`/`outDevices`, warns/lists on a mismatch, prints the device line and `Audio I/O: 2 in / 16 out`, and keeps buses 0–18. Added `test_ableton_routing.scd` (1 kHz sine on each of the 8 stereo pairs, explicit stop/re-run path), `config/ableton_routing.json` (reserved channel map), and `README_stage5.md` (no-Aggregate primary path, Ableton 8-track Monitor-In setup, shared-device/Aggregate fallback, 5-minute drift check, failure modes, limitations). Updated `README_stage4.md` for the new monitoring path and the design doc §3.6/§4.2/§6.10/§8.6/§9. Stage 4 live/loop audio remains on pair 0/1 (Ableton track 1); per-loop pairs are reserved for Stage 8. No Python/OSC/SynthDef change. **Audio was not testable in the agent environment; Stage 4 and Stage 5 are not marked accepted until the human listening test.** |
+| 5.6.1 | 2026-10-29 | **Fixed two first-boot Stage 5 issues reported by the owner.** (1) Device-name validation used `Collection:includes`, which compares by identity (`===`), so equal strings from `ServerOptions.inDevices`/`outDevices` produced false "device not found" warnings even though the names matched; it now normalises to strings and compares with `==`. (2) `s.options.sampleRate = 48000` is no longer forced: with BlackHole 16ch as a separate output device it caused scsynth to print "server ready" and then exit with code 0. The file now sets `s.options.sampleRate = 0` (SC's default = use the device rate, which also clears an old 48000 on re-evaluation); 48 kHz is set on both devices in Audio MIDI Setup and checked against `s.sampleRate` after boot. Device open itself succeeded ("MiniFuse 2" input, "BlackHole 16ch" output); audio acceptance still pending. |
+| 5.7 | 2026-10-30 | **Live-rig integration (Stage 5.5) implemented — awaiting human audio acceptance.** Added `test_live_rig.scd`: a copy of the accepted Stage 4 orchestration with two autotuned live inputs on SC 0/1, loop 1 on SC 2, loop 2 on SC 3, the Stage 3 `/ji/freqset/update` receiver under `\ji_freqset_update_live_rig`, the 20 Hz multi-voice lookup, broadcast glide, and the loop-index fix preserved. Added `config/live_rig_routing.json` (four mono Ableton tracks on BlackHole inputs 1–4) and `README_live_rig.md` (setup, start order, Python mutation, loop commands, failure modes, acceptance). Updated `README_stage5.md`, `README_stage4.md`, and design doc §1/§4.2.1/§4.3/§4.4/§8.6.1/§9. No Python/OSC/SynthDef change. The owner reports the 8-pair Ableton routing test works; Stage 3.5/4/5/5.5 audio acceptance remains pending the live listening test. |
 
 ---
 
@@ -1328,10 +1543,11 @@ OSCdef(\ji_freqset_update, { |msg|
     };
 }, '/ji/freqset/update');
 
-// Configure Aggregate Device output (Stage 5)
-s.options.device_("JI Aggregate");
+// Stage 5 separate devices (no Aggregate required)
+s.options.inDevice_("MiniFuse 2");
+s.options.outDevice_("BlackHole 16ch");
+s.options.numInputBusChannels  = 2;
 s.options.numOutputBusChannels = 16;
-s.options.numInputBusChannels = 2;
 ```
 
 ### 15.4 Useful Python snippets
@@ -1383,19 +1599,20 @@ with mido.open_input("Your Port") as port:
 ### 15.5 Ableton + BlackHole setup checklist
 
 **Audio MIDI Setup (macOS):**
-1. Install BlackHole 64ch (reboot).
+1. Install BlackHole 16ch (reboot).
 2. Window → Show MIDI Studio → IAC Driver → "Device is online" (for Stage 6).
-3. Click "+" bottom-left → "Create Aggregate Device".
-4. Name: "JI Aggregate". Check: physical interface + BlackHole 64ch.
-5. Clock source: physical interface (NOT BlackHole).
-6. Verify sample rate 48000 Hz.
+3. No Aggregate Device is required: SC uses `inDevice_("MiniFuse 2")` and
+   `outDevice_("BlackHole 16ch")`. An Aggregate is a fallback only.
+4. Set both devices to 48000 Hz.
 
 **Ableton Live:**
-1. Preferences → Audio → Input Device: BlackHole 64ch.
+1. Preferences → Audio → Audio Input Device: BlackHole 16ch.
 2. Input Config: enable channels 1–16.
-3. Each track: select its stereo pair as input.
-4. (Stage 6) Preferences → Link/Tempo/MIDI: enable Track + MPE on IAC Driver.
-5. (Stage 6) MPE track: input from IAC, load MPE-capable synth, set pitch bend range.
+3. Create 8 stereo audio tracks. Track N input = BlackHole channels 2N-1/2N.
+4. Set Monitor to **In** and Audio To **Master** on each track.
+5. Audio Output Device: MiniFuse 2/headphones (for monitoring); master → MiniFuse 2 1/2.
+6. (Stage 6) Preferences → Link/Tempo/MIDI: enable Track + MPE on IAC Driver.
+7. (Stage 6) MPE track: input from IAC, load MPE-capable synth, set pitch bend range.
 
 ### 15.6 MPE pitch bend calibration procedure (Stage 6)
 

@@ -1,0 +1,49 @@
+{
+  "stage": "5.5 live-rig integration",
+  "sample_rate": 48000,
+  "in_device": "MiniFuse 2",
+  "out_device": "BlackHole 16ch",
+  "sc_input_channels": 2,
+  "sc_output_channels": 16,
+  "aggregate_device_required": false,
+  "design_doc_reference": "design_doc_10.28.10.50 §4.2.1 (live-rig four-channel map)",
+  "summary": "Two autotuned live inputs plus two loop voices, each on its own SC output channel; Python owns the mutation set.",
+  "tracks": [
+    {
+      "ableton_track": 1,
+      "ableton_input_channel": 1,
+      "sc_channel": 0,
+      "mono": true,
+      "content": "autotuned input 0 (mic)"
+    },
+    {
+      "ableton_track": 2,
+      "ableton_input_channel": 2,
+      "sc_channel": 1,
+      "mono": true,
+      "content": "autotuned input 1 (guitar)"
+    },
+    {
+      "ableton_track": 3,
+      "ableton_input_channel": 3,
+      "sc_channel": 2,
+      "mono": true,
+      "content": "loop 1 (autotuned playback)"
+    },
+    {
+      "ableton_track": 4,
+      "ableton_input_channel": 4,
+      "sc_channel": 3,
+      "mono": true,
+      "content": "loop 2 (autotuned playback)"
+    }
+  ],
+  "notes": [
+    "SC output channels are 0-based bus indices; Ableton input channels are 1-based.",
+    "Ableton tracks 1-4 are mono tracks; select BlackHole 16ch input 1, 2, 3, 4 respectively.",
+    "Loop 1 records MiniFuse 2 input 0; loop 2 records MiniFuse 2 input 1.",
+    "Optional loops 3/4 sum into SC 2/3 and are not part of the four-channel product.",
+    "Stage 5's 8-pair infrastructure map is separate and lives in config/ableton_routing.json.",
+    "No Aggregate Device is required for the primary path."
+  ]
+}

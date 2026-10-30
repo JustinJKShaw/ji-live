@@ -4,6 +4,19 @@
 human audio acceptance**. The agent environment cannot run SuperCollider or
 hear audio, so this file does not claim that the Stage 4 audio has passed.
 
+> **Stage 5 update:** Stage 5 is now implemented. `startup.scd` boots
+> **MiniFuse 2 input / BlackHole 16ch output** with 2 in / 16 out; SC writes
+> BlackHole and the human monitors Ableton through the MiniFuse 2. Stage 4 audio
+> remains on output pair 0/1 (Ableton track 1). See `README_stage5.md` and the
+> design doc §8.6. Stage 4 audio is still awaiting human acceptance through that
+> path.
+>
+> **Live-rig integration (Stage 5.5):** [test_live_rig.scd](test_live_rig.scd)
+> puts the two autotuned inputs and two loops on separate SC outputs
+> **0, 1, 2, 3** and connects them to the Python mutation bridge. That is the
+> current four-channel product; see [README_live_rig.md](README_live_rig.md).
+> The Stage 4 `test_dual_loop.scd` remains unchanged.
+
 Stage 4 extends the accepted Stage 1/3 autotune path to two independent live
 inputs and adds raw loop recording/playback. Every live input and every playing
 loop retunes to its own nearest class on the next 20 Hz lookup tick after a
@@ -24,7 +37,7 @@ loop buffer N → PlayBuf → Tartini → nearest class → PitchShift → out
 
 ```text
 ji-live/
-├── startup.scd                              MODIFIED: Stage 4 buses 8–18
+├── startup.scd                              MODIFIED: Stage 5 2-in/16-out devices + Stage 4 buses 8–18
 ├── synthdefs/
 │   ├── ji_autotune_ch.scd                   UNCHANGED: verified single-channel DSP
 │   ├── ji_looper_recorder.scd               NEW: dry mono RecordBuf recorder
@@ -47,11 +60,12 @@ Unchanged: `synthdefs/ji_autotune_ch.scd`, `test_bridge.scd`,
 
 ## 2. Prerequisites
 
-- macOS, SuperCollider 3.15, sc3-plugins/Tartini, a 2-in / 2-out interface at
-  48 kHz (Stages 0–3 verified this).
-- `startup.scd` evaluated: server booted, buses 0–18 allocated, and every
-  `synthdefs/*.scd` loaded (the recorder and player are new files; startup loads
-  them automatically).
+- macOS, SuperCollider 3.15, sc3-plugins/Tartini, **MiniFuse 2** input, and
+  **BlackHole 16ch** output at 48 kHz (the Stage 5 device configuration).
+- `startup.scd` evaluated: server booted with
+  `inDevice_("MiniFuse 2")` / `outDevice_("BlackHole 16ch")`, 2 in / 16 out,
+  buses 0–18 allocated, and every `synthdefs/*.scd` loaded (the recorder and
+  player are new files; startup loads them automatically).
 - Headphones. Inputs are live and the outputs contain pitch-shifted copies;
   speakers will feed back.
 - No Stage 0/1/3 test left running. `test_dual_loop.scd` stops the known
@@ -61,7 +75,7 @@ Unchanged: `synthdefs/ji_autotune_ch.scd`, `test_bridge.scd`,
   audio.
 - Python 3.11+ via `uv`; `python-osc` is fetched by `uv run`.
 - A silent Stage 4 start is normal. Play into input 0 and input 1 to hear the
-  live channels.
+  live channels through Ableton track 1 (see `README_stage5.md`).
 
 ### Bus allocation (cumulative)
 
@@ -87,46 +101,71 @@ with a warning, and the sanity check reports any numbering that is not 0–18.
 
 ### Separate input and output devices (macOS)
 
-SuperCollider/scsynth opens **one** CoreAudio device for both input and output.
-`s.options.device_("...")` cannot take separate input and output device names.
-To use an interface for input and headphones/DAC for output, create a macOS
-**Aggregate Device**; SC then sees one device with both.
+SuperCollider **does** support separate input and output devices. `ServerOptions`
+has `inDevice` and `outDevice`; use the individual setters to split them
+(`device_("...")` sets both to one device):
 
-1. Connect both devices. In **Audio MIDI Setup → Window → Audio Devices**,
-   select each device and set it to **48000 Hz**.
-2. Click **+ → Create Aggregate Device**. Name it, for example, `JI In/Out`.
-3. Check the two devices in the order you want their channels to appear. The
-   order of the checked boxes (and the order under **Subdevices**; drag left for
-   lower numbers, right for higher) determines the aggregate channel order.
-   - Put the **output device first** (headphones/DAC), then the interface.
-   - If the output device has **0 inputs** and the interface has 2 inputs, the
-     aggregate then presents its **inputs 1/2 from the interface** and its
-     **outputs 1/2 from the headphones**. Stage 4 uses SC inputs 0/1 and
-     outputs 0/1, so the existing code works unchanged.
-4. Set **Clock Source** to the interface (or the most stable clock), and enable
-   **Drift Correction** for the other device.
-5. Set `deviceName = "JI In/Out"` in `startup.scd`, keep
-   `numInputBusChannels = 2` and `numOutputBusChannels = 2`, then **reboot the
-   server** and re-evaluate `startup.scd`.
-6. Confirm the new `Audio I/O: 2 in / 2 out ...` line, then run the sine and
-   `SoundIn` passthrough checks in §9.
+```supercollider
+ServerOptions.devices.postln;     // all devices
+ServerOptions.inDevices.postln;   // exact input names
+ServerOptions.outDevices.postln;  // exact output names
 
-Channel-order caveat: if the output device also has inputs (for example a USB
-headset with a mic), those inputs can become aggregate inputs 1/2 and push the
-interface to 3/4. If that happens, either put the interface first (which moves
-the headphones to outputs 3/4) or ask for input/output base offsets. The current
-Stage 4 code assumes aggregate **inputs 0/1** and **outputs 0/1**.
+s.options.device_("One Device");                    // both directions
+// or, for separate devices:
+s.options.inDevice_("MiniFuse 2");
+s.options.outDevice_("BlackHole 16ch");
+```
+
+When the two differ, scsynth is launched with `-H <in> <out>`. Set these
+**before booting**; a running server needs `s.quit` / `s.reboot`, then
+re-evaluating `startup.scd`.
+
+The Stage 5 `startup.scd` uses this configuration (MiniFuse 2 input,
+BlackHole 16ch output):
+
+```supercollider
+s.options.inDevice_("MiniFuse 2");
+s.options.outDevice_("BlackHole 16ch");
+s.options.numInputBusChannels  = 2;
+s.options.numOutputBusChannels = 16;
+s.options.blockSize            = 64;
+s.options.sampleRate           = 0;   // 0 = use the devices' Audio MIDI Setup rate
+```
+
+**Do not force `s.options.sampleRate = 48000`** when BlackHole 16ch is a
+separate output device: on macOS this can make scsynth exit with code 0 right
+after "server ready". Use `0` (the default) and set both devices to 48 kHz in
+Audio MIDI Setup; the post-boot `Audio I/O:` line reports the server's actual
+rate. See `README_stage5.md` §4.
+
+Then:
+
+1. Set both devices to **48000 Hz** in Audio MIDI Setup.
+2. Reboot the server and re-evaluate `startup.scd`. It should print
+   `inDevice=MiniFuse 2 outDevice=BlackHole 16ch` and
+   `Audio I/O: 2 in / 16 out, 48000 Hz, blockSize 64`.
+3. Run `test_ableton_routing.scd`; in Ableton, input is **BlackHole 16ch** with
+   inputs 1–16 enabled, and output is the MiniFuse 2 (or headphones).
+4. Stage 4 audio remains on output **pair 0/1** (Ableton track 1); the rest of
+   the 16-channel map is reserved for later stages. Stage 4 is not audible from
+   SC alone: SC writes to BlackHole, and Ableton must monitor BlackHole and send
+   its master output to the MiniFuse 2/headphones. See `README_stage5.md`.
 
 Notes:
 
-- The simplest alternative is to plug the headphones into the **interface's own
-  headphone jack**; then one device handles both directions and no aggregate is
-  needed.
-- Avoid **Bluetooth** headphones for an aggregate; they are often not usable as
-  aggregate subdevices and add significant latency. Use wired/USB headphones or
-  the interface headphone output.
-- Aggregate devices add a little latency and can drift; both devices must run at
-  48 kHz and the non-clock device should have drift correction enabled.
+- Use `ServerOptions.inDevices` / `outDevices` for the exact names; a typo makes
+  scsynth fall back or fail. `startup.scd` warns and lists the available names
+  instead of silently substituting another physical device.
+- Separate devices have independent clocks. Keep both at 48 kHz and test a
+  several-minute run for drift/dropouts.
+- Do **not** use Bluetooth headphones for this; latency and device support are
+  poor. Use wired headphones on the MiniFuse 2.
+- **Aggregate Device fallback:** if `-H`/separate devices fail on your macOS
+  version, create one Aggregate Device containing the input and output devices,
+  set `singleDeviceName` to the aggregate name in `startup.scd` (or select the
+  aggregate in Ableton only), and use 2/16 bus channels. Verify the aggregate's
+  channel order. The primary Stage 5 path is the separate
+  `inDevice`/`outDevice` configuration above; see `README_stage5.md` §9.
 
 ---
 
@@ -137,6 +176,11 @@ Notes:
 Evaluate `startup.scd` (Cmd+Return). Confirm:
 
 ```text
+Available input devices:  [ ... MiniFuse 2 ... ]
+Available output devices: [ ... BlackHole 16ch ... ]
+Audio devices: in=MiniFuse 2 out=BlackHole 16ch (separate)
+[DEVICE] input found: MiniFuse 2
+[DEVICE] output found: BlackHole 16ch
 Stage 4 buses allocated (8-18).
 JI system buses allocated: freq1=0 freq2=1 hasfreq1=2 hasfreq2=3 cpu=4 autotune_freq1=5 autotune_hasfreq1=6 autotune_target1=7 autotune_freq2=8 autotune_hasfreq2=9 autotune_target2=10 loop_freq=[ 11, 12, 13, 14 ] loop_hasfreq=[ 15, 16, 17, 18 ]
 Loading 4 SynthDef file(s) ...
@@ -144,8 +188,10 @@ Loading 4 SynthDef file(s) ...
   - ji_looper_player.scd
   - ji_looper_recorder.scd
   - ji_tartini_debug.scd
-Audio I/O: 2 in / 2 out, 48000 Hz, blockSize 64
-Startup complete (Stage 4: 2 in / 2 out, buses 0-18).
+inDevice=MiniFuse 2 outDevice=BlackHole 16ch
+Audio I/O: 2 in / 16 out, 48000 Hz, blockSize 64
+Server device setting: [ MiniFuse 2, BlackHole 16ch ]
+Startup complete (Stage 5: 2 in / 16 out, buses 0-18).
 ```
 
 If the numbers are not 0–18, read the NOTE that follows. Everything can still
@@ -306,8 +352,9 @@ Python output is unchanged from Stage 3 (`[MUTATION] ...`,
 
 ## 7. Human acceptance test
 
-1. Set the audio device in `startup.scd`; evaluate it. Confirm buses 0–18 and
-   all four SynthDef files loaded.
+1. Evaluate the Stage 5 `startup.scd` (MiniFuse 2 in / BlackHole 16ch out);
+   confirm the device line, 2 in / 16 out, buses 0–18, and all four SynthDef
+   files loaded.
 2. Evaluate `test_dual_loop.scd`. Confirm two `[AUTOTUNE] ... started` lines,
    four loop buffer numbers, tracker buses 11–18, the multi-voice lookup line,
    and status/CPU lines.
@@ -400,12 +447,12 @@ If it exceeds 60%:
 | `ERROR: test_dual_loop: the Stage 4 buses (8-18) are missing` | old `startup.scd`, or a partial allocation | Evaluate the Stage 4 `startup.scd`; for clean 8–18 numbering after a partial-allocation warning, restart the interpreter, reboot the server, evaluate again |
 | `ERROR: ... a required SynthDef is missing` | startup was not evaluated, or it could not find `synthdefs/` | Evaluate `startup.scd` from disk; confirm the four listed files load |
 | `FAILURE IN SERVER /n_free Node ... not found` after changing the device or rebooting | sclang still holds Synth objects from the previous server; the cleanup at the top of `test_dual_loop.scd` tries to free them | Harmless. The test creates fresh synths after the cleanup. Restart the interpreter for a clean slate. Make sure `startup.scd` was re-evaluated after the reboot so the SynthDefs are present |
-| No sound after changing `deviceName` / input count | `ServerOptions` changes only apply after a server reboot; Stage 4 uses hardware inputs 0/1 and outputs 0/1 | Quit or reboot the server, re-evaluate `startup.scd`, confirm the device line and 2 in / 2 out, then test a sine and a `SoundIn` passthrough (below) |
+| No sound after changing devices or input count | `ServerOptions` changes only apply after a server reboot; if output is BlackHole, SC alone is silent because BlackHole needs a monitor path | Reboot/re-evaluate `startup.scd`; check `inDevice`/`outDevice`; route BlackHole into Ableton and monitor Ableton on the MiniFuse 2 (`README_stage5.md`). The sine/`SoundIn` checks below are heard through Ableton track 1 |
 | `[BRIDGE] set update` never prints | sclang on a different language port, or another app owns 57120 | Check `NetAddr.langPort`; restart Python with `--sc-port <port>` |
 | Set updates arrive but no target changes | the held note's class survived, or the mutation only added a class elsewhere | Keep pressing `m`; watch Python's `removed=`/`new=` line |
 | Audio is doubled/phasey | Stage 0/1/3 synth or a second autotune still running | Free it; `test_dual_loop.scd` stops only the known variables. Do not run `test_bridge.scd` concurrently |
 | Two set receivers act on every update | a custom OSCdef from a previous test is still installed | Free it; re-evaluate `test_dual_loop.scd`, which frees `~ji_freqset_oscdef` |
-| `hasFreq` stays 0.00 on a live channel | wrong input, low gain, or interface not selected | Raise interface gain, check `deviceName`, try `~ji_autotune_synth_ch0.set(\inputGain, 4)` |
+| `hasFreq` stays 0.00 on a live channel | wrong input, low gain, or interface not selected | Raise interface gain, check `inDeviceName`, try `~ji_autotune_synth_ch0.set(\inputGain, 4)` |
 | Loop records silence | wrong loop/input mapping, or `~ji_record_loop` was called for input 1 while playing into input 0 | Loop 1/3 = input 0; loop 2/4 = input 1. Check the `recording ... from input` line |
 | `no buffer` on play after a successful recording | stale pre-fix `test_dual_loop.scd` functions, or the buffer was manually freed | Re-evaluate the whole `test_dual_loop.scd` (the current code uses `[i - 1]` for its 0-based loop arrays), then record again |
 | Loop plays but never appears in status | `~ji_play_loop.()` was refused because recording was still active | Run `~ji_stop_record.(n)` first; watch for the `still recording` line |
@@ -422,12 +469,17 @@ Run these after evaluating `startup.scd`, before blaming the autotune:
 
 ```supercollider
 s.serverRunning.postln;
-s.options.device.postln;
+s.options.device.postln;          // string, or [in, out] when split
+s.options.inDevice.postln;
+s.options.outDevice.postln;
 s.options.numInputBusChannels.postln;
 s.options.numOutputBusChannels.postln;
 ServerOptions.devices.postln;
+ServerOptions.inDevices.postln;
+ServerOptions.outDevices.postln;
 
-// 1. Output only: should be a quiet 440 Hz tone in both speakers.
+// 1. Output only: should be a quiet 440 Hz tone through Ableton track 1
+//    (SC writes BlackHole; it is not heard from SC alone).
 x = { Out.ar(0, SinOsc.ar(440, 0, 0.1) ! 2) }.play;
 
 // 2. Input passthrough, no autotune:
@@ -439,7 +491,9 @@ z = { Out.ar(1, SoundIn.ar(1)) }.play;
 // x.free; y.free; z.free;
 ```
 
-- If the sine is silent, the problem is the **output device/monitoring path**, not Stage 4.
+- With Stage 5, the sine is written to BlackHole and is audible only through
+  Ableton track 1. If it is silent in Ableton, the problem is the **Ableton
+  input/monitor path**, not Stage 4.
 - If the sine works but `y`/`z` are silent, the problem is the **input device, input channel, or gain**.
 - `SoundIn.ar(1)` requires `numInputBusChannels >= 2`. Stage 4 hardcodes hardware inputs 0 and 1; if your mic is on input 3/4, you must change `\inBus` / recorder `inputChannel` in `test_dual_loop.scd` or route the interface inputs to 1/2.
 - If both tests work but `[AUTOTUNE ch=...] hasFreq` stays 0.00, the signal is reaching the server but not Tartini: check gain, play a steady pitch, and try raising `inputGain` on the live synth.
@@ -448,10 +502,12 @@ z = { Out.ar(1, SoundIn.ar(1)) }.play;
 
 ## 10. Limitations (Stage 4 scope)
 
-- **2-channel output only.** No BlackHole, Aggregate Device, 16-channel routing,
-  or Ableton track mapping. That is Stage 5.
+- **Stage 5 provides the 16-channel infrastructure.** Stage 4's
+  `test_dual_loop.scd` still writes only output pair 0/1 (Ableton track 1). The
+  Stage 5.5 live rig gives loops 1/2 dedicated mono channels (SC 2/3); stereo
+  and per-loop pair routing beyond that is deferred to Stage 8.
 - **Mono loops.** Loop buffers and players are mono; stereo loop files, `.aiff`
-  persistence, and per-loop output pairs are deferred.
+  persistence, and stereo loop pairs are deferred.
 - **No loop OSC control.** Loops are started/stopped from sclang only. Python
   loop transport is Stage 8.
 - **No overdub, no loop-length editing, no crossfade at the loop seam.**
