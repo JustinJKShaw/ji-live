@@ -217,6 +217,10 @@ class MIDIRig:
         self._lock = threading.Lock()
         self._started = False
         self._snapshot: tuple[list[float], float | None, float] | None = None
+        # Stage 7.1 UI toggles.  Both buses default on; the ports stay open
+        # while a bus is muted so re-enabling is immediate.
+        self._drone_enabled = True
+        self._arp_enabled = True
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -258,7 +262,8 @@ class MIDIRig:
         try:
             if snapshot is not None:
                 self._apply(snapshot)
-            self.arp.start()
+            if self._arp_enabled:
+                self.arp.start()
         except Exception:
             self._started = False
             self.arp.stop()
@@ -299,6 +304,76 @@ class MIDIRig:
             return self._started
 
     # ------------------------------------------------------------------
+    # Stage 7.1 per-bus UI toggles
+    # ------------------------------------------------------------------
+
+    @property
+    def drone_enabled(self) -> bool:
+        with self._lock:
+            return self._drone_enabled
+
+    @property
+    def arp_enabled(self) -> bool:
+        with self._lock:
+            return self._arp_enabled
+
+    def set_drone_enabled(self, enabled: bool) -> None:
+        """Mute or unmute the drone without closing its MIDI port.
+
+        Disabling note-offs the held drone note and sends All Notes Off on the
+        drone bus.  Enabling re-applies the last set snapshot, which note-ons
+        the current anchor again.  Both operations are no-ops if the requested
+        state is already active.
+        """
+
+        enabled = bool(enabled)
+        with self._lock:
+            if enabled == self._drone_enabled:
+                return
+            self._drone_enabled = enabled
+            started = self._started
+            snapshot = self._snapshot
+
+        if not started:
+            print(f"[MIDI] drone {'enabled' if enabled else 'disabled'} (awaiting start)")
+            return
+
+        if enabled:
+            if snapshot is not None:
+                ratios, anchor, fundamental = snapshot
+                self.drone.on_set(ratios, anchor, fundamental)
+            else:
+                print("[MIDI] drone enabled; waiting for the next set update")
+        else:
+            self.drone.stop()
+            print("[MIDI] drone disabled")
+
+    def set_arp_enabled(self, enabled: bool) -> None:
+        """Start or stop the arp thread without closing its MIDI port."""
+
+        enabled = bool(enabled)
+        with self._lock:
+            if enabled == self._arp_enabled:
+                return
+            self._arp_enabled = enabled
+            started = self._started
+            snapshot = self._snapshot
+
+        if not started:
+            print(f"[MIDI] arp {'enabled' if enabled else 'disabled'} (awaiting start)")
+            return
+
+        if enabled:
+            if snapshot is not None:
+                ratios, anchor, fundamental = snapshot
+                self.arp.on_set(ratios, anchor, fundamental)
+            self.arp.start()
+            print("[MIDI] arp enabled")
+        else:
+            self.arp.stop()
+            print("[MIDI] arp disabled")
+
+    # ------------------------------------------------------------------
     # Set updates (snapshot from the bridge)
     # ------------------------------------------------------------------
 
@@ -329,8 +404,10 @@ class MIDIRig:
 
     def _apply(self, snapshot: tuple[list[float], float | None, float]) -> None:
         ratios, anchor, fundamental = snapshot
-        self.drone.on_set(ratios, anchor, fundamental)
-        self.arp.on_set(ratios, anchor, fundamental)
+        if self._drone_enabled:
+            self.drone.on_set(ratios, anchor, fundamental)
+        if self._arp_enabled:
+            self.arp.on_set(ratios, anchor, fundamental)
 
 
 # ----------------------------------------------------------------------

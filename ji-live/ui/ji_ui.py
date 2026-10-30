@@ -222,6 +222,7 @@ class MainWindow(QMainWindow):
         self._pending: dict[tuple[Any, ...], float] = {}
         self._status_seen = False
         self._started = False
+        self._midi_sync = False
 
         self._relay = _StatusRelay()
         self._relay.message.connect(
@@ -283,6 +284,8 @@ class MainWindow(QMainWindow):
         if address == osc_control.LOOP_STATE:
             index = int(round(float(args[0])))
             self._refresh_loop_label(index)
+        if address in (osc_control.MIDI_STATUS, osc_control.MIDI_STATE):
+            self._sync_midi_controls()
 
         self._refresh_status_labels()
 
@@ -503,6 +506,12 @@ class MainWindow(QMainWindow):
         self.control_label = QLabel("Controls: waiting for bridge")
         self.cpu_label = QLabel("CPU: waiting for sclang")
         self.midi_label = QLabel("MIDI: waiting for bridge")
+        self.midi_drone_checkbox = QCheckBox("Drone on")
+        self.midi_arp_checkbox = QCheckBox("Arp on")
+        self.midi_drone_checkbox.setEnabled(False)
+        self.midi_arp_checkbox.setEnabled(False)
+        self.midi_drone_checkbox.toggled.connect(self._on_midi_toggle)
+        self.midi_arp_checkbox.toggled.connect(self._on_midi_toggle)
         self.loop_status_label = QLabel("Loop states: waiting for sclang")
         self.message_label = QLabel("")
         self.message_label.setWordWrap(True)
@@ -535,8 +544,14 @@ class MainWindow(QMainWindow):
         grid.addWidget(self.control_label, 3, 0, 1, 2)
         grid.addWidget(self.cpu_label, 4, 0)
         grid.addWidget(self.midi_label, 4, 1)
-        grid.addWidget(self.loop_status_label, 5, 0, 1, 2)
-        grid.addWidget(self.message_label, 6, 0, 1, 2)
+        midi_row = QHBoxLayout()
+        midi_row.addWidget(QLabel("MIDI outputs:"))
+        midi_row.addWidget(self.midi_drone_checkbox)
+        midi_row.addWidget(self.midi_arp_checkbox)
+        midi_row.addStretch(1)
+        grid.addLayout(midi_row, 5, 0, 1, 2)
+        grid.addWidget(self.loop_status_label, 6, 0, 1, 2)
+        grid.addWidget(self.message_label, 7, 0, 1, 2)
         return group
 
     # -- knob queueing ---------------------------------------------------
@@ -562,6 +577,32 @@ class MainWindow(QMainWindow):
         # Always send record_length so the take uses the length shown here,
         # even if the default-length message has not been applied yet.
         self._guard(self.controller.loop_record, index, self._displayed_length())
+
+    def _on_midi_toggle(self, _checked: bool) -> None:
+        if self._midi_sync:
+            return
+        self._guard(
+            self.controller.set_midi_enabled,
+            self.midi_drone_checkbox.isChecked(),
+            self.midi_arp_checkbox.isChecked(),
+        )
+
+    def _sync_midi_controls(self) -> None:
+        """Reflect bridge MIDI enabled/ports and per-bus switch state."""
+
+        midi = self.store.midi
+        state = self.store.midi_state
+        enabled = bool(midi.enabled) if midi is not None else False
+        drone_on = state.drone_enabled if state is not None else True
+        arp_on = state.arp_enabled if state is not None else True
+        self._midi_sync = True
+        try:
+            self.midi_drone_checkbox.setEnabled(enabled)
+            self.midi_arp_checkbox.setEnabled(enabled)
+            self.midi_drone_checkbox.setChecked(bool(enabled and drone_on))
+            self.midi_arp_checkbox.setChecked(bool(enabled and arp_on))
+        finally:
+            self._midi_sync = False
 
     def _flush_pending(self) -> None:
         if not self._pending:
@@ -667,9 +708,13 @@ class MainWindow(QMainWindow):
         elif not store.midi.enabled:
             self.midi_label.setText("MIDI: disabled")
         else:
+            state = store.midi_state
+            drone_state = "on" if (state is None or state.drone_enabled) else "off"
+            arp_state = "on" if (state is None or state.arp_enabled) else "off"
             self.midi_label.setText(
-                f"MIDI: enabled | drone: {store.midi.drone_port or '?'} | "
-                f"arp: {store.midi.arp_port or '?'}"
+                f"MIDI: enabled | drone: {store.midi.drone_port or '?'} "
+                f"({drone_state}) | arp: {store.midi.arp_port or '?'} "
+                f"({arp_state})"
             )
 
         if store.waiting_for_sclang:

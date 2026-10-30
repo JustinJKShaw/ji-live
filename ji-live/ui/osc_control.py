@@ -52,6 +52,8 @@ UI_HELLO = "/ji/ui/hello"
 FREQSET_CHANGED = "/ji/freqset/changed"
 UI_STATE = "/ji/ui/state"
 MIDI_STATUS = "/ji/midi/status"
+MIDI_STATE = "/ji/midi/state"
+MIDI_SET_ENABLED = "/ji/midi/set_enabled"
 
 AUTOTUNE_SET = "/ji/autotune/set"
 AUTOTUNE_STATE = "/ji/autotune/state"
@@ -73,6 +75,7 @@ STATUS_ADDRESSES = (
     FREQSET_CHANGED,
     UI_STATE,
     MIDI_STATUS,
+    MIDI_STATE,
     CPU,
     LOOP_STATE,
     AUTOTUNE_STATE,
@@ -369,6 +372,14 @@ def build_loop_set_default_length(seconds: Any) -> tuple[str, list[Any]]:
     return LOOP_SET_DEFAULT_LENGTH, [length]
 
 
+def build_set_midi_enabled(
+    drone: bool, arp: bool
+) -> tuple[str, list[Any]]:
+    """Build ``/ji/midi/set_enabled [int drone, int arp]``."""
+
+    return MIDI_SET_ENABLED, [1 if drone else 0, 1 if arp else 0]
+
+
 def build_request_state() -> tuple[str, list[Any]]:
     return STATUS_QUERY, []
 
@@ -416,6 +427,14 @@ class MidiStatus:
     enabled: bool
     drone_port: str
     arp_port: str
+
+
+@dataclass
+class MidiToggleState:
+    """Independent Drone/Arp switch state reported by the bridge."""
+
+    drone_enabled: bool
+    arp_enabled: bool
 
 
 def parse_freqset(args: Sequence[Any]) -> FrequencySet:
@@ -484,6 +503,23 @@ def parse_midi_status(args: Sequence[Any]) -> MidiStatus:
     return MidiStatus(bool(enabled), drone_port, arp_port)
 
 
+def parse_midi_state(args: Sequence[Any]) -> MidiToggleState:
+    """Parse ``[int drone_on, int arp_on]`` (0/1 each)."""
+
+    if len(args) != 2:
+        raise ValueError("midi state needs drone and arp 0/1 values")
+    values = []
+    for label, raw in zip(("drone", "arp"), args):
+        try:
+            number = int(round(_as_finite_float(raw, label)))
+        except (TypeError, ValueError):
+            raise ValueError(f"midi {label} must be 0 or 1") from None
+        if number not in (0, 1):
+            raise ValueError(f"midi {label} must be 0 or 1")
+        values.append(bool(number))
+    return MidiToggleState(drone_enabled=values[0], arp_enabled=values[1])
+
+
 def parse_cpu(args: Sequence[Any]) -> float:
     if len(args) != 1:
         raise ValueError("cpu needs one percentage")
@@ -522,6 +558,7 @@ STATUS_PARSERS: dict[str, Callable[[Sequence[Any]], Any]] = {
     FREQSET_CHANGED: parse_freqset,
     UI_STATE: parse_ui_state,
     MIDI_STATUS: parse_midi_status,
+    MIDI_STATE: parse_midi_state,
     CPU: parse_cpu,
     LOOP_STATE: parse_loop_state,
     AUTOTUNE_STATE: parse_autotune_state,
@@ -539,6 +576,7 @@ class StatusStore:
         self.freqset: FrequencySet | None = None
         self.control: BridgeControlState | None = None
         self.midi: MidiStatus | None = None
+        self.midi_state: MidiToggleState | None = None
         self.cpu: float | None = None
         self.loop_states: dict[int, str] = {
             index: "waiting" for index in range(LOOP_INDEX_MIN, LOOP_INDEX_MAX + 1)
@@ -584,6 +622,9 @@ class StatusStore:
             self.bridge_seen = True
         elif address == MIDI_STATUS:
             self.midi = parsed
+            self.bridge_seen = True
+        elif address == MIDI_STATE:
+            self.midi_state = parsed
             self.bridge_seen = True
         elif address == CPU:
             self.cpu = parsed
@@ -848,6 +889,13 @@ class OSCController:
         self._send_sc(*message)
         return message
 
+    def set_midi_enabled(
+        self, drone: bool, arp: bool
+    ) -> tuple[str, list[Any]]:
+        message = build_set_midi_enabled(drone, arp)
+        self._send_bridge(*message)
+        return message
+
     def loop_record(
         self, index: Any, seconds: float | None = None
     ) -> tuple[str, list[Any]]:
@@ -908,6 +956,7 @@ __all__ = [
     "MUTATION_PARAMS",
     "MUTATION_PARAM_MAP",
     "MidiStatus",
+    "MidiToggleState",
     "OSCController",
     "OSCStatusListener",
     "ParamSpec",
@@ -921,6 +970,7 @@ __all__ = [
     "build_loop_stop_record",
     "build_request_state",
     "build_set_autotune",
+    "build_set_midi_enabled",
     "build_set_mutation",
     "build_trigger_mutation",
     "build_trigger_octave",
@@ -932,5 +982,6 @@ __all__ = [
     "parse_freqset",
     "parse_loop_state",
     "parse_midi_status",
+    "parse_midi_state",
     "parse_ui_state",
 ]

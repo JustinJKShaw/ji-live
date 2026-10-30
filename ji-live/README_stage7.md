@@ -1,13 +1,16 @@
 # JI Station — Stage 7 Minimal Performance GUI
 
-**Status:** implemented and awaiting human GUI/audio/MIDI acceptance.
-Stage 7 claims **no** new audio DSP, no new MIDI voices, no rhythm sequencer,
-no save/recall, and no visual process. It is a control surface for the accepted
+**Status:** the owner reports the live GUI/audio/MIDI rig works well, with one
+open item: the drone MIDI was not received (the arp worked). Stage 7.1 adds
+independent **Drone on** / **Arp on** switches and a retrigger path for exactly
+that case; the updated Qt test and the live drone/toggle check are still pending.
+Stage 7 claims **no** new audio DSP, no new MIDI voices, no rhythm sequencer, no
+save/recall, and no visual process. It is a control surface for the accepted
 Stage 5.5 audio rig and Stage 6 MIDI rig.
 
-**Next:** the human acceptance checklist in §11. Stage 7 is not complete until
-the owner confirms that the window controls the rig and that audio/MIDI behavior
-is unchanged.
+**Next:** rerun the headless Qt test, then check the Drone/Arp switches and the
+drone path in §11. Stage 7 is not complete until the owner confirms the GUI
+controls the rig and audio/MIDI behavior is unchanged.
 
 ---
 
@@ -22,7 +25,12 @@ One PyQt6 window, launched as a separate process, with four sections:
 3. **Loops** — loops 1–4 with Record, Stop Rec, Play, Stop, Clear, a visible
    state label, Stop All, and a 1–30 s length knob.
 4. **Status** — ratio/Hz set, anchor, fundamental, bridge control state, CPU,
-   loop states, and MIDI enabled/ports.
+   loop states, MIDI enabled/ports, and independent **Drone on** / **Arp on**
+   checkboxes.
+
+The MIDI checkboxes are a Stage 7.1 extension requested after the first live
+check. They switch the existing Stage 6 buses; they add no new MIDI voice or
+generator.
 
 The UI never talks to Ableton or scsynth directly. It sends mutation controls to
 the Python bridge, sends autotune/loop controls to sclang, and listens for
@@ -38,10 +46,13 @@ bridge, audio, loops, and MIDI keep running.
 | `ui/ji_ui.py` | new | one-window PyQt6 application |
 | `ui/control_surface.scd` | new | sclang autotune/loop/status OSC; evaluate after `test_live_rig.scd` |
 | `test_ui.py` | new | pure OSC tests plus optional headless Qt smoke test |
-| `control/osc_server.py` | modified additively | `/ji/ui/hello` callback |
-| `control/ji_bridge.py` | modified additively | UI status stream, `/ji/ui/hello` reply, `--ui-host`/`--ui-port` |
+| `control/osc_server.py` | modified additively | `/ji/ui/hello` and `/ji/midi/set_enabled` callbacks |
+| `control/ji_bridge.py` | modified additively | UI status stream, `/ji/ui/hello` reply, `/ji/midi/state`, `--ui-host`/`--ui-port` |
+| `control/midi_rig.py` | modified additively | Stage 7.1 independent Drone/Arp switches |
+| `test_mpe.py` | extended additively | per-bus switch regression test |
+| `README_mpe.md` | updated | drone-only troubleshooting note |
 | `README_stage7.md` | new | this document |
-| `design_doc_10.28.10.50` | updated | Stage 7 status, implementation notes, changelog |
+| `design_doc_10.28.10.50` | updated | Stage 7/7.1 status, implementation notes, changelog |
 
 Not modified: `synthdefs/*`, `startup.scd`, `test_live_rig.scd` audio behavior,
 `test_dual_loop.scd`, `test_ableton_routing.scd`, `control/mutation.py`, and the
@@ -231,6 +242,7 @@ channels. Loop-player autotune knobs are not in Stage 7.
 | `/ji/freqset/changed` | `float fundamental, float anchor (-1 = none), float ratio_1 ... ratio_N` | bridge, after every set and on hello |
 | `/ji/ui/state` | `float randomness, float dissonance_bias, float stepwise_bias, float glide_time, int change_count, float temperature, float anchor_mobility, int max_changes` | bridge, after every set and on hello |
 | `/ji/midi/status` | `int enabled (0/1), string drone_port, string arp_port` | bridge, after every set and on hello; empty ports when disabled |
+| `/ji/midi/state` | `int drone_on (0/1), int arp_on (0/1)` | bridge, after every set, on hello, and after a UI switch |
 | `/ji/cpu` | `float percent (0–100)` | sclang, ≈2 Hz |
 | `/ji/loop/state` | `int index (1–4), string state` | sclang, after every action and ≈2 Hz |
 | `/ji/autotune/state` | `int channel, float retuneTime, mix, windowSize, pitchRangeLimit, tartiniThreshold, inputGain` | sclang, after a set, on status query, and at control-surface install |
@@ -238,6 +250,35 @@ channels. Loop-player autotune knobs are not in Stage 7.
 The UI shows `BRIDGE: waiting for bridge` and `SCLANG: waiting for sclang`
 until the first corresponding message. Missing UDP messages are never fatal;
 the window stays usable and sends controls even if a peer is absent.
+
+### 4.4.1 MIDI output switches (Stage 7.1)
+
+The Status group has two checkboxes, **Drone on** and **Arp on**. They are
+enabled only when the bridge reports MIDI enabled; both default on. The UI sends
+both current values on every toggle:
+
+```text
+/ji/midi/set_enabled   int drone (0/1)   int arp (0/1)
+```
+
+The bridge maps this to `MIDIRig.set_drone_enabled()` and
+`MIDIRig.set_arp_enabled()`:
+
+- Disabling **Drone** note-offs the held anchor and sends All Notes Off on the
+  drone bus; the port stays open.
+- Enabling **Drone** re-applies the last set snapshot, which note-ons the
+  current anchor again.
+- Disabling **Arp** stops the arp thread and sends All Notes Off on the arp bus.
+- Enabling **Arp** restarts the arp thread from the current set.
+- Neither switch closes a port, affects audio, or changes the frequency set.
+
+**Drone-only troubleshooting:** the drone is a single held note sent when the
+bridge starts (and only retriggered when the anchor's MIDI note changes). The
+arp continuously sends new notes, so it recovers from a late track/instrument
+setup while the drone does not. If the Drone track/instrument was not ready at
+startup, toggle **Drone** off and on to retrigger it, or restart the bridge.
+Then check the Ableton Drone track's MIDI From (IAC Bus 1, All/MPE channels),
+Monitor In/arm, instrument, and MPE range; see `README_mpe.md` §9.
 
 ### 4.5 UI startup and shutdown
 
@@ -259,12 +300,12 @@ stop the bridge, audio, loops, or MIDI.
 
 ```text
 UI (PyQt6, one window)
- ├─ OSC 9000  → ji_bridge.py   (mutation controls; existing addresses)
+ ├─ OSC 9000  → ji_bridge.py   (mutation controls; /ji/midi/set_enabled)
  ├─ OSC 57120 → sclang         (/ji/autotune/set, loop transport/length,
  │                              /ji/status/query)
  └─ OSC 9001  ← sclang         (/ji/cpu, /ji/loop/state, /ji/autotune/state)
                ← bridge         (/ji/freqset/changed, /ji/ui/state,
-                                  /ji/midi/status)
+                                  /ji/midi/status, /ji/midi/state)
 ```
 
 Implementation notes:
@@ -295,11 +336,14 @@ Implementation notes:
   - `/ji/freqset/changed` with the current fundamental, anchor (`-1.0` if none),
     and the octave-reduced ratios sorted by pitch;
   - `/ji/ui/state` with the current controls and `max_changes`;
-  - `/ji/midi/status` with enabled/ports.
-- On `/ji/ui/hello`, it sends the same three messages. It does not send another
+  - `/ji/midi/status` with enabled/ports;
+  - `/ji/midi/state` with the Drone/Arp switch state.
+- On `/ji/ui/hello`, it sends the same four messages. It does not send another
   `/ji/freqset/update`.
 - `/ji/midi/status` is sent at bridge start through the initial `send_set`, even
   when MIDI is disabled.
+- `/ji/midi/set_enabled` is handled by `MutationOSCServer` and forwarded to the
+  current `MIDIRig`; it never touches audio or the frequency set.
 - `JIBridge.stop()` does not touch the UI; the UI is a separate process.
 
 ### 6.2 sclang control surface
@@ -345,6 +389,9 @@ second after a take fills.
 | Loop state stays `recording` after the length | Auto-stop has not reached the 2 Hz report yet, or Stop Rec was missed | Wait half a second; press Stop Rec; check sclang `[LOOP]` lines |
 | MIDI shows disabled | Bridge started without `--midi` | Restart with `--midi`; MIDI remains off by default |
 | MIDI shows enabled but no sound | IAC/Ableton path, instrument, or MPE range problem | Use `README_mpe.md`; UI status only reflects the bridge's config |
+| Arp works, drone silent | Drone track not ready at bridge start (the drone sends one held note and does not repeat); or Drone track MIDI From is Bus 2 / channel Ch. 1; Monitor Auto without arm; different instrument/MPE setting | Toggle **Drone off/on** in the Status group to retrigger; confirm Drone track MIDI From = `IAC Driver Bus 1`, All/MPE channels, Monitor In; see `README_mpe.md` §9 |
+| Drone/Arp checkboxes are greyed out | Bridge started without `--midi`, or `/ji/midi/status` has not arrived | Restart the bridge with `--midi`; check the UI's `MIDI:` status line |
+| Drone/Arp toggle does nothing | Bridge is not running with MIDI, or the bridge is an older build | Check the bridge's `[MIDI] drone enabled/disabled` / `[MIDI] arp enabled/disabled` lines |
 | Closing the UI stops sound | The bridge/audio process was also closed | Expected UI behavior is to leave the rig running; launch the UI separately and close only its window |
 | Knob value snaps back | Incoming `/ji/ui/state` or `/ji/autotune/state` is syncing the knob | Normal after a mutation/echo; the last move wins |
 
@@ -378,8 +425,9 @@ QT_QPA_PLATFORM=offscreen uv run --with python-osc --with PyQt6 \
 Builds the window with a fake controller, checks the four sections and the
 initial waiting labels, moves a knob and clicks every loop action (asserting the
 1-based loop index), verifies Link and loop-record/length messages, feeds status
-messages, and closes the window (asserting the fake controller stopped). **It
-does not need SuperCollider, the bridge, audio, or MIDI** — it uses fake clients
+messages, exercises the Drone/Arp checkboxes (including no feedback on state
+sync), and closes the window (asserting the fake controller stopped). **It does
+not need SuperCollider, the bridge, audio, or MIDI** — it uses fake clients
 inside the controller. If PyQt6/Qt cannot be imported it skips with a clear
 message and exits 0; `--pure` never depends on Qt.
 
@@ -415,6 +463,12 @@ Human-run check (2026-10-30):
   This validates window construction and signal wiring only. It does **not**
   validate SuperCollider, audio, MIDI, Ableton, IAC, or live performance, and
   it is not Stage 7 acceptance.
+- The Stage 7.1 Drone/Arp checkboxes were added after that run, so the updated
+  Qt test still needs one owner rerun.
+- The owner reported on 2026-10-30 that the live GUI/audio/MIDI rig works well,
+  with one exception: the **drone MIDI was not received** (the arp was fine).
+  The Stage 7.1 Drone/Arp switches and the drone retrigger note below were added
+  in response; the live drone path and the new switches still need a check.
 
 No audio, MIDI, Ableton, IAC, or live GUI behavior has been tested by the agent.
 The agent makes no acceptance claim.
@@ -429,6 +483,9 @@ The agent makes no acceptance claim.
   autotune knobs, or loop file persistence. Those are Stage 8+.
 - MIDI status is the bridge's configured enabled/ports state, not a live probe
   of every port.
+- The Drone/Arp switch state lives in the bridge process, resets to both-on
+  when the bridge restarts, and mutes the bus (it does not mute the Ableton
+  track or save/recall state).
 - Autotune state is a local sclang mirror refreshed at control-surface install
   and on `/ji/status/query` (UI startup); changes made only in a terminal after
   that are not pushed continuously.
@@ -455,11 +512,14 @@ Run in this order and record the result:
 5. Loop 1–4 Record / Stop Rec / Play / Stop / Clear work; the length knob sets
    the take length; states update; no clicks or stuck loops.
 6. The Stage 6 drone/arp still works and gains no stuck notes.
-7. Closing the UI leaves the audio/MIDI rig running.
-8. No audio dropouts, no Qt freeze under live use; CPU remains within the live
+7. **Drone on** and **Arp on** independently mute/unmute their buses; toggling
+   Drone off/on retriggers a held drone note; neither switch closes a port or
+   affects the other bus.
+8. Closing the UI leaves the audio/MIDI rig running.
+9. No audio dropouts, no Qt freeze under live use; CPU remains within the live
    budget.
-9. Record the result. **Stage 7 is not complete until the human confirms the
-   GUI controls the rig and the audio/MIDI behavior is unchanged.**
+10. Record the result. **Stage 7 is not complete until the human confirms the
+    GUI controls the rig and the audio/MIDI behavior is unchanged.**
 
 ---
 

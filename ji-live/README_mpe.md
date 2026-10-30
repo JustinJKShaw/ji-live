@@ -280,6 +280,12 @@ Optional:
 Every `/ji/freqset/update` send (initial set and each mutation) also hands the
 same snapshot to the MIDI rig. The bridge's OSC payload is unchanged.
 
+**Stage 7.1 UI switches:** when the GUI is running, the Status group's
+**Drone on** / **Arp on** checkboxes send `/ji/midi/set_enabled [drone, arp]` to
+the bridge. The bridge mutes or restarts one bus without closing either port.
+Toggling Drone off/on is also the quickest way to retrigger a drone note that
+was missed because the Drone track was not ready at bridge start.
+
 ---
 
 ## 7. Expected diagnostics
@@ -332,6 +338,7 @@ Record the verified value in `config/mpe_config.json`.
 | `could not enumerate MIDI outputs` | `python-rtmidi` missing/broken | Install `python-rtmidi`; rerun `--ports` |
 | No MIDI activity in Ableton | Track not enabled in Link/Tempo/MIDI, or wrong MIDI From | Enable **Track** for both IAC buses; set each track's input to its bus |
 | One MIDI track silent while the other works | MIDI From channel filter left on **Ch. 1**; both tracks on the same bus; Monitor Auto without arm; instrument not loaded | Set the channel selector to **MPE**/All Channels; Drone = Bus 1, Arp = Bus 2; Monitor In; check the instrument |
+| Arp works, drone silent | Drone was not ready when the bridge started (it sends one held note, not a repeating sequence); or the Drone track input/filter is wrong | In the Stage 7 UI, toggle **Drone off/on** to retrigger; confirm the bridge printed `[DRONE] ... (start)` and the Drone track MIDI From is `IAC Driver Bus 1` with All/MPE channels and Monitor In |
 | Notes play but all pitches are 12-TET | Instrument/track not MPE, or MPE disabled | Use an MPE-capable instrument and enable MPE |
 | All pitches sharp/flat by a fixed amount | MPE bend-range mismatch | Set instrument/MPE range to 48 st (or match config) |
 | Drone retriggers on every mutation | Anchor changed to a different MIDI note, or an old build | Check `[DRONE] ... (retrigger)`; unchanged anchor must print nothing |

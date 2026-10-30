@@ -376,8 +376,44 @@ def test_midi_rig_with_fake_outputs() -> None:
     print("  both fake ports received notes and were closed")
 
 
+def test_midi_rig_toggles() -> None:
+    print("\n=== Test 12: MIDIRig drone/arp switches are independent ===")
+    config = replace(
+        load_config(CONFIG_PATH),
+        step_seconds=0.03,
+        gate_seconds=0.015,
+    )
+    drone_fake = FakePort()
+    arp_fake = FakePort()
+    rig = MIDIRig(config, drone_output=drone_fake, arp_output=arp_fake)
+    try:
+        rig.start()
+        rig.on_set(INITIAL_RATIOS, 1.0, FUNDAMENTAL)
+        time.sleep(0.05)
+        assert rig.drone_enabled and rig.arp_enabled
+        assert drone_fake.with_type("note_on")
+        assert arp_fake.with_type("note_on")
+
+        rig.set_drone_enabled(False)
+        assert not rig.drone_enabled and rig.arp_enabled
+        rig.set_drone_enabled(True)
+        assert rig.drone_enabled
+        assert drone_fake.with_type("note_on")
+
+        rig.set_arp_enabled(False)
+        assert not rig.arp_enabled and rig.drone_enabled
+        rig.set_arp_enabled(True)
+        assert rig.arp_enabled
+        time.sleep(0.05)
+        assert arp_fake.with_type("note_on")
+    finally:
+        rig.stop()
+    assert drone_fake.closed and arp_fake.closed
+    print("  drone and arp can be muted/unmuted without closing either port")
+
+
 def test_config_file() -> None:
-    print("\n=== Test 12: config/mpe_config.json is valid and complete ===")
+    print("\n=== Test 13: config/mpe_config.json is valid and complete ===")
     config = load_config(CONFIG_PATH)
     assert config.drone_port == "IAC Driver Bus 1", config
     assert config.arp_port == "IAC Driver Bus 2", config
@@ -412,6 +448,7 @@ def run_pure() -> None:
     test_drone_fallback()
     test_stop_sends_all_notes_off()
     test_midi_rig_with_fake_outputs()
+    test_midi_rig_toggles()
     test_config_file()
     print("\nALL MPE PURE TESTS PASSED")
 

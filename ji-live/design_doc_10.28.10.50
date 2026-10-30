@@ -902,6 +902,8 @@ a `threading.Event` for stop.
 | `/ji/freqset/changed` | [float fundamental, float anchor (-1 if none), float ratio_1 … ratio_N] | Bridge → UI | 7 🟡 |
 | `/ji/ui/state` | [float randomness, float dissonance_bias, float stepwise_bias, float glide_time, int change_count, float temperature, float anchor_mobility, int max_changes] | Bridge → UI | 7 🟡 |
 | `/ji/midi/status` | [int enabled, string drone_port, string arp_port] | Bridge → UI | 7 🟡 |
+| `/ji/midi/state` | [int drone_on (0/1), int arp_on (0/1)] | Bridge → UI | 7.1 🟡 |
+| `/ji/midi/set_enabled` | [int drone (0/1), int arp (0/1)] | UI → Bridge | 7.1 🟡 |
 | `/ji/autotune/set` | [int channel (0/1), string param, float value] | UI → sclang | 7 🟡 |
 | `/ji/autotune/state` | [int channel, float retuneTime, float mix, float windowSize, float pitchRangeLimit, float tartiniThreshold, float inputGain] | sclang → UI | 7 🟡 |
 | `/ji/loop/record` | int index 1..4 | UI → sclang | 7 🟡 |
@@ -1243,12 +1245,15 @@ whitelists and clamps the six autotune Synth arguments and calls the existing
 `~ji_*` loop functions. "Stop All Loops" uses `~ji_stop_record`/`~ji_stop_loop`
 for indices 1–4, not `~ji_stop_all` (which would also free the live autotune
 synths and stop the lookup/CPU routines). `control/osc_server.py` adds the additive
-`/ji/ui/hello` callback; `control/ji_bridge.py` adds `--ui-host`/`--ui-port`
-and sends `/ji/freqset/changed`, `/ji/ui/state`, and `/ji/midi/status` after
-every set and on hello. The `/ji/freqset/update` payload and receiver are
-unchanged. `test_ui.py` covers the pure layer and an optional offscreen Qt
-smoke test; `README_stage7.md` documents setup, start order, ranges, OSC,
-failure modes, and acceptance.
+`/ji/ui/hello` callback and the Stage 7.1 `/ji/midi/set_enabled` callback;
+`control/ji_bridge.py` adds `--ui-host`/`--ui-port` and sends
+`/ji/freqset/changed`, `/ji/ui/state`, `/ji/midi/status`, and
+`/ji/midi/state` after every set and on hello. `MIDIRig` gains
+`set_drone_enabled`/`set_arp_enabled` and `drone_enabled`/`arp_enabled`: they
+mute/restart one existing bus without closing either port or touching audio.
+The `/ji/freqset/update` payload and receiver are unchanged. `test_ui.py`
+covers the pure layer and an optional offscreen Qt smoke test; `README_stage7.md`
+documents setup, start order, ranges, OSC, failure modes, and acceptance.
 
 **Loop-state timing:** record/re-record allocates the buffer asynchronously, so
 sclang reports `recording` about 0.1 s after the action. Stop/Play/Stop/Clear
@@ -1493,18 +1498,24 @@ unchanged when no visual subscriber is present.
 
 **What Stage 7 delivered (built 2026-10-30, awaiting human acceptance):**
 - `ui/ji_ui.py` — one PyQt6 window with Mutation, Live Autotune, Loops, and
-  Status sections; no tabs, menus, or theming pass.
+  Status sections; no tabs, menus, or theming pass. Stage 7.1 adds independent
+  **Drone on** / **Arp on** checkboxes to the Status group.
 - `ui/osc_control.py` — pure message builders, range/clamp helpers, status
   parsers, `StatusStore`, `OSCController`, and a background UDP listener with
   injectable clients/listener for tests. No PyQt6 import.
 - `ui/control_surface.scd` — `/ji/autotune/set`, the eight loop addresses,
   `/ji/status/query`, and CPU/loop/autotune status; whitelist + clamp the six
   autotune Synth arguments and call the existing `~ji_*` loop functions.
-- `control/osc_server.py` — additive `/ji/ui/hello` callback; existing mutation
-  addresses, callbacks, and behavior are unchanged.
+- `control/osc_server.py` — additive `/ji/ui/hello` and Stage 7.1
+  `/ji/midi/set_enabled` callbacks; existing mutation addresses, callbacks, and
+  behavior are unchanged.
 - `control/ji_bridge.py` — additive UI `SimpleUDPClient`, `--ui-host`/
-  `--ui-port`, and `/ji/freqset/changed`, `/ji/ui/state`, `/ji/midi/status`
-  after every set and on hello. `/ji/freqset/update` is exactly unchanged.
+  `--ui-port`, and `/ji/freqset/changed`, `/ji/ui/state`, `/ji/midi/status`,
+  `/ji/midi/state` after every set and on hello. `/ji/freqset/update` is exactly
+  unchanged.
+- `control/midi_rig.py` — additive `set_drone_enabled`/`set_arp_enabled` and
+  `drone_enabled`/`arp_enabled`; each switch mutes or restarts one existing bus
+  without closing either port or changing the audio/frequency set.
 - `test_ui.py` — pure tests for every builder/parser, bridge UI status, and the
   controller lifecycle, plus an optional offscreen Qt smoke test.
 - `README_stage7.md` — setup, start order, ranges, OSC map, failure modes, and
@@ -1514,14 +1525,18 @@ unchanged when no visual subscriber is present.
   skipped in the agent container because it lacks Qt system libraries. The
   owner ran the offscreen Qt smoke test on 2026-10-30 and it passed (four
   groups, knob/button sends, loop indices, status sync, waiting labels, clean
-  close); this validates the window and signal wiring only. No audio, MIDI,
-  Ableton, IAC, or live GUI behavior was tested by the agent.
+  close); this validates the window and signal wiring only. The Stage 7.1 MIDI
+  switches were added after that run; the updated Qt test has not yet been run
+  by the owner. The owner reported on 2026-10-30 that the live GUI/audio/MIDI
+  rig works well, with one exception: the **drone MIDI was not received** (the
+  arp was fine). No audio, MIDI, Ableton, IAC, or live GUI behavior was tested
+  by the agent.
 
 **What is still unverified:**
-- **Stage 7 GUI acceptance** — the window is built, the pure tests pass, and
-  the owner's Qt smoke test passed, but the human has not yet confirmed that it
-  controls the live rig, that audio/MIDI behavior is unchanged, and that
-  closing it leaves the rig running.
+- **Stage 7 acceptance** — the owner confirmed the live GUI/audio/MIDI rig
+  works except for the drone receive path. The Stage 7.1 Drone/Arp switches and
+  the drone retrigger path still need a live check, and the updated Qt test
+  needs one owner rerun.
 - **Stage 8+ performance features** — extra MIDI voices, rhythm controls, state save/recall, more loops, MIDI-generation controls, and loop-player autotune knobs are planned, not implemented.
 - Multi-channel audio stability over long sessions (Stage 5).
 - Per-loop dedicated pair routing beyond loops 1/2 (Stage 8).
@@ -1778,6 +1793,7 @@ not to automatic mutation.
 | 5.9 | 2026-10-30 | **Stage 6 MIDI rig implemented — awaiting human MIDI/Ableton acceptance.** Added `control/mpe_output.py` (MPE pitch math, lazy mido adapter), `control/drone.py` (`AnchorDrone`), `control/arp.py` (`SetArp` + two-group generator), `control/midi_rig.py` (`MIDIRig`, config validation), `config/mpe_config.json`, `test_mpe.py` (pure + `--ports`/`--calibrate`/`--run`), and `README_mpe.md`. Replaced the old most-consonant/N-mutation bass policy with an anchor-following drone on IAC Bus 1 and a two-group set arp on IAC Bus 2; both are monophonic MPE on member channel 2 with a 48-semitone bend range. `ji_bridge.py` gains optional `--midi`/`--mpe-config`; MIDI is off by default, mido is lazy, and `/ji/freqset/update` is unchanged. Pure Python tests pass; no SC, audio, routing, or OSC change. **MIDI/Ableton acceptance was human-pending at the time; confirmed in 6.0.** |
 | 6.0 | 2026-10-30 | **Stage 6 MIDI rig owner-confirmed; roadmap reordered around a minimal GUI.** The owner approved the two-bus MPE rig (drone on IAC Bus 1, arp on Bus 2, 48-semitone bend range, member channel 2) and confirmed it sounds great with no stuck notes. The next feature is **Stage 7 — Minimal Performance GUI**: one barebones PyQt6 window for all mutation controls, live-autotune parameters, loop transport/length, and status. Stage 8 becomes a long-running performance-expansion phase (more MIDI voices, rhythm controls, state save/recall, more loops/options, MIDI-generation parameters, loop-player autotune); Stage 9 granular/glitch FX; Stage 10 GUI UX/aesthetics; Stage 11 visual-half groundwork. Old future Stage 7–10 specs are superseded/remapped. Added `PROMPT_stage7_gui.md`; Stage 6 is marked owner-confirmed. |
 | 7.0 | 2026-10-30 | **Stage 7 implemented — awaiting human GUI/audio/MIDI acceptance.** Added `ui/__init__.py`, `ui/osc_control.py` (pure builders, clamps, status parsers, `StatusStore`, `OSCController`, background listener; no PyQt6 import), `ui/ji_ui.py` (one PyQt6 window: Mutation, Live Autotune with Link, Loops 1–4 + Stop All + 1–30 s length, Status; knob sends coalesced ≈30 Hz, buttons immediate, queued Qt status signals), `ui/control_surface.scd` (autotune whitelist/clamp and `/ji/autotune/state`; eight loop addresses calling the existing `~ji_*` functions; `/ji/status/query`; `/ji/cpu` and loop states at 2 Hz + after actions), `test_ui.py` (pure + optional offscreen Qt), and `README_stage7.md`. Additive only: `control/osc_server.py` gained `/ji/ui/hello` with an `on_ui_hello` callback; `control/ji_bridge.py` gained `--ui-host`/`--ui-port`, a separate UI `SimpleUDPClient`, and `/ji/freqset/changed`, `/ji/ui/state`, `/ji/midi/status` after every set and on hello. The `/ji/freqset/update` payload/receiver, SynthDefs, `startup.scd`, `test_live_rig.scd` audio behavior, `mutation.py`, and Stage 5.5 routing/loop semantics are unchanged. Agent verification: `test_ui.py --pure`, `test_mutation.py`, `test_mutation_controls.py`, and `test_mpe.py --pure` pass; the Qt test skipped in the agent container because it lacks Qt system libraries. Owner verification (2026-10-30): the offscreen Qt smoke test passed on macOS (four groups, knob/button sends, loop indices, status sync, waiting labels, clean close), which validates window/signal wiring only. No audio/MIDI/GUI acceptance is claimed; Stage 7 awaits the human checklist. |
+| 7.1 | 2026-10-30 | **Stage 7.1: independent Drone/Arp switches from the GUI; drone-only silence diagnosed as a one-shot startup note.** Added `MIDIRig.set_drone_enabled()` / `set_arp_enabled()` and `drone_enabled` / `arp_enabled` properties: disabling note-offs/All-Notes-Offs one bus and keeps both ports open; enabling re-applies the last snapshot (drone retriggers; arp thread restarts). Added `/ji/midi/set_enabled [int drone, int arp]` to `MutationOSCServer` with an `on_midi_enabled` callback, and `/ji/midi/state [int drone, int arp]` from the bridge. `ui/osc_control.py` gained the builder/parser/`MidiToggleState`; `ui/ji_ui.py` gained **Drone on** / **Arp on** checkboxes in Status, enabled only when MIDI is enabled, with signal-blocked state sync. `test_ui.py` covers the messages, bridge forwarding, and the Qt checkboxes (including no feedback on sync); `test_mpe.py --pure` gained a MIDIRig per-bus switch test. Documentation notes that the drone is a single held note at startup, so a Drone track/instrument that was not ready can miss it; the Drone off/on toggle retriggers it. No new MIDI voices, no audio change. The owner's first Qt smoke test passed before this extension; the updated Qt test and the live Drone/Arp switches still need one owner rerun. |
 
 ---
 

@@ -18,6 +18,9 @@ No audio and no scsynth calls live here.  Addresses:
     Stage 7 UI handshake.  Calls the optional ``on_ui_hello`` callback after the
     server lock has been released, so the bridge can reply with a status
     snapshot without holding the mutation lock.
+``/ji/midi/set_enabled`` (int drone 0/1, int arp 0/1)
+    Stage 7.1 UI switches for the two MIDI buses.  Calls the optional
+    ``on_midi_enabled`` callback; it never touches audio.
 
 The server runs in a daemon thread so ``start()`` returns immediately.  Stage 3
 attaches an outgoing bridge through the optional ``on_event`` / ``on_octave``
@@ -42,6 +45,8 @@ except ImportError:  # pragma: no cover - exercised only by direct execution
 # Stage 7 UI handshake.  Kept as a module constant so callers can import it
 # without constructing a server.
 UI_HELLO_ADDRESS = "/ji/ui/hello"
+# Stage 7.1: independent drone/arp bus switches from the UI.
+MIDI_SET_ENABLED_ADDRESS = "/ji/midi/set_enabled"
 
 
 class MutationOSCServer:
@@ -57,6 +62,7 @@ class MutationOSCServer:
     TEMPERATURE_ADDRESS = "/ji/mutation/set_temperature"
     ANCHOR_MOBILITY_ADDRESS = "/ji/mutation/set_anchor_mobility"
     UI_HELLO_ADDRESS = UI_HELLO_ADDRESS
+    MIDI_SET_ENABLED_ADDRESS = MIDI_SET_ENABLED_ADDRESS
 
     def __init__(
         self,
@@ -66,6 +72,7 @@ class MutationOSCServer:
         on_event: Callable[[MutationEvent | MutationBatch], None] | None = None,
         on_octave: Callable[[OctaveEvent], None] | None = None,
         on_ui_hello: Callable[[], None] | None = None,
+        on_midi_enabled: Callable[[bool, bool], None] | None = None,
     ) -> None:
         if not isinstance(engine, MutationEngine):
             raise TypeError("engine must be a MutationEngine")
@@ -79,6 +86,8 @@ class MutationOSCServer:
             raise TypeError("on_octave must be callable or None")
         if on_ui_hello is not None and not callable(on_ui_hello):
             raise TypeError("on_ui_hello must be callable or None")
+        if on_midi_enabled is not None and not callable(on_midi_enabled):
+            raise TypeError("on_midi_enabled must be callable or None")
 
         self._engine = engine
         self.listen_host = str(listen_host)
@@ -86,6 +95,7 @@ class MutationOSCServer:
         self._on_event = on_event
         self._on_octave = on_octave
         self._on_ui_hello = on_ui_hello
+        self._on_midi_enabled = on_midi_enabled
 
         self._lock = threading.RLock()
         # Serializes apply -> print -> callback so a threaded OSC server cannot
@@ -115,6 +125,9 @@ class MutationOSCServer:
             self.ANCHOR_MOBILITY_ADDRESS, self._handle_set_anchor_mobility
         )
         dispatcher.map(self.UI_HELLO_ADDRESS, self._handle_ui_hello)
+        dispatcher.map(
+            self.MIDI_SET_ENABLED_ADDRESS, self._handle_midi_enabled
+        )
         self._dispatcher = dispatcher
 
     # ------------------------------------------------------------------
@@ -440,6 +453,42 @@ class MutationOSCServer:
             callback()
         except Exception as exc:  # deliberately broad: UI status is soft
             _warn(f"ui hello callback failed: {exc!r}")
+
+    def _handle_midi_enabled(self, _address: str, *args: Any) -> None:
+        """Stage 7.1: ``[int drone, int arp]`` switches the two MIDI buses."""
+
+        if len(args) != 2:
+            _warn(
+                f"{self.MIDI_SET_ENABLED_ADDRESS} expects drone and arp "
+                f"0/1 values; got {len(args)} arguments"
+            )
+            return
+        try:
+            drone = _one_bool(args[0], "drone")
+            arp = _one_bool(args[1], "arp")
+        except (TypeError, ValueError) as exc:
+            _warn(f"{self.MIDI_SET_ENABLED_ADDRESS}: {exc}")
+            return
+        callback = self._on_midi_enabled
+        if callback is None:
+            return
+        try:
+            callback(drone, arp)
+        except Exception as exc:  # MIDI/UI errors must not kill the OSC thread
+            _warn(f"midi enabled callback failed: {exc!r}")
+
+
+def _one_bool(value: Any, label: str) -> bool:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        raise TypeError(f"{label} must be 0 or 1") from None
+    if not math.isfinite(numeric):
+        raise ValueError(f"{label} must be 0 or 1")
+    rounded = int(round(numeric))
+    if rounded not in (0, 1):
+        raise ValueError(f"{label} must be 0 or 1")
+    return bool(rounded)
 
 
 def _one_float(args: tuple[Any, ...], address: str) -> float | None:

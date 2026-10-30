@@ -28,13 +28,18 @@ from types import SimpleNamespace
 
 import control.ji_bridge as bridge_module
 from control.mutation import MutationEngine
-from control.osc_server import MutationOSCServer, UI_HELLO_ADDRESS
+from control.osc_server import (
+    MIDI_SET_ENABLED_ADDRESS,
+    MutationOSCServer,
+    UI_HELLO_ADDRESS,
+)
 from ui import osc_control
 from ui.osc_control import (
     AUTOTUNE_PARAMS,
     BridgeControlState,
     FrequencySet,
     MidiStatus,
+    MidiToggleState,
     OSCController,
     StatusStore,
     build_loop_clear,
@@ -46,6 +51,7 @@ from ui.osc_control import (
     build_loop_stop_record,
     build_request_state,
     build_set_autotune,
+    build_set_midi_enabled,
     build_set_mutation,
     build_trigger_mutation,
     build_trigger_octave,
@@ -55,6 +61,7 @@ from ui.osc_control import (
     parse_freqset,
     parse_loop_state,
     parse_midi_status,
+    parse_midi_state,
     parse_ui_state,
 )
 
@@ -88,6 +95,26 @@ class FakeClient:
 
     def addresses(self) -> list[str]:
         return [address for address, _ in self.sent]
+
+
+class FakeMidiRig:
+    """Stand-in for MIDIRig's per-bus switches (no mido, no ports)."""
+
+    def __init__(self) -> None:
+        self.config = SimpleNamespace(
+            drone_port="IAC Driver Bus 1", arp_port="IAC Driver Bus 2"
+        )
+        self.drone_enabled = True
+        self.arp_enabled = True
+        self.calls: list[tuple[str, bool]] = []
+
+    def set_drone_enabled(self, enabled: bool) -> None:
+        self.drone_enabled = bool(enabled)
+        self.calls.append(("drone", bool(enabled)))
+
+    def set_arp_enabled(self, enabled: bool) -> None:
+        self.arp_enabled = bool(enabled)
+        self.calls.append(("arp", bool(enabled)))
 
 
 class FakeListener:
@@ -235,6 +262,10 @@ def test_loop_builders() -> None:
     )
     assert build_loop_set_default_length(-1.0)[1] == [1.0]
     assert build_loop_set_default_length(100.0)[1] == [30.0]
+    assert build_set_midi_enabled(True, False) == (
+        "/ji/midi/set_enabled",
+        [1, 0],
+    )
     assert build_request_state() == ("/ji/status/query", [])
     assert build_ui_hello() == ("/ji/ui/hello", [])
 
@@ -316,6 +347,11 @@ def test_status_parsers() -> None:
     assert disabled.enabled is False
     assert disabled.drone_port == "" and disabled.arp_port == ""
 
+    toggle = parse_midi_state([1, 0])
+    assert isinstance(toggle, MidiToggleState)
+    assert toggle.drone_enabled is True and toggle.arp_enabled is False
+    assert parse_midi_state([0, 1]).arp_enabled is True
+
     assert parse_cpu([12.5]) == 12.5
     assert parse_cpu([150.0]) == 100.0
     assert parse_loop_state([3, "recording"]) == (3, "recording")
@@ -324,6 +360,8 @@ def test_status_parsers() -> None:
     for bad in (
         lambda: parse_midi_status([2, "a", "b"]),
         lambda: parse_midi_status([1, "a"]),
+        lambda: parse_midi_state([1]),
+        lambda: parse_midi_state([2, 0]),
         lambda: parse_loop_state([5, "empty"]),
         lambda: parse_loop_state([1, "nonsense"]),
         lambda: parse_cpu([float("nan")]),
@@ -377,6 +415,10 @@ def test_status_store() -> None:
     assert store.freqset is not None and store.freqset.anchor is None
     assert store.apply("/ji/midi/status", [0, "", ""])
     assert store.midi is not None and store.midi.enabled is False
+    assert store.apply("/ji/midi/state", [1, 0])
+    assert store.midi_state is not None
+    assert store.midi_state.drone_enabled is True
+    assert store.midi_state.arp_enabled is False
 
     assert store.apply("/unknown", []) is False
     try:
@@ -394,19 +436,33 @@ def test_status_store() -> None:
 
 
 def test_osc_server_hello() -> None:
-    print("\n=== Test 6: MutationOSCServer /ji/ui/hello callback ===")
+    print("\n=== Test 6: MutationOSCServer hello and MIDI-toggle callbacks ===")
     engine = MutationEngine(INITIAL, seed=3)
     called: list[int] = []
+    midi_called: list[tuple[bool, bool]] = []
     server = MutationOSCServer(
-        engine, listen_port=19311, on_ui_hello=lambda: called.append(1)
+        engine,
+        listen_port=19311,
+        on_ui_hello=lambda: called.append(1),
+        on_midi_enabled=lambda drone, arp: midi_called.append((drone, arp)),
     )
     assert UI_HELLO_ADDRESS == "/ji/ui/hello"
     assert server.UI_HELLO_ADDRESS == "/ji/ui/hello"
+    assert MIDI_SET_ENABLED_ADDRESS == "/ji/midi/set_enabled"
     server._handle_ui_hello("/ji/ui/hello")
     assert called == [1]
     server._handle_ui_hello("/ji/ui/hello", "extra")
     assert called == [1, 1]
-    print("  hello callback runs and extra args are non-fatal")
+
+    server._handle_midi_enabled("/ji/midi/set_enabled", 1, 0)
+    assert midi_called == [(True, False)]
+    server._handle_midi_enabled("/ji/midi/set_enabled", 0, 1)
+    assert midi_called[-1] == (False, True)
+    # Invalid arity/values are rejected without calling back.
+    server._handle_midi_enabled("/ji/midi/set_enabled", 1)
+    server._handle_midi_enabled("/ji/midi/set_enabled", 2, 0)
+    assert len(midi_called) == 2
+    print("  hello and MIDI-toggle callbacks run; invalid values are rejected")
 
 
 def test_bridge_ui_status() -> None:
@@ -435,6 +491,7 @@ def test_bridge_ui_status() -> None:
             "/ji/freqset/changed",
             "/ji/ui/state",
             "/ji/midi/status",
+            "/ji/midi/state",
         ]
 
         freq_address, freq_args = ui_client.sent[0]
@@ -458,6 +515,8 @@ def test_bridge_ui_status() -> None:
 
         _, midi_args = ui_client.sent[2]
         assert midi_args == [0, "", ""]
+        _, midi_state_args = ui_client.sent[3]
+        assert midi_state_args == [0, 0]
 
         # The Stage 3 payload must remain exactly one update per set.
         assert len(client.sent) == 1
@@ -471,23 +530,39 @@ def test_bridge_ui_status() -> None:
             "/ji/freqset/changed",
             "/ji/ui/state",
             "/ji/midi/status",
+            "/ji/midi/state",
         ]
         assert len(client.sent) == 1
 
-        # Explicit midi status with an injected config-like rig.
-        bridge.midi = SimpleNamespace(
-            config=SimpleNamespace(
-                drone_port="IAC Driver Bus 1", arp_port="IAC Driver Bus 2"
-            )
-        )
+        # Explicit MIDI status with an injected rig, then independent toggles.
+        fake_midi = FakeMidiRig()
+        bridge.midi = fake_midi
         ui_client.sent.clear()
         bridge._send_ui_state()
-        assert ui_client.addresses()[-1] == "/ji/midi/status"
-        assert ui_client.sent[-1][1] == [
+        assert ui_client.addresses()[-2:] == [
+            "/ji/midi/status",
+            "/ji/midi/state",
+        ]
+        assert ui_client.sent[-2][1] == [
             1,
             "IAC Driver Bus 1",
             "IAC Driver Bus 2",
         ]
+        assert ui_client.sent[-1][1] == [1, 1]
+
+        ui_client.sent.clear()
+        bridge._set_midi_enabled(False, True)
+        assert fake_midi.drone_enabled is False
+        assert fake_midi.arp_enabled is True
+        assert fake_midi.calls == [("drone", False), ("arp", True)]
+        assert ui_client.addresses() == ["/ji/midi/state"]
+        assert ui_client.sent[0][1] == [0, 1]
+
+        ui_client.sent.clear()
+        bridge._set_midi_enabled(True, False)
+        assert fake_midi.drone_enabled is True
+        assert fake_midi.arp_enabled is False
+        assert ui_client.sent[0][1] == [1, 0]
 
         # The CLI defaults remain compatible.
         parser = bridge_module.build_parser()
@@ -532,12 +607,15 @@ def test_osc_controller() -> None:
     controller.set_mutation("randomness", 0.7)
     controller.trigger_mutation()
     controller.trigger_octave()
+    controller.set_midi_enabled(True, False)
     assert bridge_client.addresses() == [
         "/ji/mutation/set_randomness",
         "/ji/mutation/trigger",
         "/ji/mutation/octave",
+        "/ji/midi/set_enabled",
     ]
     assert bridge_client.sent[0][1] == [0.7]
+    assert bridge_client.sent[-1][1] == [1, 0]
 
     controller.set_autotune(1, "mix", 0.5)
     controller.loop_record(2, 12.0)
@@ -633,6 +711,9 @@ class FakeController:
 
     def set_autotune(self, channel, param, value) -> None:
         self.calls.append(("set_autotune", channel, param, value))
+
+    def set_midi_enabled(self, drone, arp) -> None:
+        self.calls.append(("set_midi_enabled", drone, arp))
 
     def loop_record(self, index, seconds=None) -> None:
         self.calls.append(("loop_record", index, seconds))
@@ -769,6 +850,29 @@ def run_qt_tests() -> int:
         "/ji/midi/status", [1, "IAC Driver Bus 1", "IAC Driver Bus 2"]
     )
     assert "IAC Driver Bus 1" in window.midi_label.text()
+    assert window.midi_drone_checkbox.isEnabled()
+    assert window.midi_arp_checkbox.isEnabled()
+
+    # Per-bus toggles: state sync must not emit feedback OSC.
+    window._on_status_message("/ji/midi/state", [1, 0])
+    assert window.midi_drone_checkbox.isChecked()
+    assert not window.midi_arp_checkbox.isChecked()
+    assert "(on)" in window.midi_label.text()
+    assert "(off)" in window.midi_label.text()
+
+    fake.calls.clear()
+    window.midi_arp_checkbox.setChecked(True)
+    assert ("set_midi_enabled", True, True) in fake.calls, fake.calls
+
+    fake.calls.clear()
+    window._on_status_message("/ji/midi/state", [0, 1])
+    assert not window.midi_drone_checkbox.isChecked()
+    assert window.midi_arp_checkbox.isChecked()
+    assert not [c for c in fake.calls if c[0] == "set_midi_enabled"], fake.calls
+
+    window._on_status_message("/ji/midi/status", [0, "", ""])
+    assert not window.midi_drone_checkbox.isEnabled()
+    assert not window.midi_arp_checkbox.isEnabled()
 
     window._on_status_message("/ji/loop/state", [2, "recording"])
     assert "recording" in window.loop_state_labels[2].text()

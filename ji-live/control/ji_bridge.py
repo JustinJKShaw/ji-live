@@ -49,6 +49,7 @@ FREQSET_ADDRESS = "/ji/freqset/update"
 FREQSET_CHANGED_ADDRESS = "/ji/freqset/changed"
 UI_STATE_ADDRESS = "/ji/ui/state"
 MIDI_STATUS_ADDRESS = "/ji/midi/status"
+MIDI_STATE_ADDRESS = "/ji/midi/state"
 MAX_RATIOS = 12
 
 
@@ -134,6 +135,7 @@ class JIBridge:
             on_event=self._on_event,
             on_octave=self._on_octave,
             on_ui_hello=self._send_ui_state,
+            on_midi_enabled=self._set_midi_enabled,
         )
         # Stage 2 API: this is the glide carried by every subsequent event.
         self.server.set_glide_time(glide_time)
@@ -257,6 +259,7 @@ class JIBridge:
         self._send_ui_message(FREQSET_CHANGED_ADDRESS, freqset_args)
         self._send_ui_message(UI_STATE_ADDRESS, ui_state_args)
         self._send_midi_status()
+        self._send_midi_state()
 
     def _send_midi_status(self) -> None:
         """Send ``[enabled, drone_port, arp_port]``; empty ports when off."""
@@ -269,6 +272,37 @@ class JIBridge:
             arp_port = str(getattr(config, "arp_port", "") or "")
             args = [1, drone_port, arp_port]
         self._send_ui_message(MIDI_STATUS_ADDRESS, args)
+
+    def _send_midi_state(self) -> None:
+        """Send ``[drone_on, arp_on]`` so the UI checkboxes resync."""
+
+        if self.midi is None:
+            args: list[Any] = [0, 0]
+        else:
+            args = [
+                1 if bool(getattr(self.midi, "drone_enabled", True)) else 0,
+                1 if bool(getattr(self.midi, "arp_enabled", True)) else 0,
+            ]
+        self._send_ui_message(MIDI_STATE_ADDRESS, args)
+
+    def _set_midi_enabled(self, drone: bool, arp: bool) -> None:
+        """Stage 7.1: apply independent Drone/Arp switches from the UI."""
+
+        if self.midi is None:
+            print(
+                "[MIDI] UI toggle ignored: MIDI is disabled "
+                "(start the bridge with --midi)",
+                file=sys.stderr,
+            )
+            self._send_midi_state()
+            return
+        try:
+            self.midi.set_drone_enabled(drone)
+            self.midi.set_arp_enabled(arp)
+        except Exception as exc:  # MIDI is non-critical; keep the bridge alive
+            print(f"[MIDI] UI toggle failed: {exc}", file=sys.stderr)
+        finally:
+            self._send_midi_state()
 
     def _send_ui_message(self, address: str, args: list[Any]) -> None:
         """Best-effort UI UDP send; a missing UI must never break the bridge."""
