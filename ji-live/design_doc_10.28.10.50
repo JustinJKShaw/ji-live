@@ -1,6 +1,6 @@
 # JI Live — Complete Design & Implementation Reference
 
-**Version 5.7 · Archival / New-Session Ready**
+**Version 5.8 · Archival / New-Session Ready**
 **Purpose:** If a new session (human or AI) opens this document with no prior context, they must be able to understand the project, current state, and how to proceed without asking questions.
 
 **Table of Contents**
@@ -25,13 +25,13 @@
 
 ## 1. Executive Summary
 
-**What this is:** A real-time performance environment halfway between an algorithmic composition system and a DAW. It operates on just-intonation (JI) pitch-class sets that mutate during performance. Audio inputs (microphone, guitar) are snapped to a global frequency-class grid; the grid itself evolves algorithmically; loops and glitch effects operate on the quantized material. Audio is routed to **Ableton Live** for downstream VST hosting, MPE synth playback, and final mixing. **MPE MIDI is also output** to Ableton, allowing Ableton-hosted synths (initially a bass/drone voice, later polyphonic MPE melodies) to play JI frequencies via per-note pitch bend.
+**What this is:** A real-time performance environment halfway between an algorithmic composition system and a DAW. It operates on just-intonation (JI) pitch-class sets that mutate during performance. Audio inputs (microphone, guitar) are snapped to a global frequency-class grid; the grid itself evolves algorithmically; loops and glitch effects operate on the quantized material. Audio is routed to **Ableton Live** for downstream VST hosting, MPE synth playback, and final mixing. **MPE MIDI is also output** to Ableton on two independent monophonic buses: an anchor-following drone and a two-group set arp (later polyphonic MPE melodies). Ableton-hosted synths play arbitrary JI frequencies via per-note pitch bend.
 
 **Who it is for:** An improvising musician (the project owner) who wants harmonic constraint without losing spontaneity, working in an electroacoustic idiom where digital timbre manipulation is part of the aesthetic.
 
-**What is done:** Stage 0 (server skeleton, 2-channel I/O, Tartini pitch tracking verification), Stage 1 (static autotune to a hardcoded JI set, single channel), Stage 2 (decentralised pure-Python mutation engine, no audio), and Stage 3 (mutation → autotune bridge) are complete and accepted by the project owner (audio and Python↔sclang communication working). Stage 4 (dual-channel autotune + raw looper) is implemented in sclang/SynthDefs; its audio acceptance is deferred to the Stage 5 BlackHole → Ableton monitoring path.
+**What is done:** Stage 0 (server skeleton, 2-channel I/O, Tartini pitch tracking verification), Stage 1 (static autotune to a hardcoded JI set, single channel), Stage 2 (decentralised pure-Python mutation engine, no audio), Stage 3 (mutation → autotune bridge), Stage 4 (dual-channel autotune + raw looper), Stage 5 (BlackHole 16ch + Ableton routing), and Stage 5.5 (four-channel live rig) are implemented. Stage 6 (MIDI-only anchor drone + set arp) is implemented but not yet human-accepted. The owner reported **all sound checks passed on 2026-10-30**, including the four-channel live rig and Python mutation. The adjustable loop-length control was added after that report.
 
-**What is built and awaiting listening:** Stage 5 (BlackHole 16-channel output + Ableton audio routing) is implemented: MiniFuse 2 as the two-channel input, BlackHole 16ch as the 16-channel output, 2 in / 16 out, `test_ableton_routing.scd`, and the Ableton channel map. Stage 5.5 adds `test_live_rig.scd`: two autotuned live inputs plus two loop voices on SC 0/1/2/3, with the Python mutation bridge. The owner reports the 8-pair Ableton routing test works; Stage 3.5/4/5/5.5 audio acceptance remains pending the live listening test. Stage 3.5 Python controls remain accepted at the Python level.
+**What is built:** Stage 5 uses MiniFuse 2 input / BlackHole 16ch output, 2 in / 16 out, `test_ableton_routing.scd`, and the 8-pair map. Stage 5.5 adds `test_live_rig.scd`: two autotuned live inputs plus two loop voices on SC 0/1/2/3, with the Python mutation bridge. Stage 6 adds the MIDI-only rig: `control/mpe_output.py`, `control/drone.py`, `control/arp.py`, `control/midi_rig.py`, `config/mpe_config.json`, `test_mpe.py`, and `README_mpe.md`. Stage 3.5's Python control harness passes; its audible batch/temperature/anchor controls were not separately called out in the owner's all-pass report. **Stage 6's pure Python tests pass; MIDI/Ableton acceptance is still human-pending.**
 
 **Core hypothesis:** SuperCollider's `scsynth` is the correct audio backend for pitch tracking, pitch shifting, looping, and granular processing. Ableton Live is the correct downstream host for VST/AU synths and effects, final mixing, and MPE target instruments. The two communicate via a virtual audio device (BlackHole) for audio and IAC Driver for MIDI.
 
@@ -102,7 +102,7 @@ Loop buffers store dry, un-retuned audio. Playback always routes through the sam
 
 ### 2.7 Why manual mutation trigger
 
-Mutations are user-triggered. Auto-clocking and audio-reactive triggering are **out of scope**. MIDI mapping (Stage 6+) is in scope.
+Mutations are user-triggered. Auto-clocking and audio-reactive triggering are **out of scope**. MIDI mutation mapping (Stage 8) is in scope.
 
 ### 2.8 Why Python for control layer, sclang for Stage 1
 
@@ -120,7 +120,7 @@ The UI is a pure OSC control surface. PyQt6 is mature on macOS, handles threaded
 
 The project owner uses Ableton Live and wants:
 - **Multi-channel audio routing** from SC into Ableton (for per-stream VST hosting, mixing, and monitoring).
-- **MPE MIDI output** to Ableton-hosted synths (bass/drone, later polyphonic melodies).
+- **MPE MIDI output** to Ableton-hosted synths (anchor drone + set arp, later polyphonic melodies).
 - **VST/AU hosting** without building a VST host inside SC.
 
 Ableton dramatically reduces the SC-side work: SC no longer needs to host VSTs (Stage 7 becomes optional), and MIDI synths are provided by Ableton rather than built in SC.
@@ -139,15 +139,15 @@ Ableton dramatically reduces the SC-side work: SC no longer needs to host VSTs (
 
 Standard MIDI note-on only transmits 12-TET pitches. MPE (MIDI Polyphonic Expression) gives each note its own channel with per-note pitch bend (14-bit, typically ±48 semitones). A JI frequency `f` is expressed as the nearest MIDI note `n` plus a pitch bend offset `d` in semitones. This lets Ableton-hosted synths play arbitrary JI frequencies with continuous pitch control — essential for a system where the pitch set mutates.
 
-### 2.13 Why the bass/drone is the first MPE target
+### 2.13 Why the anchor drone and set arp are the first MPE targets
 
-A monophonic, slow-moving voice is:
+Two monophonic, slow-moving voices are:
 - Easiest to implement (no voice allocator, no per-note channel management).
-- Musically foundational (a drone anchors a harmonic texture).
-- A natural test of MPE pitch bend correctness (single voice = audible if wrong).
-- Thematically aligned with the project (a stable consonant anchor for the shifting set).
+- Musically foundational (a drone anchors a harmonic texture; an arp makes the set audible).
+- A natural test of MPE pitch bend correctness (one voice per bus = audible if wrong).
+- Thematically aligned with the project (a stable anchor plus a rotating view of the shifting set).
 
-Polyphonic MPE melodies are deferred.
+Each bus uses one member channel and one note at a time. Polyphonic MPE melodies are deferred past Stage 6.
 
 ### 2.14 Why from-source SuperCollider is a risk
 
@@ -285,8 +285,8 @@ separate `inDevice`/`outDevice` configuration.
 - Gate target updates on `hasFreq > 0.5`.
 - From-source SC and prebuilt plugin ABI must match — if plugins crash, rebuild from source.
 - **BlackHole channel count:** Stage 5 requires **BlackHole 16ch** (8 stereo pairs); do not install the 2ch or 64ch build for this stage.
-- **MPE bend range:** must be matched between SC (sending) and Ableton instrument (receiving). Calibrate before trusting bass/drone pitch.
-- **IAC Driver:** must be enabled in Audio MIDI Setup → Window → Show MIDI Studio → IAC Driver → "Device is online".
+- **MPE bend range:** must be matched between Python (sending) and the Ableton instrument (receiving). The rig uses 48 semitones; calibrate before trusting drone/arp pitch.
+- **IAC Driver:** must be enabled in Audio MIDI Setup → Window → Show MIDI Studio → IAC Driver → "Device is online"; the rig needs **two** buses (`IAC Driver Bus 1` and `IAC Driver Bus 2`).
 
 ---
 
@@ -303,12 +303,12 @@ separate `inDevice`/`outDevice` configuration.
 │  Responsibilities:                                            │
 │  - FrequencySet state (list of ratios)                        │
 │  - Mutation engine (Sethares roughness)                       │
-│  - Bass/drone selector (most consonant member)                │
-│  - MPE voice allocator + pitch bend math                      │
+│  - Anchor drone + two-group set arp (MIDI rig)                │
+│  - MPE pitch-bend math (one channel per bus)                  │
 │  - Loop transport / buffer management                         │
 │  - UI / MIDI button handling                                  │
 │  - Sends OSC to scsynth                                       │
-│  - Sends MPE MIDI to IAC Driver → Ableton                     │
+│  - Sends MPE MIDI to IAC Bus 1/2 → Ableton                    │
 └─────────────┬────────────────────────────┬────────────────────┘
               │ OSC                        │ MIDI (MPE via IAC)
 ┌─────────────▼────────────────┐  ┌────────▼─────────────────────┐
@@ -318,7 +318,7 @@ separate `inDevice`/`outDevice` configuration.
 │  SoundIn(0,1) → Tartini →     │  │  - MPE synth tracks           │
 │    AutotuneCh0/1              │  │  - VST/AU hosting             │
 │  LoopBuf[N] → Tartini →       │  │  - Final mixing, monitoring   │
-│    AutotuneLoop[N]            │  │  - Bass/drone (MPE synth)     │
+│    AutotuneLoop[N]            │  │  - Anchor drone + set arp     │
 │  Granular FX bus              │  │                               │
 │                               │  │  Output: MiniFuse 2/headphones│
 │  Out: BlackHole 16ch (16 ch)  │  │                               │
@@ -388,8 +388,10 @@ ji-live/
 │   ├── osc_server.py                    # Stage 2 ✅ + Stage 3/3.5 callbacks
 │   ├── ji_bridge.py                     # Stage 3 ✅ + controls 🟡
 │   ├── midi_mutation.py                 # Stage 8
-│   ├── mpe_output.py                    # Stage 6 (NEW)
-│   ├── bass_drone.py                    # Stage 6 (NEW)
+│   ├── mpe_output.py                    # Stage 6 🟡 MPE port/pitch helper
+│   ├── drone.py                         # Stage 6 🟡 anchor drone
+│   ├── arp.py                           # Stage 6 🟡 set arp + group generator
+│   ├── midi_rig.py                      # Stage 6 🟡 drone/arp orchestrator
 │   └── event_broadcast.py               # Stage 10
 ├── ui/
 │   ├── ji_ui.py                         # Stage 9
@@ -398,7 +400,7 @@ ji-live/
 │   ├── ableton_routing.json             # Stage 5 🟡 awaiting audio acceptance
 │   ├── live_rig_routing.json            # Stage 5.5 🟡 awaiting audio acceptance
 │   ├── midi_map.json                    # Stage 8
-│   └── mpe_config.json                  # Stage 6 (bend range, base note)
+│   └── mpe_config.json                  # Stage 6 🟡 buses, channels, bend range, timing
 ├── test_tartini.scd                     # Stage 0 ✅
 ├── test_autotune.scd                    # Stage 1 ✅
 ├── test_mutation.py                     # Stage 2 ✅
@@ -407,7 +409,7 @@ ji-live/
 ├── test_dual_loop.scd                   # Stage 4 🟡 audio acceptance deferred
 ├── test_ableton_routing.scd             # Stage 5 🟡 awaiting audio acceptance
 ├── test_live_rig.scd                    # Stage 5.5 🟡 awaiting audio acceptance
-├── test_mpe.py                          # Stage 6 (NEW)
+├── test_mpe.py                          # Stage 6 🟡 pure + hardware checks
 ├── test_granular.scd                    # Stage 8
 ├── test_vst.scd                         # Stage 7 (optional)
 ├── test_events.py                       # Stage 10
@@ -419,7 +421,7 @@ ji-live/
 ├── README_stage4.md                     # Stage 4 🟡 awaiting audio acceptance
 ├── README_stage5.md                     # Stage 5 🟡 awaiting audio acceptance
 ├── README_live_rig.md                   # Stage 5.5 🟡 awaiting audio acceptance
-├── README_mpe.md                        # Stage 6 (NEW)
+├── README_mpe.md                        # Stage 6 🟡 IAC/Ableton setup, calibration
 ├── README_stage7.md
 ├── README_stage9.md
 └── design_doc_10.28.10.50               # this document
@@ -451,7 +453,7 @@ SC 2/3, and maps the two live channels to SC 0/1. It adds
 2. Human opens Ableton, configures input as BlackHole 16ch (inputs 1–16) and output as MiniFuse 2/headphones.
 3. Human launches SC IDE, evaluates `startup.scd` (server boots with separate in/out devices, buses allocated, SynthDefs loaded).
 4. Human evaluates `test_ableton_routing.scd` (Stage 5 infrastructure), then `test_live_rig.scd` (Stage 5.5 product), `test_autotune.scd` (Stage 1), `test_bridge.scd` (Stage 3), or `test_dual_loop.scd` (Stage 4).
-5. Human launches Python bridge (`python control/ji_bridge.py`).
+5. Human launches the Python bridge (`python control/ji_bridge.py`); add `--midi` for the Stage 6 MPE rig after IAC/Ableton setup.
 6. Human launches UI (`python ui/ji_ui.py`, Stage 9).
 
 ---
@@ -501,7 +503,7 @@ This contract applies to **all stages**. Included verbatim in every agent prompt
 
 ### 5.4 MIDI-thread rule
 
-MPE MIDI output must not block the audio thread or the main control thread. Use a dedicated MIDI-sending thread or `mido`'s non-blocking mode. Voice allocation and pitch-bend calculation happen in the control layer, never in a SynthDef.
+MPE MIDI output must not block the audio thread or the main control thread. The arp runs in its own daemon thread; the drone sends from the bridge callback. The arp thread owns a `threading.Lock` around the current pattern and a `threading.Event` for stop. Both voices receive immutable engine snapshots from the bridge; they never read the `MutationEngine` directly. Pitch-bend calculation happens in the control layer, never in a SynthDef. `mido` is imported lazily and only when `--midi` opens a real port.
 
 ### 5.5 Output format (for agent-generated code)
 
@@ -631,6 +633,8 @@ MutationBatch(events: tuple[MutationEvent, ...], glideTime)
 
 **Deferred:** stereo loop buffers, `~ji_buf_*` `.aiff` persistence via `Buffer.write`/`Buffer.read`, and per-loop output pairs beyond loops 1/2 are later-stage work (Stage 8 for stereo/per-loop routing and persistence formats). Stage 5 provides the 16-channel infrastructure and keeps `test_dual_loop.scd` on pair 0/1; Stage 5.5 gives loops 1/2 dedicated mono channels on SC 2/3.
 
+**Loop length:** `test_live_rig.scd` defaults to **8.0 s** per loop. `~ji_record_loop.(i)` uses `~ji_loop_default_seconds`; `~ji_record_loop.(i, seconds)` overrides one take; `~ji_set_loop_default.(seconds)` changes the default. Every recording reallocates a buffer of exactly the requested length. `test_dual_loop.scd` retains its original 4.0 s default.
+
 ### 6.7 VST hosting (Stage 7, now optional)
 
 If Ableton hosts VSTs, SC-side VST hosting is unnecessary. **Decision deferred to Stage 7.** If the owner wants VSTs *before* the autotune (i.e., inside SC's input chain), use `VSTPlugin.ar`. If VSTs are only needed downstream (post-autotune), Ableton handles them.
@@ -731,74 +735,121 @@ is deferred to Stage 8. The Stage 5 map is in §4.2 and
 - **Shared devices:** SC and Ableton use the MiniFuse 2 and BlackHole in opposite directions (SC: MiniFuse input, BlackHole output; Ableton: BlackHole input, MiniFuse output). If CoreAudio/Ableton cannot open them concurrently, or the Live version cannot select separate input/output devices, use the Aggregate fallback documented in `README_stage5.md` §9. Do not make it the primary path.
 - **Feedback:** routing Ableton's master or a track back to BlackHole, or monitoring BlackHole twice, causes a loop.
 
-### 6.11 MPE MIDI output (Stage 6, NEW)
+### 6.11 MPE MIDI output (Stage 6, implemented)
 
-**Goal:** SC/control layer sends per-note MPE MIDI to Ableton-hosted synths, allowing arbitrary JI pitches via pitch bend.
+**Goal:** the Python control layer sends per-note MPE MIDI to Ableton-hosted
+synths, allowing arbitrary JI pitches via pitch bend. Stage 6 is MIDI-only:
+there is no new SC audio voice and no new OSC address.
 
-**MIDI port:** IAC Driver (enabled in Audio MIDI Setup → Window → Show MIDI Studio).
+**Two independent buses.** The two outputs are IAC ports, not audio buses and
+not MIDI channels:
 
-**MPE convention:**
-- Channel 1 (MIDI): master channel, global messages only.
-- Channels 2–16: member channels, one per note, carry note-on, per-note pitch bend, per-note pressure/slide.
+| Voice | IAC port | Ableton MIDI track |
+|---|---|---|
+| AnchorDrone | `IAC Driver Bus 1` | `Drone` |
+| SetArp | `IAC Driver Bus 2` | `Arp` |
 
-**Pitch bend math:**
+Both streams are monophonic and use member channel 2 (mido channel index 1).
+Using channel 2 on both buses is fine because the buses are independent ports.
+The MPE master channel 1 is never used for note data.
 
-Given target frequency `f` and bend range `R` semitones:
+**MPE convention:** channel 1 (MIDI) is the master channel, global messages
+only; channels 2–16 are member channels. Member channel 2 carries note-on,
+note-off, and per-note pitch bend.
+
+**Pitch-bend math.** Given target frequency `f` and bend range `R` semitones:
+
 ```
 n = round(69 + 12 * log2(f / 440))       # nearest MIDI note
 d = 12 * log2(f / mtof(n))               # deviation in semitones
 bend14 = 8192 + round(d / R * 8192)      # 14-bit value
 ```
 
-`bend14` is clamped to `[0, 16383]`. If `d` exceeds `±R`, the note is unreachable — choose a lower octave or raise `R`.
+- `n` is clamped to `0..127`; if `f` is outside MIDI range, transpose it by
+  whole octaves and use the adjusted frequency for `d`.
+- `bend14` is clamped to `0..16383`. With `R = 48` the nearest-note deviation
+  is at most half a semitone, so the clamp is a safety net.
+- mido uses centered pitch: `pitch = bend14 - 8192`, in `-8192..8191`.
+- Send pitchwheel **before** note-on on the same member channel, so the first
+  sounding sample is already in tune.
+- Default `R = 48` semitones. It must match the instrument's MPE pitch-bend
+  range in Ableton; a mismatch makes every JI pitch wrong. If the instrument is
+  not MPE-capable it plays 12-TET; do not use it for this test.
 
-**Voice allocation:** For monophonic bass/drone, pin to one member channel. For polyphonic (later), use round-robin or a `ContiguousBlockAllocator` in Python.
+**Port discipline.** Exact IAC names are read from `config/mpe_config.json`.
+Opening a port calls `mido.get_output_names()`; a missing name raises a clear
+error listing the available outputs and never silently uses the other bus.
+`mido`/`python-rtmidi` are optional and imported lazily, so the Stage 2/3.5
+harnesses still run without mido.
 
-**Bend range configuration:** MPE spec default is ±48 semitones. Many soft synths default to ±2. **Configure in Ableton:**
-- In Live 11+: MIDI track → MIDI Effect → MPE → set "Pitch Bend Range".
-- In the synth plugin: set its pitch bend range parameter to match.
+**Implementation.** `control/mpe_output.py` provides `MPEOutput`,
+`frequency_to_pitch()`, `MPEPitch`, and `MPEMessage`. A real mido port is wrapped
+in an adapter that converts `MPEMessage` to `mido.Message`; the pure tests pass a
+fake output object that receives `MPEMessage` and never imports mido.
 
-**Calibration procedure (before implementing bass/drone):**
-1. Python sends MIDI note 60 on member channel 2 with `bend14 = 8192`. Record pitch in Ableton → should be C4 (261.63 Hz).
-2. Send `bend14 = 4096` (bend down half range). Record pitch → should be C4 minus `R/2` semitones.
-3. Send `bend14 = 12288` (bend up half range). Record pitch → should be C4 plus `R/2` semitones.
-4. Adjust `mpeBendRange` in `config/mpe_config.json` until measured pitches match.
+**Calibration:** see §15.6 and `README_mpe.md`. Both Ableton tracks must play
+C4 from `test_mpe.py --calibrate`; a 275 Hz JI note must read 275 Hz, not
+277.18 Hz (C#4) or 261.63 Hz (C4).
 
-**Python implementation:** `mido.open_output('IAC Driver Bus 1')`. Send messages:
-```python
-out.send(mido.Message('note_on', channel=1, note=60, velocity=100))  # member ch 2 (0-indexed ch 1)
-out.send(mido.Message('pitchwheel', channel=1, pitch=bend14 - 8192))  # mido uses centered [-8192, 8191]
-```
-
-**Note on mido pitchwheel:** mido uses a centered representation `[-8192, 8191]`, not the raw 14-bit value. Convert accordingly.
-
-### 6.12 Bass/drone voice (Stage 6, NEW)
+### 6.12 Anchor drone (Stage 6, implemented)
 
 **Behavior:**
-- Monophonic. One member channel (default 2 / index 1).
-- **Selection:** Prefer the mutation engine's protected `anchorRatio` as the drone. If no anchor exists, fall back to the class with lowest Sethares roughness contribution to the rest of the set; tie-break by smaller numerator+denominator.
-- **Register:** The drone chooses its own octave near `base_note`; this is a local voice register, not a global set property.
-- **Mutation policy:** Does NOT follow every mutation. Re-selects only when:
-  - User triggers `/ji/bass/trigger` (or MIDI note from Stage 8 mapping), OR
-  - `bassMutationInterval` mutations have elapsed since last bass change (default: 8), OR
-  - Held frequency is removed from the set (and `bassMustBeSetMember = true`).
-- **Glide:** Pitch bend smoothed over `bassGlideTime` (default 0.5 s). Set to 0 for instant jumps.
-- **Base note:** Default MIDI 36 (C2). Configurable.
-- **Output:** MPE MIDI only. Sound comes from Ableton-hosted MPE synth.
+- Monophonic. One MPE output on `IAC Driver Bus 1`, member channel 2.
+- **Pitch:** `engine.anchor_ratio * engine.fundamental`, at the fundamental
+  octave. Do **not** use the analysis voicing octave. If the frequency is
+  outside MIDI range, transpose by whole octaves in the MPE helper.
+- **Fallback:** if `anchor_ratio` is `None`, use `current_ratios[0]` and log a
+  warning. If the anchor is not in the current set, use the first class and log
+  a warning.
+- **Start:** send pitch bend, then note-on, then hold the note.
+- **Set updates:**
+  - anchor frequency unchanged → send nothing; the note stays constant and
+    does not retrigger;
+  - anchor changed but maps to the same MIDI note → send only a pitch bend;
+  - anchor changed to a different MIDI note → note-off the old note, then
+    pitch bend + note-on the new note.
+- **Stop:** note-off the held note and send CC 123 (All Notes Off).
+- **No old policy:** this phase does not select the most consonant class and
+  does not wait for N mutations. It follows the anchor directly. There are no
+  `/ji/bass/*` OSC addresses.
 
-**Implementation:** A `BassDrone` class in `control/bass_drone.py`:
-- `__init__(mpe_output, frequency_set, base_note=36, glide_time=0.5)`
-- `select_anchor_or_most_consonant() -> float` — returns Hz of the anchor, or the most consonant member if no anchor is present.
-- `update(frequency_set, force=False)` — re-selects if force or interval elapsed.
-- `send_mpe_note(freq)` — sends note-on + pitch bend.
-- `glide_to(freq)` — sends interpolated pitch bend over `glide_time`.
-- Runs in the bridge process (same as mutation engine) so it can directly read the current set.
+**Implementation:** `control/drone.py` (`AnchorDrone`). It receives immutable
+snapshots via `on_set(ratios, anchor, fundamental)` and never reads the engine.
 
-**Calibration dependency:** `BassDrone` reads `mpeBendRange` from `config/mpe_config.json`. If bend range is wrong, bass pitches will be wrong. Calibrate first.
+### 6.13 Set arp (Stage 6, implemented)
 
-### 6.13 Voice allocation for polyphonic MPE (deferred)
+**Behavior:**
+- Continuous monophonic sequence on `IAC Driver Bus 2`, member channel 2. It is
+  regenerated on every set update from the snapshot.
+- **Shared ratio:** default is the current anchor if it is in the set; otherwise
+  a random class. Configurable (`arp_shared_mode`: `"anchor"` | `"random"`).
+- **Groups:** `A = [shared, a1, a2]`, `B = [shared, b1, b2]`.
+  - At set sizes 5–12, the four non-shared slots are four distinct classes, so
+    A and B share exactly one ratio.
+  - Below 5 classes the non-shared pool is reused gracefully; the arp still
+    runs, but exact-one-shared/four-distinct is only guaranteed at sizes ≥ 5.
+- **Shared identity:** the shared note is constructed once with one ratio, one
+  octave offset, and one frequency, and that same note object appears first in
+  both groups. Its frequency and octave are identical in A and B by
+  construction.
+- **Register:** default octave offsets `[0, 1, 2]`: shared at offset 0, the two
+  non-shared notes at +1 and +2 octaves, in both groups.
+- **Sequence:** `A1, A2, A3, B1, B2, B3, A1, ...`. Each step note-offs the
+  previous note (if held), pitch-bends to the new frequency, then note-ons.
+- **Timing:** default 0.25 s per step, 0.20 s gate. This is a placeholder;
+  rhythm UI, tempo sync, swing, and sequencing are deferred.
+- **Set update:** regenerate groups and octave choices, then apply the new
+  pattern at the next step boundary. Do not restart the clock or cut a held
+  note.
+- **RNG:** a dedicated `random.Random(arp_seed)`; the same seed reproduces the
+  arp.
+- **Logging:** log the shared ratio and both groups when they change, e.g.
+  `[ARP] shared=3/2 (329.63 Hz)  A=[3/2, 1/1, 5/4]  B=[3/2, 5/3, 15/8]`.
+- Monophonic only. Polyphonic MPE voice allocation is deferred past Stage 6.
 
-Same infrastructure as bass/drone but polyphonic. Notes derived from current set (arpeggiator, random walk, or user input). Deferred past Stage 6.
+**Implementation:** `control/arp.py` (`SetArp`, `build_groups`, `ArpPattern`,
+`ArpNote`). The arp thread owns a `threading.Lock` around the current pattern and
+a `threading.Event` for stop.
 
 ---
 
@@ -826,20 +877,14 @@ Same infrastructure as bass/drone but polyphonic. Notes derived from current set
 | `/ji/loop/clear` | int | Control → Server | 8 (not in Stage 4) |
 | `/ji/granular/trigger` | [float, float] | Control → Server | 8 |
 | `/ji/midi/map` | [int, string] | Control → Bridge | 8 |
-| `/ji/bass/trigger` | none | Control → Bridge | 6 |
-| `/ji/bass/set_note` | int (MIDI note) | Control → Bridge | 6 |
-| `/ji/bass/set_glide` | float (sec) | Control → Bridge | 6 |
-| `/ji/bass/set_interval` | int | Control → Bridge | 6 |
-| `/ji/bass/current` | float (Hz) | Bridge → UI | 6 |
-| `/ji/mpe/set_bend_range` | float (semitones) | Control → Bridge | 6 |
 | `/ji/cpu` | float | Server → UI | 9 |
 | `/ji/event/mutation` | [float, float, float[]] | Bridge → Visual | 10 |
 | `/ji/event/pitchclass` | [int, int, float] | Bridge → Visual | 10 |
 | `/ji/event/grain` | [float, float] | Bridge → Visual | 10 |
 | `/ji/event/loop` | [int, string] | Bridge → Visual | 10 |
-| `/ji/event/bass` | float (Hz) | Bridge → Visual | 10 |
+| `/ji/event/drone` | float (Hz) | Bridge → Visual | 10 |
 
-Stage 3 does **not** send `/ji/mutation/apply` or any message directly to scsynth. The complete set is sent on `/ji/freqset/update`; sclang applies it to the verified nearest-class lookup. A multi-edit batch sends one `/ji/freqset/update` with the final set and one glide time, not intermediate sets. Rows for later stages remain future work.
+Stage 3 does **not** send `/ji/mutation/apply` or any message directly to scsynth. The complete set is sent on `/ji/freqset/update`; sclang applies it to the verified nearest-class lookup. A multi-edit batch sends one `/ji/freqset/update` with the final set and one glide time, not intermediate sets. **Stage 6 adds no OSC addresses**: the MIDI rig is notified directly by `JIBridge` after each `/ji/freqset/update` send, using an immutable engine snapshot. Rows for later stages remain future work.
 
 ### 7.2 FrequencySet (control-layer object)
 
@@ -895,27 +940,39 @@ OctaveEvent(
     "note_60": "mutate",
     "note_62": "mutate_stepwise",
     "note_64": "mutate_random",
-    "note_65": "bass_trigger",
+    "note_65": "drone_trigger",
     "cc_1": "randomness",
     "cc_2": "dissonance_bias"
 }
 ```
 
-### 7.5 MPE configuration file (Stage 6)
+### 7.5 MPE configuration file (Stage 6, implemented)
 
 `config/mpe_config.json`:
+
 ```json
 {
-    "port_name": "IAC Driver Bus 1",
+    "drone_port": "IAC Driver Bus 1",
+    "arp_port": "IAC Driver Bus 2",
+    "member_channel": 2,
     "master_channel": 1,
-    "bass_channel": 2,
     "bend_range_semitones": 48,
-    "bass_base_note": 36,
-    "bass_glide_time": 0.5,
-    "bass_mutation_interval": 8,
-    "bass_must_be_set_member": true
+    "drone_velocity": 90,
+    "arp_velocity": 90,
+    "step_seconds": 0.25,
+    "gate_seconds": 0.20,
+    "arp_octave_offsets": [0, 1, 2],
+    "arp_shared_mode": "anchor",
+    "arp_seed": 1
 }
 ```
+
+`member_channel` is **1-based**; mido receives `member_channel - 1`. Both MIDI
+buses are monophonic and use member channel 2. `bend_range_semitones` must equal
+the instrument's MPE pitch-bend range (48 in this rig). `arp_octave_offsets` is
+positional `(shared, non_shared_1, non_shared_2)`. `arp_shared_mode` is
+`"anchor"` or `"random"`; `arp_seed` makes the arp reproducible. Exact port
+names are required; a missing name fails with the available output list.
 
 ---
 
@@ -980,7 +1037,7 @@ OctaveEvent(
 
 **Harness:** `uv run --with python-osc python test_mutation_controls.py` prints `ALL CONTROL TESTS PASSED`. It covers batch width, temperature palette expansion, anchor mobility 0/1, server clamping/batch callbacks, and the bridge's one-update-per-batch behaviour. Python-level acceptance passed; audible acceptance of the new controls is still for the human.
 
-### 8.5 Stage 4 — Dual Channel + Raw Looper 🟡 IMPLEMENTED — AWAITING HUMAN AUDIO ACCEPTANCE
+### 8.5 Stage 4 — Dual Channel + Raw Looper ✅ COMPLETE — OWNER-CONFIRMED 2026-10-30
 
 **Goal:** Two independent input channels (mic 0, guitar 1). Loop recorder with raw buffers. Loops retune on playback.
 
@@ -996,11 +1053,11 @@ OctaveEvent(
 5. Loop target changes without restarting playback and follows the event glide.
 6. No clicks/dropouts/zipper noise during mutations and loop start/stop.
 
-**Status:** implemented in sclang/SynthDefs; functional loop-index bugs were fixed. **Audio acceptance is deferred to Stage 5**, where SC's BlackHole output is monitored through Ableton. Stage 4 is not marked accepted until that sound test. Acceptance is audible and belongs to the project owner.
+**Status:** implemented in sclang/SynthDefs; functional loop-index bugs were fixed. **The project owner reported all sound checks passed on 2026-10-30** through the Stage 5.5 live rig. The adjustable loop-length control was added after that report as an enhancement. Acceptance is audible and belongs to the project owner.
 
 **Fallback if CPU fails:** store pitch contour at record time, read during playback. Do not add a server-side nearest-class lookup or C++ UGen without measurements.
 
-### 8.6 Stage 5 — BlackHole 16ch + Ableton Audio Integration 🟡 IMPLEMENTED — AWAITING HUMAN AUDIO ACCEPTANCE
+### 8.6 Stage 5 — BlackHole 16ch + Ableton Audio Integration ✅ COMPLETE — OWNER-CONFIRMED 2026-10-30
 
 **Goal:** SC reads the **MiniFuse 2** (2 input channels) and writes **BlackHole 16ch** (16 output channels). Ableton receives BlackHole inputs 1–16 on 8 stereo tracks, monitors there, and sends its master to the MiniFuse 2/headphones. No Aggregate Device is required; `ServerOptions.inDevice` / `outDevice` split the devices.
 
@@ -1036,11 +1093,11 @@ No Python, OSC, SynthDef, or loop-routing change. `synthdefs/ji_autotune_ch.scd`
 7. `test_dual_loop.scd` still runs; live autotune is audible through Ableton track 1, completing the deferred Stage 4 sound check. Stage 4 loops also remain on track 1, not tracks 2–5.
 8. An Aggregate Device is not used; it remains a documented fallback only.
 
-**Status:** implemented in sclang/config/docs. **Audio was not testable in the agent environment; Stage 5 is not marked accepted.** Human listening is the arbiter, and the Stage 4 sound check is part of the same acceptance.
+**Status:** implemented and **owner-confirmed 2026-10-30** (routing and Stage 4 sound check passed). The adjustable loop-length control was added after that report as a live-rig enhancement.
 
 **Critical:** use exact device names, set both devices to 48000 Hz, and remember BlackHole is virtual — SC alone is silent without Ableton's monitor path. Stage 5 does not reroute loops or add per-loop tracks.
 
-### 8.6.1 Stage 5.5 — Live-Rig Integration (2 inputs + 2 loops → 4 outputs) 🟡 IMPLEMENTED — AWAITING HUMAN AUDIO ACCEPTANCE
+### 8.6.1 Stage 5.5 — Live-Rig Integration (2 inputs + 2 loops → 4 outputs) ✅ COMPLETE — OWNER-CONFIRMED 2026-10-30
 
 **Goal:** One playable rig combining the accepted Stage 1/3/4 autotune and loop code with the Stage 5 monitoring path and the Stage 2/3 Python mutation bridge. Four mono outputs on the first four BlackHole channels: two autotuned live inputs and two loop voices.
 
@@ -1050,7 +1107,7 @@ No Python, OSC, SynthDef, or loop-routing change. `synthdefs/ji_autotune_ch.scd`
 - SC 2 → Ableton track 3: loop 1 (autotuned playback)
 - SC 3 → Ableton track 4: loop 2 (autotuned playback)
 
-**Implementation:** `test_live_rig.scd` is a copy of the accepted Stage 4 orchestration with `~ji_loop_outbus = [2, 3, 2, 3]`, a distinct receiver key (`\ji_freqset_update_live_rig`), and live `[AUTOTUNE ch=...]` status lines enabled. It keeps the Stage 3 `/ji/freqset/update` validation, the 20 Hz multi-voice lookup, broadcast glide, per-voice `lastTarget`, and the Stage 4 loop-index fix. Loops 3/4 remain optional and sum into SC 2/3; loop recording uses input 0 for loops 1/3 and input 1 for loops 2/4. No SynthDef, Python, or OSC protocol change.
+**Implementation:** `test_live_rig.scd` is a copy of the accepted Stage 4 orchestration with `~ji_loop_outbus = [2, 3, 2, 3]`, a distinct receiver key (`\ji_freqset_update_live_rig`), and live `[AUTOTUNE ch=...]` status lines enabled. It keeps the Stage 3 `/ji/freqset/update` validation, the 20 Hz multi-voice lookup, broadcast glide, per-voice `lastTarget`, and the Stage 4 loop-index fix. Loops 3/4 remain optional and sum into SC 2/3; loop recording uses input 0 for loops 1/3 and input 1 for loops 2/4. Loop length defaults to 8.0 s; `~ji_record_loop.(i)` uses `~ji_loop_default_seconds`, `~ji_record_loop.(i, seconds)` overrides one take, and `~ji_set_loop_default.(seconds)` changes the default. No SynthDef, Python, or OSC protocol change.
 
 **Deliverables:** `test_live_rig.scd`, `config/live_rig_routing.json`, `README_live_rig.md`; updates to `README_stage5.md`, `README_stage4.md`, and this document.
 
@@ -1059,37 +1116,66 @@ No Python, OSC, SynthDef, or loop-routing change. `synthdefs/ji_autotune_ch.scd`
 2. `test_live_rig.scd` starts two live autotune voices, the set receiver, four loop buffers, and the 20 Hz lookup; prints `[RIG] Ready`.
 3. Ableton has four mono tracks from BlackHole inputs 1, 2, 3, 4, Monitor In, master to MiniFuse 2. Tracks 1/2 carry the live autotuned inputs; tracks 3/4 carry loops 1/2.
 4. Python bridge runs; `m` sends the complete set; live and playing loops retune without replay.
-5. Loop 1 records input 0 and plays on SC 2/track 3; loop 2 records input 1 and plays on SC 3/track 4.
+5. Loop 1 records input 0 and plays on SC 2/track 3; loop 2 records input 1 and plays on SC 3/track 4. The default length is 8 s; `~ji_record_loop.(1, 16.0)` and `~ji_set_loop_default.(12.0)` change it.
 6. CPU < 60% with 2 live + 2 loops.
 7. No clicks/dropouts during mutations or loop start/stop.
 8. The human hears all four channels through Ableton and can confirm the deferred Stage 1/3.5/4/5 sound checks.
 
-**Status:** implemented in sclang/config/docs. **Audio was not testable in the agent environment; Stage 5.5 is not marked accepted.** Human listening remains the arbiter.
+**Status:** implemented and **owner-confirmed 2026-10-30** (all sound checks passed). The adjustable loop-length control (8 s default, per-take override, `~ji_set_loop_default`) was added after that report; a quick re-check of the length control is recommended.
 
-### 8.7 Stage 6 — MPE MIDI + Bass/Drone (NEW)
+### 8.7 Stage 6 — MPE MIDI (Anchor Drone + Set Arp) 🟡 IMPLEMENTED — AWAITING HUMAN ACCEPTANCE
 
-**Goal:** Control layer sends MPE MIDI to Ableton. A bass/drone voice plays the most consonant member of the current set, updated only on explicit trigger or every N mutations.
+**Goal:** the Python control layer sends two independent monophonic MPE MIDI
+streams to Ableton: an anchor-following drone on `IAC Driver Bus 1` and a
+two-group set arp on `IAC Driver Bus 2`. No new SC audio voice, no new OSC
+address, no rhythm UI, no MIDI mutation mapping, and no Ableton API automation.
 
 **Deliverables:**
-- `control/mpe_output.py` — `MPEOutput` class (mido, IAC Driver).
-- `control/bass_drone.py` — `BassDrone` class.
-- `config/mpe_config.json` — port name, channels, bend range, base note.
-- `test_mpe.py` — calibration + bass test.
-- `README_mpe.md` — calibration procedure, Ableton MPE setup.
+- `control/mpe_output.py` — `MPEOutput`, pitch math, port adapter.
+- `control/drone.py` — `AnchorDrone`.
+- `control/arp.py` — `SetArp`, `build_groups`.
+- `control/midi_rig.py` — `MIDIRig`, config loading/validation.
+- `control/ji_bridge.py` — optional `--midi` / `--mpe-config`.
+- `config/mpe_config.json` — buses, channels, bend range, timing, seed.
+- `test_mpe.py` — pure tests plus `--ports`, `--calibrate`, `--run`.
+- `README_mpe.md` — IAC/Ableton setup, calibration, failures, acceptance.
 
-**Calibration (must be done first):**
-1. Python sends MIDI note 60 on member channel 2 with `bend=0` (centered). Measure pitch in Ableton. Should be C4.
-2. Send `bend=+4096` (half range up). Measure pitch. Should be C4 + R/2 semitones.
-3. Send `bend=-4096`. Measure. Should be C4 - R/2 semitones.
-4. Adjust `bend_range_semitones` in config until measured pitches match.
+**Commands:**
+```bash
+cd ji-live
+python test_mpe.py --pure
+uv run --with mido --with python-rtmidi python test_mpe.py --ports
+uv run --with mido --with python-rtmidi python test_mpe.py --calibrate
+uv run --with mido --with python-rtmidi python test_mpe.py --run 15
 
-**Acceptance test:**
-1. Calibration passes (bend range configured correctly in Ableton).
-2. `test_mpe.py` sends a slow pitch sweep from C2 to C3 via pitch bend. Ableton synth tracks continuously. No glitches.
-3. Bass/drone selects the most consonant ratio from a test set.
-4. Triggering `/ji/bass/trigger` re-selects and glides to new frequency over `bass_glide_time`.
-5. `bass_mutation_interval` works: after N mutations, bass updates automatically.
-6. Removing the bass's current frequency from the set triggers a re-selection (if `bass_must_be_set_member = true`).
+uv run --with python-osc python control/ji_bridge.py --interactive --glide-time 0.15
+uv run --with python-osc --with mido --with python-rtmidi \
+  python control/ji_bridge.py --interactive --midi --glide-time 0.15
+```
+
+**Behavior:** see §6.11–§6.13. The drone follows the anchor and does not
+retrigger on an unchanged frequency; the arp alternates two three-note groups
+that share exactly one ratio at set sizes ≥ 5.
+
+**Acceptance test (human):**
+1. `mido.get_output_names()` lists `IAC Driver Bus 1` and `IAC Driver Bus 2`;
+   `--ports` passes.
+2. Ableton has Drone (Bus 1) and Arp (Bus 2) MIDI tracks, both Monitor In, both
+   with MPE-capable instruments and a 48-semitone MPE bend range. Set each
+   track's **MIDI From channel selector** to **MPE** or **All Channels**, not
+   **Ch. 1**: note data is on MIDI member channel 2, while channel 1 is the
+   unused MPE master.
+3. `--calibrate` plays C4 on both tracks.
+4. With the Stage 5.5 live rig running, `ji_bridge.py --midi` plays a constant
+   anchor drone and an alternating two-group arp.
+5. Pressing `m` updates the set; the drone follows the anchor (or stays put if
+   unchanged), and the arp regenerates with one shared frequency.
+6. Quitting sends note-off/CC 123 on both buses; no stuck notes.
+7. The existing four-channel audio and `/ji/freqset/update` behavior are
+   unchanged.
+8. Record the result. **Stage 6 is not complete until the human hears the drone
+   and arp through Ableton and confirms MIDI connectivity.** The agent's pure
+   tests do not claim MIDI/Ableton acceptance.
 
 ### 8.8 Stage 7 — Full Autotune Params + SC-Side VST (Optional)
 
@@ -1119,7 +1205,7 @@ No Python, OSC, SynthDef, or loop-routing change. `synthdefs/ji_autotune_ch.scd`
 
 ### 8.10 Stage 9 — Minimal UI (PyQt6)
 
-**Goal:** Usable GUI: frequency set display, mutation button + sliders, autotune sliders, loop transport, bass/drone status.
+**Goal:** Usable GUI: frequency set display, mutation button + sliders, autotune sliders, loop transport, drone/arp status.
 
 **Deliverables:** `ui/ji_ui.py`, `ui/osc_bridge.py`, `README_stage9.md`.
 
@@ -1128,7 +1214,7 @@ No Python, OSC, SynthDef, or loop-routing change. `synthdefs/ji_autotune_ch.scd`
 2. Frequency set display updates on mutation (UI or MIDI).
 3. Sliders affect audio in real time.
 4. Loop buttons work and UI reflects state.
-5. Bass/drone current frequency displayed and updates.
+5. Drone/arp current state displayed and updates.
 6. UI remains responsive during audio operations.
 
 ### 8.11 Stage 10 (Deferred) — Visual Event Broadcast
@@ -1141,7 +1227,7 @@ No Python, OSC, SynthDef, or loop-routing change. `synthdefs/ji_autotune_ch.scd`
 1. Mutation event within 50 ms.
 2. Pitch class events at ~10 Hz.
 3. Grain events fire on each grain trigger.
-4. Bass events on bass change.
+4. Drone events on drone change.
 
 ---
 
@@ -1154,10 +1240,10 @@ No Python, OSC, SynthDef, or loop-routing change. `synthdefs/ji_autotune_ch.scd`
 | 2 | ✅ Complete | Decentralised mutation engine + OSC listener. Harness passes. |
 | 3 | ✅ Complete | Bridge accepted by owner: audio and Python↔sclang working. |
 | 3.5 | 🟡 Implemented — awaiting audio acceptance | Mutation batch width, temperature, anchor mobility. Python harness passes. |
-| 4 | 🟡 Implemented — audio acceptance deferred | Dual live autotune, dry mono loop recorder, four loop voices with independent Tartini/PitchShift chains, broadcast glide; loop-index bugs fixed. Sound check is heard through the Stage 5 monitoring path. |
-| 5 | 🟡 Implemented — awaiting human audio acceptance | MiniFuse 2 input / BlackHole 16ch output via `inDevice_`/`outDevice_`, 2 in / 16 out; `test_ableton_routing.scd` exercises all 8 stereo pairs; `config/ableton_routing.json`; no Aggregate required. Stage 4 sound check is part of acceptance. |
-| 5.5 | 🟡 Implemented — awaiting human audio acceptance | Live rig: two autotuned inputs + two loops on SC 0/1/2/3, Python mutation bridge; `test_live_rig.scd`, `config/live_rig_routing.json`, `README_live_rig.md`. Four mono tracks in Ableton. |
-| 6 | ⬜ Pending | MPE + bass/drone. Requires IAC Driver enabled, calibration. |
+| 4 | ✅ Complete | Dual live autotune, dry mono loop recorder, four loop voices with independent Tartini/PitchShift chains, broadcast glide; loop-index bugs fixed. Owner reported all sound checks passed (2026-10-30) through the live rig. |
+| 5 | ✅ Complete | MiniFuse 2 input / BlackHole 16ch output via `inDevice_`/`outDevice_`, 2 in / 16 out; `test_ableton_routing.scd` exercised all 8 stereo pairs; `config/ableton_routing.json`; no Aggregate required. Owner reported all sound checks passed (2026-10-30). |
+| 5.5 | ✅ Complete | Live rig: two autotuned inputs + two loops on SC 0/1/2/3, Python mutation bridge; `test_live_rig.scd`, `config/live_rig_routing.json`, `README_live_rig.md`. Four mono tracks in Ableton. Owner reported all sound checks passed (2026-10-30); adjustable loop length (8 s default) added after. |
+| 6 | 🟡 Implemented — awaiting human MIDI acceptance | Two monophonic MPE buses: anchor drone (Bus 1) + set arp (Bus 2). Pure Python tests pass; IAC/Ableton/calibration were not testable by the agent. |
 | 7 | ⬜ Optional | SC-side VST hosting. May be skipped if Ableton handles VSTs. |
 | 8 | ⬜ Pending | MIDI mutation + granular FX. |
 | 9 | ⬜ Pending | PyQt6 UI. |
@@ -1212,7 +1298,7 @@ No Python, OSC, SynthDef, or loop-routing change. `synthdefs/ji_autotune_ch.scd`
 - Loop transport is sclang-only; no Python loop OSC control and no new Python protocol.
 - Loop-index bugs fixed: records/plays/stops use `[i - 1]` for the 0-based loop arrays.
 
-**What Stage 5 implements (awaiting human audio acceptance):**
+**What Stage 5 implements (owner-confirmed 2026-10-30):**
 - `startup.scd` boots MiniFuse 2 input / BlackHole 16ch output via `inDevice_`/`outDevice_`, with 2 input / 16 output bus channels, 48 kHz, blockSize 64.
 - Device names are checked against `ServerOptions.inDevices`/`outDevices`; a missing name prints a warning and the available list, with no silent physical-device substitution.
 - The startup prints `inDevice=MiniFuse 2 outDevice=BlackHole 16ch` and `Audio I/O: 2 in / 16 out, 48000 Hz, blockSize 64`.
@@ -1221,7 +1307,7 @@ No Python, OSC, SynthDef, or loop-routing change. `synthdefs/ji_autotune_ch.scd`
 - `README_stage5.md` documents the no-Aggregate primary path, Ableton 8-track monitoring setup, shared-device concurrency, Aggregate fallback, 5-minute drift check, failure modes, and limitations.
 - No Python/OSC/SynthDef change. Stage 4 live/loop audio remains on pair 0/1; per-loop pairs are reserved for Stage 8.
 
-**What Stage 5.5 implements (awaiting human audio acceptance):**
+**What Stage 5.5 implements (owner-confirmed 2026-10-30; loop length added after):**
 - `test_live_rig.scd` combines two autotuned live inputs (SC 0/1) with two loop voices (SC 2/3) and the Stage 3 `/ji/freqset/update` receiver.
 - The 20 Hz multi-voice lookup, broadcast glide, per-voice `lastTarget`, and Stage 4 loop-index fix are preserved.
 - Loop 1 records MiniFuse 2 input 0 and plays on SC 2; loop 2 records input 1 and plays on SC 3. Optional loops 3/4 sum into SC 2/3.
@@ -1229,14 +1315,29 @@ No Python, OSC, SynthDef, or loop-routing change. `synthdefs/ji_autotune_ch.scd`
 - The Python bridge is unchanged: `m` mutates the set and both live channels plus playing loops retune without replay.
 - No SynthDef, Python, OSC, or protocol change.
 
+**What Stage 6 implements (awaiting human MIDI acceptance):**
+- `control/mpe_output.py`, `drone.py`, `arp.py`, `midi_rig.py`,
+  `config/mpe_config.json`, `test_mpe.py`, and `README_mpe.md`.
+- Two independent monophonic MPE streams: anchor drone on `IAC Driver Bus 1`,
+  set arp on `IAC Driver Bus 2`, both on member channel 2 with a 48-semitone
+  bend range.
+- The drone follows `anchor_ratio * fundamental`, does not retrigger on an
+  unchanged frequency, sends bend-only for a same-note retune, and
+  note-off/bend/note-on for a new note.
+- The arp builds two three-note groups that share exactly one ratio at set
+  sizes ≥ 5, uses octave offsets `[0, 1, 2]`, runs at 0.25 s/0.20 s, uses a
+  seeded RNG, and applies regenerated patterns at the next step boundary.
+- `JIBridge` gains optional `--midi` / `--mpe-config`; MIDI is off by default,
+  mido is imported lazily, and `/ji/freqset/update` is unchanged.
+- `test_mpe.py --pure` passes without mido; hardware checks are human-run.
+- No SC SynthDef, audio bus, audio routing, or OSC address changed.
+
 **What is still unverified:**
-- **Stage 5.5 audible acceptance** — four channels through Ableton, live mutation, loop record/playback, and CPU with 2 live + 2 loops.
-- **Stage 5 audible acceptance** — the owner reports the 8-pair routing test works; the 5-minute drift/dropout record and final acceptance note are still pending.
-- **Stage 4 audible acceptance** — to be heard through the Stage 5.5 live rig or the Stage 5 monitor path.
-- **Stage 3.5 audible acceptance** — likewise available once the live rig is running.
+- **Loop-length control re-check** — 8 s default, per-take override, and `~ji_set_loop_default` were added after the owner's all-pass report; confirm once.
+- **Stage 3.5 audible acceptance** — the Python harness passes; the batch/temperature/anchor controls were not separately called out in the owner's all-pass report.
 - Actual per-voice octave allocation and audio retuning (Stage 3/4).
-- IAC Driver MIDI output (Stage 6).
-- MPE pitch bend calibration (Stage 6).
+- **Stage 6 MIDI/Ableton acceptance** — the pure Python tests pass, but IAC Bus 1/2, the two Ableton MIDI tracks, the MPE bend range, the drone/arp sound, and stuck-note behavior are human-pending.
+- **MPE pitch bend calibration** — required on the human machine before trusting drone/arp pitch.
 - Multi-channel audio stability over long sessions (Stage 5).
 - Per-loop dedicated pair routing beyond loops 1/2 (Stage 8).
 - VSTPlugin SC-side loading (Stage 7, likely moot if Ableton hosts VSTs).
@@ -1392,7 +1493,7 @@ Every stage's acceptance test is **binary**: pass or fail on specific observable
 | OSC messages not received | Wrong port, firewall | Verify port (57120 or 9000) |
 | Bridge crashes on mutation | Duplicate ratio in set | Deduplicate before mutation |
 | UI freezes | Blocking OSC in main thread | Move to background thread |
-| MIDI not detected | Port name wrong or permission | Verify `mido.get_input_names()` |
+| MIDI not detected | Port name wrong or permission | Verify `mido.get_output_names()` for the Stage 6 outputs |
 | MIDI jitter | Blocking calls | Use non-blocking mode |
 
 ### 12.4 Ableton routing failures (Stage 5)
@@ -1415,12 +1516,18 @@ Every stage's acceptance test is **binary**: pass or fail on specific observable
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| Synth plays 12-TET only, ignores bend | MPE not enabled on Ableton track | Enable MPE, set input to "All Channels" |
-| Pitches sharp/flat by fixed cents | Bend range mismatch | Recalibrate `bend_range_semitones` |
-| Notes stuck | Note-off not sent on channel | Verify `mido` sends note_off on correct member channel |
-| All notes play at full bend | Pitch bend sent before note-on, or on wrong channel | Verify master vs. member channel discipline |
-| No MIDI received | IAC Driver offline | Audio MIDI Setup → IAC Driver → "Device is online" |
-| Note pitch differs by octave | Base note or bend direction | Check `bass_base_note`; verify `mtof` uses A4=440 |
+| `MIDI output ... not found` | IAC bus missing/offline or name typo | Audio MIDI Setup → IAC Driver → online; add Bus 2; run `--ports`; fix config |
+| `mido is required` / enumeration error | Invocation missing mido/python-rtmidi | Add `--with mido --with python-rtmidi` |
+| No MIDI received | Track not enabled in Link/Tempo/MIDI, or wrong MIDI From | Enable Track for both IAC buses; Drone=Bus 1, Arp=Bus 2 |
+| Only one track receives notes | Both tracks on the same bus | Set each track to its own IAC bus |
+| Synth plays 12-TET only, ignores bend | MPE not enabled or instrument not MPE-capable | Enable MPE on the track/instrument; use an MPE synth |
+| Pitches sharp/flat by a fixed amount | Bend-range mismatch | Set instrument/MPE range to 48 st or match `bend_range_semitones` |
+| Note pitch differs by octave | Instrument octave/transpose setting | Set instrument octave; the MPE helper transposes only outside MIDI range |
+| 275 Hz test reads 277.18 or 261.63 Hz | Bend range wrong or MPE ignored | Recalibrate at 48 st; verify MPE is active |
+| Drone retriggers on every mutation | Anchor changed to a different MIDI note, or old build | Check `[DRONE] ... (retrigger)`; an unchanged anchor must send nothing |
+| Arp does not have exactly one shared ratio | Set has fewer than five classes | Expected below 5; at ≥5 four non-shared classes are distinct |
+| Notes stuck after quit | Bridge killed before controller stop | Quit with `q`/Ctrl+C; `JIBridge.stop` sends note-off + CC 123 and closes ports |
+| All notes play at full bend | Pitch bend on master channel or wrong channel | Send note data on member channel 2 only; pitchwheel before note-on |
 
 ### 12.6 Intervention hierarchy
 
@@ -1461,7 +1568,7 @@ Only after 1–4 are ruled out should you attribute failure to the agent.
 | 3.0 | — | Full stage specs for agents. Global Contract. Acceptance philosophy. |
 | 3.1 | — | Stage 0 complete. Bus allocation table. Consolidated for archival. |
 | 4.0 | — | Complete archival reference. Debugging playbook, agent workflow. New-session ready. |
-| 5.0 | 2026-10-28 | Stage 0 and Stage 1 complete. **Added Ableton audio integration (Stage 5) and MPE MIDI + bass/drone (Stage 6).** Stages 5–8 renumbered to 7–10. VST stage becomes optional. BlackHole, IAC Driver, MPE calibration, bass/drone spec added. |
+| 5.0 | 2026-10-28 | Stage 0 and Stage 1 complete. **Added Ableton audio integration (Stage 5) and MPE MIDI + bass/drone (Stage 6).** Stages 5–8 renumbered to 7–10. VST stage becomes optional. BlackHole, IAC Driver, MPE calibration, bass/drone spec added. (The early bass/drone policy is superseded by 5.9.) |
 | 5.1 | 2026-10-28 | **Stage 2 complete.** Mutation redesigned around a decentralised, continuously drifting field: target size 7 (max 12), octave-equivalent classes, global classes vs local registers, dynamic candidates, denominator relatedness primary + Sethares roughness secondary, stochastic rank selection, protected anchor, separate octave events, no dead-ends. Updated Python setup to `uv` (3.11+, no system Python required; numpy optional). Added `README_stage2.md`, updated OSC map, status, file tree, tests, and design rationale. |
 | 5.2 | 2026-10-28 | **Stage 3 implemented — awaiting human audio acceptance.** Added `control/ji_bridge.py` (`/ji/freqset/update` with fundamental, glide, full ratio set), `test_bridge.scd` (OSC receiver, set update, 12-slot Hz mirror, Stage 1 nearest-class lookup with pending glide), and `README_stage3.md`. `control/osc_server.py` gained public `trigger()` / `octave()` / `set_glide_time()` and post-apply callbacks. The old `synthdefs/ji_freqset_receiver.scd` server-side lookup is deferred/superseded. **Audio not verified in the agent environment; Stage 3 is not marked complete.** |
 | 5.3 | 2026-10-28 | **Stage 3 bridge accepted by owner; mutation-control extension added.** `mutation.py` gained `MutationBatch`/`mutate_many()` (atomic multi-edit batches), `max_changes`, `temperature` (extended higher-limit palette, relaxed scoring, flattened selection), and `anchor_mobility` (0 = fixed anchor, 0.25 = old weight, 1 = no precedence and random re-anchoring). `osc_server.py` gained change-count/temperature/anchor-mobility setters and batch callbacks; `ji_bridge.py` gained CLI/interactive controls and one-update-per-batch handling. Added `test_mutation_controls.py` and `README_stage3.md` §12. **Stage 3.5 audible acceptance is still pending.** |
@@ -1473,6 +1580,8 @@ Only after 1–4 are ruled out should you attribute failure to the agent.
 | 5.6 | 2026-10-29 | **Stage 5 implemented — awaiting human audio acceptance.** `startup.scd` now uses separate `inDevice_("MiniFuse 2")` / `outDevice_("BlackHole 16ch")` with 2 input / 16 output bus channels, 48 kHz, blockSize 64; it validates the exact names against `ServerOptions.inDevices`/`outDevices`, warns/lists on a mismatch, prints the device line and `Audio I/O: 2 in / 16 out`, and keeps buses 0–18. Added `test_ableton_routing.scd` (1 kHz sine on each of the 8 stereo pairs, explicit stop/re-run path), `config/ableton_routing.json` (reserved channel map), and `README_stage5.md` (no-Aggregate primary path, Ableton 8-track Monitor-In setup, shared-device/Aggregate fallback, 5-minute drift check, failure modes, limitations). Updated `README_stage4.md` for the new monitoring path and the design doc §3.6/§4.2/§6.10/§8.6/§9. Stage 4 live/loop audio remains on pair 0/1 (Ableton track 1); per-loop pairs are reserved for Stage 8. No Python/OSC/SynthDef change. **Audio was not testable in the agent environment; Stage 4 and Stage 5 are not marked accepted until the human listening test.** |
 | 5.6.1 | 2026-10-29 | **Fixed two first-boot Stage 5 issues reported by the owner.** (1) Device-name validation used `Collection:includes`, which compares by identity (`===`), so equal strings from `ServerOptions.inDevices`/`outDevices` produced false "device not found" warnings even though the names matched; it now normalises to strings and compares with `==`. (2) `s.options.sampleRate = 48000` is no longer forced: with BlackHole 16ch as a separate output device it caused scsynth to print "server ready" and then exit with code 0. The file now sets `s.options.sampleRate = 0` (SC's default = use the device rate, which also clears an old 48000 on re-evaluation); 48 kHz is set on both devices in Audio MIDI Setup and checked against `s.sampleRate` after boot. Device open itself succeeded ("MiniFuse 2" input, "BlackHole 16ch" output); audio acceptance still pending. |
 | 5.7 | 2026-10-30 | **Live-rig integration (Stage 5.5) implemented — awaiting human audio acceptance.** Added `test_live_rig.scd`: a copy of the accepted Stage 4 orchestration with two autotuned live inputs on SC 0/1, loop 1 on SC 2, loop 2 on SC 3, the Stage 3 `/ji/freqset/update` receiver under `\ji_freqset_update_live_rig`, the 20 Hz multi-voice lookup, broadcast glide, and the loop-index fix preserved. Added `config/live_rig_routing.json` (four mono Ableton tracks on BlackHole inputs 1–4) and `README_live_rig.md` (setup, start order, Python mutation, loop commands, failure modes, acceptance). Updated `README_stage5.md`, `README_stage4.md`, and design doc §1/§4.2.1/§4.3/§4.4/§8.6.1/§9. No Python/OSC/SynthDef change. The owner reports the 8-pair Ableton routing test works; Stage 3.5/4/5/5.5 audio acceptance remains pending the live listening test. |
+| 5.8 | 2026-10-30 | **All sound checks passed (owner report, 2026-10-30); adjustable loop length added.** `test_live_rig.scd` now defaults each loop to **8.0 s** (`~ji_loop_default_seconds`), uses `~ji_record_loop.(i)` for the default, `~ji_record_loop.(i, seconds)` for a one-take override, and `~ji_set_loop_default.(seconds)` to change the default at runtime. Recording still reallocates a fresh buffer of exactly the requested length; the initial four buffers are 8 s placeholders; `[LOOP] playing ...` now prints the buffer duration. Memory is `seconds * 48000 * 4 bytes` per mono loop. Stage 4, 5, and 5.5 are marked owner-confirmed; the loop-length enhancement is post-acceptance and needs one quick re-check. No Python/OSC/SynthDef change. |
+| 5.9 | 2026-10-30 | **Stage 6 MIDI rig implemented — awaiting human MIDI/Ableton acceptance.** Added `control/mpe_output.py` (MPE pitch math, lazy mido adapter), `control/drone.py` (`AnchorDrone`), `control/arp.py` (`SetArp` + two-group generator), `control/midi_rig.py` (`MIDIRig`, config validation), `config/mpe_config.json`, `test_mpe.py` (pure + `--ports`/`--calibrate`/`--run`), and `README_mpe.md`. Replaced the old most-consonant/N-mutation bass policy with an anchor-following drone on IAC Bus 1 and a two-group set arp on IAC Bus 2; both are monophonic MPE on member channel 2 with a 48-semitone bend range. `ji_bridge.py` gains optional `--midi`/`--mpe-config`; MIDI is off by default, mido is lazy, and `/ji/freqset/update` is unchanged. Pure Python tests pass; no SC, audio, routing, or OSC change. **MIDI/Ableton acceptance remains human-pending.** |
 
 ---
 
@@ -1585,8 +1694,8 @@ def freq_to_mpe(freq, bend_range=48):
 
 out = mido.open_output("IAC Driver Bus 1")
 note, bend = freq_to_mpe(275.0)  # 5/4 above A4 = 275 Hz
-out.send(mido.Message("note_on", channel=1, note=note, velocity=100))
 out.send(mido.Message("pitchwheel", channel=1, pitch=bend))
+out.send(mido.Message("note_on", channel=1, note=note, velocity=100))
 
 # MIDI listener
 import mido
@@ -1600,7 +1709,7 @@ with mido.open_input("Your Port") as port:
 
 **Audio MIDI Setup (macOS):**
 1. Install BlackHole 16ch (reboot).
-2. Window → Show MIDI Studio → IAC Driver → "Device is online" (for Stage 6).
+2. Window → Show MIDI Studio → IAC Driver: create/enable `IAC Driver Bus 1` and `IAC Driver Bus 2` and check "Device is online" (for Stage 6).
 3. No Aggregate Device is required: SC uses `inDevice_("MiniFuse 2")` and
    `outDevice_("BlackHole 16ch")`. An Aggregate is a fallback only.
 4. Set both devices to 48000 Hz.
@@ -1611,24 +1720,36 @@ with mido.open_input("Your Port") as port:
 3. Create 8 stereo audio tracks. Track N input = BlackHole channels 2N-1/2N.
 4. Set Monitor to **In** and Audio To **Master** on each track.
 5. Audio Output Device: MiniFuse 2/headphones (for monitoring); master → MiniFuse 2 1/2.
-6. (Stage 6) Preferences → Link/Tempo/MIDI: enable Track + MPE on IAC Driver.
-7. (Stage 6) MPE track: input from IAC, load MPE-capable synth, set pitch bend range.
+6. (Stage 6) Preferences → Link/Tempo/MIDI: enable **Track** for both `IAC Driver Bus 1` and `IAC Driver Bus 2`.
+7. (Stage 6) Create two MIDI tracks: Drone from Bus 1, Arp from Bus 2; Monitor In; set the **MIDI From channel selector** to **MPE**/All Channels (not Ch. 1); MPE-capable synths with a 48-semitone MPE bend range.
 
 ### 15.6 MPE pitch bend calibration procedure (Stage 6)
 
-Before building bass/drone, run this 5-minute calibration:
+Before trusting drone/arp pitch:
 
-1. Set up a MIDI track in Ableton with an MPE-capable synth.
-2. Set the synth's pitch bend range to a known value `R` (e.g., 48 semitones). Note the value.
-3. From Python, send on member channel 2 (0-indexed 1):
-   - `note_on` pitch 60, velocity 100, then
-   - `pitchwheel` centered (0 in mido representation).
-4. Measure pitch in Ableton (tuner plugin or frequency analyzer). Should be ~261.63 Hz (C4).
-5. Send `pitchwheel` with pitch = `+R/2 * (8192/R)` in mido representation, i.e., +4096 for R=48. Measure. Should be ~370 Hz (C4 + 24 semitones, or F#6).
-6. Send pitch = -4096. Measure. Should be ~185 Hz (C4 - 24 semitones, or F#2).
-7. If measured pitches match expected, calibration passes. Otherwise, adjust `bend_range_semitones` in `config/mpe_config.json` until they match.
-
-Record the verified `bend_range_semitones` in the config file. All subsequent bass/drone pitch calculations depend on this value.
+1. **Audio MIDI Setup** → Window → Show MIDI Studio → IAC Driver: both
+   `IAC Driver Bus 1` and `IAC Driver Bus 2` online.
+2. **Ableton**: Drone track from Bus 1, Arp track from Bus 2, both Monitor In,
+   both with MPE-capable instruments and the MPE pitch-bend range set to **48
+   semitones**. Enable Track for both buses in Link/Tempo/MIDI.
+3. **Port check**: `test_mpe.py --ports` lists both configured names.
+4. **Calibration**: `test_mpe.py --calibrate` sends note 60 with centered bend
+   on each bus for about one second. Both tracks must show MIDI activity and
+   play **C4 (261.63 Hz)**.
+5. **Standalone run**: `test_mpe.py --run 15` starts the drone at anchor `1/1`
+   (220 Hz, A3) and the arp from the initial set. Tune the Drone track.
+6. **Bent JI check**: 275 Hz should read **275 Hz** (MIDI note 61, bend -23 at
+   `R = 48`), not 277.18 Hz (C#4) and not 261.63 Hz (C4). The pure harness
+   prints the expected note/bend pair.
+7. **Optional half-range check**: with `R = 48`, centered +4096 is +24
+   semitones (C4 → C6, ~1046.50 Hz); -4096 is -24 semitones (C4 → C2,
+   ~65.41 Hz). If these do not match, the instrument's MPE range is wrong.
+8. If pitches are consistently sharp/flat by a fixed ratio, fix the instrument's
+   MPE range or `bend_range_semitones` and repeat. If the note is an octave off,
+   check the instrument's octave setting. If the pitch is 12-TET, enable MPE or
+   use an MPE-capable instrument.
+9. Record the verified `bend_range_semitones` in `config/mpe_config.json`; all
+   subsequent drone/arp pitch calculations depend on it.
 
 ### 15.7 External references
 

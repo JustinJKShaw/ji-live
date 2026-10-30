@@ -1,21 +1,23 @@
 # JI Station — Stage 4 (dual-channel autotune + raw looper)
 
-**Status:** Stage 4 is **implemented** in sclang/audio code. It is **awaiting
-human audio acceptance**. The agent environment cannot run SuperCollider or
-hear audio, so this file does not claim that the Stage 4 audio has passed.
+**Status:** Stage 4 is **implemented**, and the project owner reported **all
+sound checks passed on 2026-10-30** through the Stage 5.5 live rig. The agent
+environment cannot hear audio; this acceptance is the owner's report. The
+adjustable loop-length control was added after that report as an enhancement.
 
 > **Stage 5 update:** Stage 5 is now implemented. `startup.scd` boots
 > **MiniFuse 2 input / BlackHole 16ch output** with 2 in / 16 out; SC writes
 > BlackHole and the human monitors Ableton through the MiniFuse 2. Stage 4 audio
 > remains on output pair 0/1 (Ableton track 1). See `README_stage5.md` and the
-> design doc §8.6. Stage 4 audio is still awaiting human acceptance through that
-> path.
+> design doc §8.6.
 >
 > **Live-rig integration (Stage 5.5):** [test_live_rig.scd](test_live_rig.scd)
 > puts the two autotuned inputs and two loops on separate SC outputs
 > **0, 1, 2, 3** and connects them to the Python mutation bridge. That is the
 > current four-channel product; see [README_live_rig.md](README_live_rig.md).
-> The Stage 4 `test_dual_loop.scd` remains unchanged.
+> Its loop default is **8 s**, adjustable with `~ji_set_loop_default` or a
+> per-take seconds argument. The Stage 4 `test_dual_loop.scd` remains unchanged
+> and still defaults to 4 s.
 
 Stage 4 extends the accepted Stage 1/3 autotune path to two independent live
 inputs and adds raw loop recording/playback. Every live input and every playing
@@ -540,4 +542,6 @@ uv run --with python-osc python test_mutation_controls.py
 That confirms the Stage 3.5 controls still pass after the Stage 4 sclang-only
 changes. The human run in §7 is the arbiter for the new audio work.
 
-**Stage 4 is implemented — awaiting human audio acceptance.**
+**Stage 4 is implemented and owner-confirmed (2026-10-30).** The adjustable
+loop-length control is a later live-rig enhancement; see
+[README_live_rig.md](README_live_rig.md).

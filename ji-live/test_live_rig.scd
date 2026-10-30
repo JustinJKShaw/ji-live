@@ -37,12 +37,18 @@
 //    3. cd ji-live
 //       uv run --with python-osc python control/ji_bridge.py --interactive --glide-time 0.15
 //
+//  LOOP LENGTH
+//    ~ji_loop_default_seconds = 8.0;   // initial default
+//    ~ji_set_loop_default.(12.0);      // change the default at runtime
+//    ~ji_record_loop.(1);              // uses the current default
+//    ~ji_record_loop.(1, 20.0);        // one-take override
+//
 //  LOOP COMMANDS
-//    ~ji_record_loop.(1, 4.0);   // input 0 -> loop 1 -> SC 2
+//    ~ji_record_loop.(1);        // input 0 -> loop 1 -> SC 2
 //    ~ji_stop_record.(1);        // stop early (or let the buffer fill)
 //    ~ji_play_loop.(1);
 //    ~ji_stop_loop.(1);
-//    ~ji_record_loop.(2, 4.0);   // input 1 -> loop 2 -> SC 3
+//    ~ji_record_loop.(2);        // input 1 -> loop 2 -> SC 3
 //    ~ji_play_loop.(2);
 //    ~ji_stop_all.();
 //
@@ -221,6 +227,27 @@ if (NetAddr.langPort != 57120) {
 ~ji_loop_players = Array.newClear(4);
 ~ji_loop_recorders = Array.newClear(4);
 
+// --- Loop length -----------------------------------------------------------
+//  Default record length in seconds.  `~ji_record_loop.(i)` uses this;
+//  `~ji_record_loop.(i, seconds)` overrides it for one take.  Change the
+//  default at runtime with `~ji_set_loop_default.(12.0);`.
+//  Recording always allocates a fresh buffer of exactly the requested length,
+//  so any positive length is allowed; memory is seconds * 48000 * 4 bytes per
+//  mono loop (8 s ≈ 1.5 MB, 30 s ≈ 5.8 MB).
+~ji_loop_default_seconds = 8.0;
+
+~ji_set_loop_default = { |seconds = 8.0|
+    var secs = seconds.asFloat;
+    if (secs > 0) {
+        ~ji_loop_default_seconds = secs;
+        ("[LOOP] default record length = % s. Use ~ji_record_loop.(i) or override: ~ji_record_loop.(i, seconds).").format(
+            ~ji_fmtNum.(secs, 2)
+        ).postln;
+    } {
+        "[LOOP] invalid default length -- use seconds > 0".postln;
+    };
+};
+
 //  One voice table for live channels and loops.  The lookup routine services
 //  every active entry with the same arithmetic and the same per-voice
 //  lastTarget.  Each entry owns its tracker buses.
@@ -381,9 +408,9 @@ if (NetAddr.langPort != 57120) {
 //  frame 0, and stops any old player after the recorder is running.  The old
 //  player keeps its old buffer alive through the 30 ms fade; that buffer is
 //  freed shortly afterwards.
-~ji_record_loop = { |index = 1, seconds = 4.0|
+~ji_record_loop = { |index = 1, seconds|
     var i = index.asInteger.clip(1, 4);
-    var secs = seconds.asFloat;
+    var secs = (seconds ? ~ji_loop_default_seconds).asFloat;
     var oldBuf;
 
     if (s.serverRunning.not) {
@@ -504,8 +531,9 @@ if (NetAddr.langPort != 57120) {
             voice[\lastHas] = 0.0;
             ~ji_loop_states[i - 1] = \playing;
 
-            ("[LOOP %] playing bufnum=% -> out % (node %)").format(
-                i, buf.bufnum, ~ji_loop_outbus[i - 1], player.nodeID
+            ("[LOOP %] playing bufnum=% -> out % (node %, % s)").format(
+                i, buf.bufnum, ~ji_loop_outbus[i - 1], player.nodeID,
+                ~ji_fmtNum.(buf.duration, 2)
             ).postln;
         };
     };
@@ -527,17 +555,21 @@ if (NetAddr.langPort != 57120) {
 };
 
 // --- Allocate the four loop buffers ---------------------------------------
-//  Four seconds each by default.  ~ji_record_loop.(i, seconds) reallocates the
-//  buffer at the exact requested length, so these are immediately usable
-//  placeholders and satisfy the "four loop buffers reserved" contract.
-~ji_set_loop_buffer.(1, Buffer.alloc(s, (4.0 * s.sampleRate).round.asInteger, 1));
-~ji_set_loop_buffer.(2, Buffer.alloc(s, (4.0 * s.sampleRate).round.asInteger, 1));
-~ji_set_loop_buffer.(3, Buffer.alloc(s, (4.0 * s.sampleRate).round.asInteger, 1));
-~ji_set_loop_buffer.(4, Buffer.alloc(s, (4.0 * s.sampleRate).round.asInteger, 1));
-("[LOOP] buffers allocated: 1=% 2=% 3=% 4=% (4.0 s mono each)".format(
+//  These placeholders use ~ji_loop_default_seconds (8.0 s).  Every recording
+//  reallocates its buffer at the exact requested length, so these only need to
+//  be valid and immediately usable.
+~ji_set_loop_buffer.(1, Buffer.alloc(s, (~ji_loop_default_seconds * s.sampleRate).round.asInteger, 1));
+~ji_set_loop_buffer.(2, Buffer.alloc(s, (~ji_loop_default_seconds * s.sampleRate).round.asInteger, 1));
+~ji_set_loop_buffer.(3, Buffer.alloc(s, (~ji_loop_default_seconds * s.sampleRate).round.asInteger, 1));
+~ji_set_loop_buffer.(4, Buffer.alloc(s, (~ji_loop_default_seconds * s.sampleRate).round.asInteger, 1));
+("[LOOP] buffers allocated: 1=% 2=% 3=% 4=% (% s mono each)".format(
     ~ji_buf_loop1.bufnum, ~ji_buf_loop2.bufnum,
-    ~ji_buf_loop3.bufnum, ~ji_buf_loop4.bufnum
+    ~ji_buf_loop3.bufnum, ~ji_buf_loop4.bufnum,
+    ~ji_fmtNum.(~ji_loop_default_seconds, 2)
 )).postln;
+("[LOOP] default record length: % s. ~ji_set_loop_default.(12.0) changes it; ~ji_record_loop.(i, seconds) overrides one take.").format(
+    ~ji_fmtNum.(~ji_loop_default_seconds, 2)
+).postln;
 ("[LOOP] tracker buses: loop_freq=% loop_hasfreq=%".format(
     ~ji_loop_freq_buses.collect { |bus| bus.index },
     ~ji_loop_hasfreq_buses.collect { |bus| bus.index }
@@ -641,9 +673,10 @@ if (NetAddr.langPort != 57120) {
 
 // --- Command cheat sheet ---------------------------------------------------
 "[RIG] Ready. SC 0 = autotuned input 0, SC 1 = autotuned input 1, SC 2 = loop 1, SC 3 = loop 2.".postln;
-"[RIG] ~ji_record_loop.(1, 4.0);  ~ji_stop_record.(1);  ~ji_play_loop.(1);  ~ji_stop_loop.(1);".postln;
-"[RIG] ~ji_record_loop.(2, 4.0);  (wait)  ~ji_stop_record.(2);  ~ji_play_loop.(2);  ~ji_stop_all.();".postln;
+"[RIG] ~ji_record_loop.(1);  ~ji_stop_record.(1);  ~ji_play_loop.(1);  ~ji_stop_loop.(1);".postln;
+"[RIG] ~ji_record_loop.(2);  (wait)  ~ji_stop_record.(2);  ~ji_play_loop.(2);  ~ji_stop_all.();".postln;
 "[RIG] Loop 1 records input 0; loop 2 records input 1. Both retune through their own Tartini chain.".postln;
+"[RIG] Loop length: default 8.0 s. ~ji_set_loop_default.(12.0); or ~ji_record_loop.(1, 20.0);".postln;
 "[RIG] Python: press m to mutate, q to quit. Watch [BRIDGE] set update, [AUTOTUNE] and [LOOP].".postln;
 "[RIG] Optional loops 3/4 sum into SC 2/3; the four-channel product uses loops 1 and 2.".postln;
 

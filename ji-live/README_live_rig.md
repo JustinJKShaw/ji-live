@@ -1,8 +1,10 @@
 # JI Station — Live Rig (2 inputs + 2 loops → 4 outputs)
 
-**Status:** implemented in sclang/config/docs; **awaiting human audio acceptance**.
-This is the integration rig that combines Stages 1–4 with the Stage 5
-BlackHole → Ableton monitor path and the Stage 3 Python mutation bridge.
+**Status:** implemented; **the owner reported all sound checks passed on
+2026-10-30**. The adjustable loop length (8 s default, per-take override and
+`~ji_set_loop_default`) was added after that report; a quick re-check of the
+length control is recommended. This is the integration rig that combines
+Stages 1–5 with the Python mutation bridge.
 
 ```text
 MiniFuse 2 input 0 (mic)    → Tartini → nearest class → PitchShift → SC out 0 → Ableton track 1
@@ -121,7 +123,8 @@ Confirm lines like:
 [AUTOTUNE] ch0 started (node 1000) inBus=0 outBus=0
 [AUTOTUNE] ch1 started (node 1001) inBus=1 outBus=1
 [BRIDGE] /ji/freqset/update receiver installed (key=\ji_freqset_update_live_rig), initial set size=7 fund=220.00
-[LOOP] buffers allocated: 1=1 2=2 3=3 4=4 (4.0 s mono each)
+[LOOP] buffers allocated: 1=1 2=2 3=3 4=4 (8.00 s mono each)
+[LOOP] default record length: 8.00 s. ~ji_set_loop_default.(12.0) changes it; ~ji_record_loop.(i, seconds) overrides one take.
 [LOOP] tracker buses: loop_freq=[ 11, 12, 13, 14 ] loop_hasfreq=[ 15, 16, 17, 18 ]
 [LOOKUP] multi-voice lookup running at 20 Hz for 6 voices
 [RIG] Ready. SC 0 = autotuned input 0, SC 1 = autotuned input 1, SC 2 = loop 1, SC 3 = loop 2.
@@ -173,21 +176,45 @@ Play/sing into MiniFuse 2 inputs 1 and 2. Ableton tracks 1 and 2 should show
 the autotuned signals and the `[AUTOTUNE ch=...]` lines should show
 `hasFreq > 0.5`.
 
+### Loop length is adjustable
+
+The live rig defaults to **8.0 seconds** per loop. Recording always reallocates
+the buffer to exactly the requested length.
+
+```supercollider
+~ji_loop_default_seconds;         // 8.0
+~ji_record_loop.(1);              // loop 1, current default (8 s)
+~ji_record_loop.(1, 16.0);        // loop 1, one 16 s take
+~ji_set_loop_default.(12.0);      // future ~ji_record_loop.(i) calls use 12 s
+~ji_record_loop.(2);              // loop 2, 12 s
+```
+
+- `~ji_record_loop.(index, seconds)` accepts any positive length.
+- `~ji_set_loop_default.(seconds)` changes the default for later recordings.
+- `~ji_record_loop.(index)` uses `~ji_loop_default_seconds`.
+- The initial four buffers are 8 s placeholders; recording replaces the used
+  one with a buffer of the requested length.
+- Memory is `seconds * 48000 * 4 bytes` per mono loop: about 1.5 MB at 8 s,
+  3.1 MB at 16 s, 5.8 MB at 30 s.
+- Recording still overwrites from frame 0; it is not overdub. An early
+  `~ji_stop_record.(1)` keeps the partly filled buffer, and the remainder is
+  silence. Let the full requested time elapse for a seamless loop.
+
 Record loop 1 from input 0:
 
 ```supercollider
-~ji_record_loop.(1, 4.0);   // records input 0 -> loop 1
-// after 4 s (or early):
-~ji_stop_record.(1);
-~ji_play_loop.(1);          // loop 1 -> SC 2 -> Ableton track 3
+~ji_record_loop.(1);         // 8 s default; records input 0 -> loop 1
+// or: ~ji_record_loop.(1, 16.0);
+~ji_stop_record.(1);         // optional early stop
+~ji_play_loop.(1);           // loop 1 -> SC 2 -> Ableton track 3
 ```
 
 Record loop 2 from input 1:
 
 ```supercollider
-~ji_record_loop.(2, 4.0);   // records input 1 -> loop 2
+~ji_record_loop.(2);         // 8 s default; records input 1 -> loop 2
 ~ji_stop_record.(2);
-~ji_play_loop.(2);          // loop 2 -> SC 3 -> Ableton track 4
+~ji_play_loop.(2);           // loop 2 -> SC 3 -> Ableton track 4
 ```
 
 Stop and clean up:
@@ -202,6 +229,10 @@ Loop commands and the 0-based array behavior are the accepted Stage 4
 functions. Loop 1 records input 0; loop 2 records input 1. Loops 1/2 are mono
 and are summed only onto their own SC output channel (2 and 3). They do not
 sum with the live channels.
+
+The `[LOOP n] playing ...` line prints the buffer duration; use it to confirm
+the requested length. The `[LOOP n] recording ...` line prints the length and
+input channel.
 
 ---
 
@@ -294,8 +325,9 @@ known old variables and old loop buffers.
 - Four **mono** channels; not four stereo pairs.
 - Two live inputs only. The extra Stage 4 loop voices 3/4 are optional and sum
   into SC 2/3.
-- Loop recording is overwrite-only, mono, in-memory; no overdub, persistence,
-  or crossfade.
+- Loop length is adjustable (`~ji_set_loop_default.` or per-take seconds), but
+  recording is overwrite-only, mono, in-memory; no overdub, persistence, or
+  crossfade. Memory scales with length.
 - No per-loop stereo routing, MIDI/MPE mutation, granular FX, or UI.
 - The Python mutation engine and `/ji/freqset/update` protocol are unchanged.
 - The 48 kHz rate comes from the two devices; `s.options.sampleRate` is not
@@ -316,10 +348,11 @@ known old variables and old loop buffers.
    4 receive loops 1 and 2.
 4. Python starts; pressing `m` prints `[BRIDGE] set update` and retunes both
    live channels and any playing loop without replay.
-5. Recording loop 1 from input 0 and loop 2 from input 1 works; playback
-   appears on SC 2 and 3 / tracks 3 and 4.
+5. Recording loop 1 from input 0 and loop 2 from input 1 works at the default
+   8 s; `~ji_record_loop.(1, 16.0)` and `~ji_set_loop_default.(12.0)` change
+   the length; playback appears on SC 2 and 3 / tracks 3 and 4.
 6. CPU is below 60% with 2 live + 2 loops (read the `CPU:` line).
 7. No clicks or dropouts during mutations or loop start/stop; if a loop seam
    clicks once per cycle, re-record a phrase ending quietly.
-8. Record the result. This is still **awaiting human audio acceptance**; it
-   does not by itself mark Stage 4 or Stage 5 accepted.
+8. The owner reported all sound checks passed on 2026-10-30. The loop-length
+   control is a post-acceptance enhancement; confirm it once in the live rig.

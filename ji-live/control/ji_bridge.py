@@ -14,6 +14,11 @@ to the autotune synth.  A held note therefore retunes on the next lookup tick
 without being replayed.
 
 No OSC is sent directly to scsynth in Stage 3.
+
+Stage 6 adds optional MPE MIDI output (``--midi``).  The same engine snapshot is
+handed to :class:`~control.midi_rig.MIDIRig`, which drives an anchor drone on
+IAC Bus 1 and a set arp on IAC Bus 2.  MIDI is off by default; mido is imported
+lazily only when a real port is opened.  The OSC payload above is unchanged.
 """
 
 from __future__ import annotations
@@ -87,6 +92,8 @@ class JIBridge:
         change_count: int = 1,
         temperature: float = 0.0,
         anchor_mobility: float = 0.25,
+        midi: bool = False,
+        mpe_config: str | None = None,
     ) -> None:
         self.sc_host = str(sc_host)
         self.sc_port = int(sc_port)
@@ -116,6 +123,18 @@ class JIBridge:
         self.server.set_change_count(change_count)
         self.server.set_temperature(temperature)
 
+        # Stage 6 MIDI is optional and off by default.  Importing/constructing
+        # the rig never imports mido; ports open in MIDIRig.start().
+        self.mpe_config = mpe_config
+        self.midi = None
+        if midi:
+            try:
+                from .midi_rig import MIDIRig
+            except ImportError:  # pragma: no cover - direct execution
+                from midi_rig import MIDIRig
+
+            self.midi = MIDIRig(mpe_config or "config/mpe_config.json")
+
     # ------------------------------------------------------------------
     # Lifecycle / transport
     # ------------------------------------------------------------------
@@ -130,27 +149,56 @@ class JIBridge:
         )
         print_set(self.engine, "initial set")
         print_controls(self.server)
-        # Initial set uses glide 0.0; the first mutation carries its own glide.
+        # Send the initial OSC set first.  If MIDI is enabled, its on_set is
+        # stored as a snapshot and MIDIRig.start applies it immediately, so the
+        # drone starts and the arp has a pattern before its thread begins.
         self.send_set(0.0)
+        if self.midi is not None:
+            self.midi.start()
 
     def stop(self) -> None:
-        self.server.stop()
+        try:
+            self.server.stop()
+        finally:
+            if self.midi is not None:
+                self.midi.stop()
 
     def send_set(self, glide_time: float) -> bool:
         """Send the full current set to sclang.  Returns ``True`` on success."""
 
         args = build_freqset_args(self.engine, glide_time)
+        sent = True
         try:
             self.client.send_message(FREQSET_ADDRESS, args)
         except (OSError, ValueError) as exc:
             print(f"[BRIDGE] send failed: {exc}", file=sys.stderr)
-            return False
+            sent = False
 
-        print(
-            f"[BRIDGE] -> {FREQSET_ADDRESS} classes={len(args) - 2} "
-            f"glide={args[1]:.3f} fundamental={args[0]:.1f}"
-        )
-        return True
+        # The MIDI rig receives the same snapshot, whether or not the sclang UDP
+        # send succeeded.  Before MIDIRig.start it stores the initial snapshot;
+        # start applies it so the drone and arp begin from the initial set.
+        self._notify_midi()
+
+        if sent:
+            print(
+                f"[BRIDGE] -> {FREQSET_ADDRESS} classes={len(args) - 2} "
+                f"glide={args[1]:.3f} fundamental={args[0]:.1f}"
+            )
+        return sent
+
+    def _notify_midi(self) -> None:
+        """Hand a snapshot to the MIDI rig; MIDI errors never break the bridge."""
+
+        if self.midi is None:
+            return
+        try:
+            self.midi.on_set(
+                ratios=list(self.engine.current_ratios),
+                anchor=self.engine.anchor_ratio,
+                fundamental=self.engine.fundamental,
+            )
+        except Exception as exc:  # deliberately broad: MIDI is non-critical
+            print(f"[MIDI] set update failed: {exc}", file=sys.stderr)
 
     # ------------------------------------------------------------------
     # MutationOSCServer callbacks (called after the engine lock is released)
@@ -297,7 +345,8 @@ def run_interactive(bridge: JIBridge) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Stage 3 bridge: mutation engine -> sclang /ji/freqset/update"
+            "Stage 3/6 bridge: mutation engine -> sclang /ji/freqset/update "
+            "and optional MPE MIDI rig"
         )
     )
     parser.add_argument("--sc-host", default="127.0.0.1")
@@ -335,6 +384,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="accept m/o/c/t/a/g/s/q commands from stdin",
     )
+    parser.add_argument(
+        "--midi",
+        action="store_true",
+        help="enable the Stage 6 MPE MIDI rig (default: off)",
+    )
+    parser.add_argument(
+        "--mpe-config",
+        default="config/mpe_config.json",
+        help="Stage 6 MIDI config path (default: config/mpe_config.json)",
+    )
     return parser
 
 
@@ -371,6 +430,8 @@ def main(argv: list[str] | None = None) -> int:
         change_count=args.change_count,
         temperature=args.temperature,
         anchor_mobility=args.anchor_mobility,
+        midi=args.midi,
+        mpe_config=args.mpe_config,
     )
 
     try:
@@ -382,8 +443,8 @@ def main(argv: list[str] | None = None) -> int:
             threading.Event().wait()
     except KeyboardInterrupt:
         print()
-    except OSError as exc:
-        print(f"[BRIDGE] socket error: {exc}", file=sys.stderr)
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(f"[BRIDGE] error: {exc}", file=sys.stderr)
         return 1
     finally:
         bridge.stop()

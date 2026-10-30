@@ -1,0 +1,14 @@
+{
+  "drone_port": "IAC Driver Bus 1",
+  "arp_port": "IAC Driver Bus 2",
+  "member_channel": 2,
+  "master_channel": 1,
+  "bend_range_semitones": 48,
+  "drone_velocity": 90,
+  "arp_velocity": 90,
+  "step_seconds": 0.25,
+  "gate_seconds": 0.20,
+  "arp_octave_offsets": [0, 1, 2],
+  "arp_shared_mode": "anchor",
+  "arp_seed": 1
+}

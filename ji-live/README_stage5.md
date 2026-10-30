@@ -1,10 +1,10 @@
 # JI Station — Stage 5 (BlackHole 16ch + Ableton audio routing)
 
-**Status:** Stage 5 is **implemented** in `startup.scd`, `test_ableton_routing.scd`,
-`config/ableton_routing.json`, and this document. It is **awaiting human audio
-acceptance**. The agent environment cannot run SuperCollider, scsynth, Ableton,
-or hear audio, so this file does **not** claim that Stage 5 or Stage 4 audio has
-passed.
+**Status:** Stage 5 is **implemented**, and the project owner reported **all
+sound checks passed on 2026-10-30** (8-pair routing and the four-channel live
+rig). The agent environment cannot run SuperCollider, scsynth, Ableton, or hear
+audio; the acceptance is the owner's report. The adjustable loop-length control
+was added after that report as an enhancement.
 
 > **Live-rig integration (Stage 5.5):** [test_live_rig.scd](test_live_rig.scd)
 > now combines the two live autotunned inputs and two loops on **SC 0, 1, 2, 3**
@@ -579,8 +579,10 @@ the arbiter for the routing and the deferred Stage 4 sound check.
 6. Evaluate `test_dual_loop.scd`; play into the MiniFuse 2 input; confirm live
    autotune on **Ableton track 1** and complete the deferred Stage 4 sound
    check.
-7. Record the result. **Stage 5 is not complete until the human hears the
-   routing and the Stage 4 signal through Ableton.**
+7. Record the result. The owner reported all sound checks passed on
+   2026-10-30, including Stage 5 routing and the Stage 4 signal through
+   Ableton.
 
-**Stage 5 is implemented — awaiting human audio acceptance. Stage 4 audio
-acceptance is part of the same listening test.**
+**Stage 5 is implemented and owner-confirmed (2026-10-30).** The adjustable
+loop-length control is a later live-rig enhancement; see
+[README_live_rig.md](README_live_rig.md).
