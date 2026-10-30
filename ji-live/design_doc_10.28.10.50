@@ -1,6 +1,6 @@
 # JI Live — Complete Design & Implementation Reference
 
-**Version 5.3 · Archival / New-Session Ready**
+**Version 5.4 · Archival / New-Session Ready**
 **Purpose:** If a new session (human or AI) opens this document with no prior context, they must be able to understand the project, current state, and how to proceed without asking questions.
 
 **Table of Contents**
@@ -29,9 +29,9 @@
 
 **Who it is for:** An improvising musician (the project owner) who wants harmonic constraint without losing spontaneity, working in an electroacoustic idiom where digital timbre manipulation is part of the aesthetic.
 
-**What is done:** Stage 0 (server skeleton, 2-channel I/O, Tartini pitch tracking verification), Stage 1 (static autotune to a hardcoded JI set, single channel), Stage 2 (decentralised pure-Python mutation engine, no audio), and Stage 3 (mutation → autotune bridge) are complete and accepted by the project owner (audio and Python↔sclang communication working).
+**What is done:** Stage 0 (server skeleton, 2-channel I/O, Tartini pitch tracking verification), Stage 1 (static autotune to a hardcoded JI set, single channel), Stage 2 (decentralised pure-Python mutation engine, no audio), and Stage 3 (mutation → autotune bridge) are complete and accepted by the project owner (audio and Python↔sclang communication working). Stage 4 (dual-channel autotune + raw looper) is implemented in sclang/SynthDefs and awaiting human audio acceptance.
 
-**What is being built:** the Stage 3 mutation-control extension (multi-edit batches, temperature, anchor mobility) is implemented — awaiting human audio acceptance. Stage 4 (dual channel + raw looper) follows.
+**What is being built:** human audio acceptance of the Stage 3 mutation-control extension (batch width, temperature, anchor mobility) and of Stage 4 (two live channels + raw loops). Stage 5 (Ableton audio routing) follows.
 
 **Core hypothesis:** SuperCollider's `scsynth` is the correct audio backend for pitch tracking, pitch shifting, looping, and granular processing. Ableton Live is the correct downstream host for VST/AU synths and effects, final mixing, and MPE target instruments. The two communicate via a virtual audio device (BlackHole) for audio and IAC Driver for MIDI.
 
@@ -301,16 +301,15 @@ s.options.numOutputBusChannels = 16;   // 8 stereo pairs (16 enough for 4 loops 
 
 ```
 ji-live/
-├── startup.scd
+├── startup.scd                            # Stage 0-4 buses 0-18
 ├── synthdefs/
-│   ├── ji_tartini_debug.scd             # Stage 0
-│   ├── ji_autotune_ch.scd               # Stage 1 ✅
-│   ├── ji_autotune_dual.scd             # Stage 4
-│   ├── ji_looper_recorder.scd           # Stage 4
-│   ├── ji_looper_player.scd             # Stage 4
-│   ├── ji_granular_fx.scd               # Stage 8
-│   ├── ji_vst_input.scd                 # Stage 7 (optional)
-│   └── ji_vst_output.scd                # Stage 7 (optional)
+│   ├── ji_tartini_debug.scd               # Stage 0
+│   ├── ji_autotune_ch.scd                 # Stage 1 ✅ (reused twice in Stage 4)
+│   ├── ji_looper_recorder.scd             # Stage 4 🟡 awaiting audio acceptance
+│   ├── ji_looper_player.scd               # Stage 4 🟡 awaiting audio acceptance
+│   ├── ji_granular_fx.scd                 # Stage 8
+│   ├── ji_vst_input.scd                   # Stage 7 (optional)
+│   └── ji_vst_output.scd                  # Stage 7 (optional)
 ├── control/
 │   ├── mutation.py                      # Stage 2 ✅ + Stage 3.5 controls 🟡
 │   ├── osc_server.py                    # Stage 2 ✅ + Stage 3/3.5 callbacks
@@ -330,7 +329,7 @@ ji-live/
 ├── test_mutation.py                     # Stage 2 ✅
 ├── test_mutation_controls.py            # Stage 3.5 🟡 awaiting audio acceptance
 ├── test_bridge.scd                      # Stage 3 ✅
-├── test_dual_loop.scd                   # Stage 4
+├── test_dual_loop.scd                   # Stage 4 🟡 awaiting audio acceptance
 ├── test_ableton_routing.scd             # Stage 5 (NEW)
 ├── test_mpe.py                          # Stage 6 (NEW)
 ├── test_granular.scd                    # Stage 8
@@ -340,6 +339,7 @@ ji-live/
 ├── README_stage1.md                     # ✅
 ├── README_stage2.md                     # ✅
 ├── README_stage3.md                     # Stage 3 ✅ + controls 🟡
+├── README_stage4.md                     # Stage 4 🟡 awaiting audio acceptance
 ├── README_ableton.md                    # Stage 5 (NEW)
 ├── README_mpe.md                        # Stage 6 (NEW)
 ├── README_stage7.md
@@ -352,12 +352,16 @@ receiver in `test_bridge.scd` supersedes the old server-buffer lookup. The
 12-slot Hz Buffer mirror is written for future stages but is not read by any
 SynthDef yet.
 
+Stage 4 likewise has **no** `synthdefs/ji_autotune_dual.scd`: it starts two
+instances of the verified `\ji_autotune_ch` graph, one per input channel, so
+there is no second autotune DSP definition to maintain.
+
 ### 4.4 Startup order (Stage 5 onward)
 
 1. Human verifies Aggregate Device and BlackHole exist (Audio MIDI Setup).
 2. Human opens Ableton, configures input as BlackHole 64ch, enables 16 input channels, arms MPE track(s).
 3. Human launches SC IDE, evaluates `startup.scd` (server boots, buses allocated, SynthDefs loaded).
-4. Human evaluates `test_autotune.scd` (Stage 1) or `test_bridge.scd` (Stage 3).
+4. Human evaluates `test_autotune.scd` (Stage 1), `test_bridge.scd` (Stage 3), or `test_dual_loop.scd` (Stage 4).
 5. Human launches Python bridge (`python control/ji_bridge.py`).
 6. Human launches UI (`python ui/ji_ui.py`, Stage 9).
 
@@ -400,7 +404,7 @@ This contract applies to **all stages**. Included verbatim in every agent prompt
 | 11–14 | `~ji_loop_freq1..4` | 4 | Loop tracker freqs |
 | 15–18 | `~ji_loop_hasfreq1..4` | 4 | Loop confidences |
 
-**Audio bus allocation:** 0–1 input, 0–1 output (SC reuses indices). Loop audio buses: 10–17 (4 stereo pairs). VST/MPE do not consume global audio bus indices.
+**Audio bus allocation:** Stage 4 keeps 0–1 input and 0–1 output (SC reuses indices); mono loops sum to output 0 or 1, so no internal loop audio buses are allocated. The Stage 5 plan reserves loop audio buses 10–17 (4 stereo pairs) for separate Ableton streams. VST/MPE do not consume global audio bus indices.
 
 ### 5.3 Audio-thread rule (inviolable)
 
@@ -530,13 +534,13 @@ MutationBatch(events: tuple[MutationEvent, ...], glideTime)
 
 ### 6.6 Loop recording and playback
 
-**Recording:** Raw input (pre-autotune) into stereo Buffer via `RecordBuf`. `recGate` control (0/1). Buffer length `loopLength * sampleRate * 2`.
+**Stage 4 implementation (mono):** raw input (pre-autotune) into a mono Buffer via `RecordBuf`, `loop: 0`, `doneAction: 2`, overwrite from frame 0. The `run` control and `~ji_stop_record.()` stop early; the buffer is kept. Buffer length is `seconds * sampleRate` (one channel). No overdub.
 
-**Playback:** `PlayBuf.ar` (looping) → `Tartini` → `PitchShift` → loop mix bus.
+**Playback:** `PlayBuf.ar` (looping, mono) → `LeakDC` → `Tartini` → `PitchShift` → output. Each loop has its own tracker buses and takes `targetFreq`/`retuneTime` from sclang's lookup, so it retunes to the current set because playback passes through the autotune chain.
 
-**Key property:** Loops retune to the current set because playback passes through the autotune chain.
+**Key property:** Loops retune to the current set because playback passes through the autotune chain. The buffer itself stays dry.
 
-**Buffer management:** Save via `Buffer.write`, load via `Buffer.read`. Format: 48 kHz, 32-bit float, `.aiff`.
+**Deferred:** stereo loop buffers, `~ji_buf_*` `.aiff` persistence via `Buffer.write`/`Buffer.read`, and per-loop routing are later-stage work (Stage 5 for routing/persistence formats).
 
 ### 6.7 VST hosting (Stage 7, now optional)
 
@@ -676,10 +680,10 @@ Same infrastructure as bass/drone but polyphonic. Notes derived from current set
 | `/ji/freqset/update` | [float fundamental, float glide_time, float ratio_1 … ratio_N] | Bridge → sclang | 3 ✅ |
 | `/ji/freqset/changed` | float[] | Bridge → UI | 9 |
 | `/ji/autotune/set` | [string, float] | Control → Server | 7 |
-| `/ji/loop/record` | int (index) | Control → Server | 4 |
-| `/ji/loop/stop` | int | Control → Server | 4 |
-| `/ji/loop/play` | int | Control → Server | 4 |
-| `/ji/loop/clear` | int | Control → Server | 4 |
+| `/ji/loop/record` | int (index) | Control → Server | 8 (not in Stage 4) |
+| `/ji/loop/stop` | int | Control → Server | 8 (not in Stage 4) |
+| `/ji/loop/play` | int | Control → Server | 8 (not in Stage 4) |
+| `/ji/loop/clear` | int | Control → Server | 8 (not in Stage 4) |
 | `/ji/granular/trigger` | [float, float] | Control → Server | 8 |
 | `/ji/midi/map` | [int, string] | Control → Bridge | 8 |
 | `/ji/bass/trigger` | none | Control → Bridge | 6 |
@@ -836,19 +840,25 @@ OctaveEvent(
 
 **Harness:** `uv run --with python-osc python test_mutation_controls.py` prints `ALL CONTROL TESTS PASSED`. It covers batch width, temperature palette expansion, anchor mobility 0/1, server clamping/batch callbacks, and the bridge's one-update-per-batch behaviour. Python-level acceptance passed; audible acceptance of the new controls is still for the human.
 
-### 8.5 Stage 4 — Dual Channel + Raw Looper
+### 8.5 Stage 4 — Dual Channel + Raw Looper 🟡 IMPLEMENTED — AWAITING HUMAN AUDIO ACCEPTANCE
 
 **Goal:** Two independent input channels (mic 0, guitar 1). Loop recorder with raw buffers. Loops retune on playback.
 
-**Deliverables:** `synthdefs/ji_autotune_dual.scd`, `synthdefs/ji_looper_recorder.scd`, `synthdefs/ji_looper_player.scd`, `test_dual_loop.scd`.
+**Architecture:** two instances of the verified `\ji_autotune_ch` graph — input 0 → out 0 with buses 5/6, input 1 → out 1 with buses 8/9. There is no `ji_autotune_dual.scd`; a wrapper would duplicate the verified Tartini/PitchShift DSP without adding independence. `\ji_looper_recorder` records the **dry** input (mono `RecordBuf`, no overdub) into `~ji_buf_loop1..4`. `\ji_looper_player` runs `PlayBuf → Tartini → PitchShift`; Tartini analyses the unshifted buffer. Loop tracker buses 11–14 (freq) and 15–18 (confidence) are reserved for four loops; the Stage 4 test exercises loops 1 and 2. `test_dual_loop.scd` installs the same `/ji/freqset/update` receiver and `~ji_nearest_target` arithmetic as Stage 3, runs one 20 Hz lookup for all voices, and keeps a per-voice `lastTarget`. A set update **broadcasts** `retuneTime = max(glide, 0.005)` to every active live/loop synth rather than letting one voice consume a shared pending glide. Live inputs and loops use their own octaves; `new_octave` is not used.
+
+**Deliverables:** `startup.scd` (MODIFIED: buses 8–18, sanity/print), `synthdefs/ji_looper_recorder.scd`, `synthdefs/ji_looper_player.scd`, `test_dual_loop.scd`, `README_stage4.md`. `synthdefs/ji_autotune_ch.scd` is unchanged; `test_bridge.scd` is unchanged.
 
 **Acceptance test:**
 1. Both channels autotune independently.
-2. Record a phrase; playback retunes when set changes.
-3. Record second loop; both retune together.
+2. Record a raw phrase from input 0 into loop 1; playback retunes when the set changes.
+3. Record loop 2 from input 1; both live channels and both loops retune together, each in its own octave.
 4. CPU < 60% with 2 live + 2 loops.
+5. Loop target changes without restarting playback and follows the event glide.
+6. No clicks/dropouts/zipper noise during mutations and loop start/stop.
 
-**Fallback if CPU fails:** store pitch contour at record time, read during playback.
+**Status:** implemented in sclang/SynthDefs; **audio not testable in the agent environment**, so Stage 4 is not marked accepted. Acceptance is audible and belongs to the project owner.
+
+**Fallback if CPU fails:** store pitch contour at record time, read during playback. Do not add a server-side nearest-class lookup or C++ UGen without measurements.
 
 ### 8.6 Stage 5 — Ableton Audio Integration (NEW)
 
@@ -959,7 +969,7 @@ OctaveEvent(
 | 2 | ✅ Complete | Decentralised mutation engine + OSC listener. Harness passes. |
 | 3 | ✅ Complete | Bridge accepted by owner: audio and Python↔sclang working. |
 | 3.5 | 🟡 Implemented — awaiting audio acceptance | Mutation batch width, temperature, anchor mobility. Python harness passes. |
-| 4 | ⬜ Pending | Depends on Stage 3 / 3.5 acceptance. |
+| 4 | 🟡 Implemented — awaiting audio acceptance | Dual live autotune, dry mono loop recorder, four loop voices with independent Tartini/PitchShift chains, broadcast glide. |
 | 5 | ⬜ Pending | Ableton routing. Requires BlackHole install. |
 | 6 | ⬜ Pending | MPE + bass/drone. Requires IAC Driver enabled, calibration. |
 | 7 | ⬜ Optional | SC-side VST hosting. May be skipped if Ableton handles VSTs. |
@@ -1006,14 +1016,23 @@ OctaveEvent(
 - `anchor_mobility` 0..1: anchor fixed, old 1/4 default, or no precedence with random re-anchoring.
 - `test_mutation_controls.py` passes under CPython 3.12/Pyodide.
 
+**What Stage 4 implements (awaiting audio acceptance):**
+- `startup.scd` allocates the cumulative buses 0–18 and reports the full map.
+- Two independent live autotune voices on input 0/out 0 and input 1/out 1, each with its own tracker buses and target.
+- `\ji_looper_recorder` captures the dry, pre-autotune input into a mono buffer (overwrite, no overdub) with a `run` gate and an explicit stop path.
+- `\ji_looper_player` runs `PlayBuf → Tartini → PitchShift` per loop, writes loop tracker buses 11–18, and takes `targetFreq`/`retuneTime` from sclang only.
+- One 20 Hz lookup services every active live/loop voice with the verified nearest-class arithmetic and a per-voice `lastTarget`.
+- Set updates broadcast the event glide to all active voices; a mutation can retune both live channels and all playing loops without replay.
+- Loop transport is sclang-only; no Python loop OSC control and no new Python protocol.
+
 **What is still unverified:**
+- **Stage 4 audible acceptance** (dual independent autotune, raw loop recording, per-loop retune without restart, loop start/stop clicks, measured CPU with 2 live + 2 loops).
 - **Stage 3.5 audible acceptance** (batch width, temperature, anchor mobility).
 - Actual per-voice octave allocation and audio retuning (Stage 3/4).
 - Ableton audio routing (Stage 5).
 - IAC Driver MIDI output (Stage 6).
 - MPE pitch bend calibration (Stage 6).
 - Multi-channel audio stability over long sessions (Stage 5).
-- Loop + autotune CPU under load (Stage 4).
 - VSTPlugin SC-side loading (Stage 7, likely moot if Ableton hosts VSTs).
 - Real-time performance latency under full load (Stage 9).
 
@@ -1235,6 +1254,10 @@ Only after 1–4 are ruled out should you attribute failure to the agent.
 | 5.1 | 2026-10-28 | **Stage 2 complete.** Mutation redesigned around a decentralised, continuously drifting field: target size 7 (max 12), octave-equivalent classes, global classes vs local registers, dynamic candidates, denominator relatedness primary + Sethares roughness secondary, stochastic rank selection, protected anchor, separate octave events, no dead-ends. Updated Python setup to `uv` (3.11+, no system Python required; numpy optional). Added `README_stage2.md`, updated OSC map, status, file tree, tests, and design rationale. |
 | 5.2 | 2026-10-28 | **Stage 3 implemented — awaiting human audio acceptance.** Added `control/ji_bridge.py` (`/ji/freqset/update` with fundamental, glide, full ratio set), `test_bridge.scd` (OSC receiver, set update, 12-slot Hz mirror, Stage 1 nearest-class lookup with pending glide), and `README_stage3.md`. `control/osc_server.py` gained public `trigger()` / `octave()` / `set_glide_time()` and post-apply callbacks. The old `synthdefs/ji_freqset_receiver.scd` server-side lookup is deferred/superseded. **Audio not verified in the agent environment; Stage 3 is not marked complete.** |
 | 5.3 | 2026-10-28 | **Stage 3 bridge accepted by owner; mutation-control extension added.** `mutation.py` gained `MutationBatch`/`mutate_many()` (atomic multi-edit batches), `max_changes`, `temperature` (extended higher-limit palette, relaxed scoring, flattened selection), and `anchor_mobility` (0 = fixed anchor, 0.25 = old weight, 1 = no precedence and random re-anchoring). `osc_server.py` gained change-count/temperature/anchor-mobility setters and batch callbacks; `ji_bridge.py` gained CLI/interactive controls and one-update-per-batch handling. Added `test_mutation_controls.py` and `README_stage3.md` §12. **Stage 3.5 audible acceptance is still pending.** |
+| 5.4 | 2026-10-29 | **Stage 4 implemented — awaiting human audio acceptance.** `startup.scd` now allocates cumulative buses 8–18 (channel-1 autotune tracker/target; four loop tracker pairs) with reuse/sanity checks. Added `synthdefs/ji_looper_recorder.scd` (dry mono `RecordBuf`, overwrite, explicit/auto stop) and `synthdefs/ji_looper_player.scd` (`PlayBuf → Tartini → PitchShift`, per-loop tracker buses). Added `test_dual_loop.scd`: two verified `\ji_autotune_ch` instances on input 0/1, the Stage 3 `/ji/freqset/update` receiver, one 20 Hz multi-voice lookup with per-voice `lastTarget`, broadcast `retuneTime`, raw loop record/play/stop functions, and status/CPU lines. No `ji_autotune_dual.scd`; no Python or protocol changes. Added `README_stage4.md`. **Audio not verified in the agent environment; Stage 4 is not marked accepted.** |
+| 5.4.1 | 2026-10-29 | **Fixed Stage 4 loop indexing.** The loop number is 1-based (`1..4`) but `~ji_buf_loop`, `~ji_loop_states`, `~ji_loop_players`, and `~ji_loop_recorders` are 0-based arrays. `~ji_record_loop`/`~ji_play_loop`/stop now use `[i - 1]`, matching the status/voice indices. Previously loop 1 read loop 2's buffer slot and freed it, so a successful recording was followed by "no buffer" on play. No SynthDef or protocol change. |
+| 5.4.2 | 2026-10-29 | Added an `Audio I/O: ... in / ... out` startup line and documented that `/n_free Node ... not found` after a server reboot is a harmless stale-node message from sclang's old Synth objects. Added a sine/`SoundIn` passthrough routing check to `README_stage4.md`. |
+| 5.4.3 | 2026-10-29 | Documented separate input/output devices via a macOS Aggregate Device. scsynth still opens one CoreAudio device; the aggregate must present the interface inputs as 0/1 and the headphone/DAC outputs as 0/1. Added channel-order, clock/drift, and Bluetooth caveats to `startup.scd` and `README_stage4.md`. No audio-code change. |
 
 ---
 

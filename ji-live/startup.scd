@@ -1,13 +1,19 @@
 // ===========================================================================
-//  JI Station -- Stage 1 -- startup.scd
+//  JI Station -- Stage 4 -- startup.scd
 // ---------------------------------------------------------------------------
-//  Boots scsynth with the Stage 0/1 configuration (2 in / 2 out, blockSize 64,
-//  48 kHz), allocates the reserved ~ji_* control buses (slots 0-7), and loads
-//  every SynthDef in synthdefs/*.scd.
+//  Boots scsynth with the Stage 0-4 configuration (2 in / 2 out, blockSize 64,
+//  48 kHz), allocates the cumulative ~ji_* control buses (slots 0-18), and
+//  loads every SynthDef in synthdefs/*.scd:
 //
-//  Evaluate this whole file (Cmd+Return) before test_tartini.scd or
-//  test_autotune.scd. No synths are started here -- instantiation belongs to
-//  the test scripts.
+//      0-4    Stage 0   debug Tartini + CPU
+//      5-7    Stage 1   autotune tracker / target, channel 0
+//      8-10   Stage 4   autotune tracker / target, channel 1
+//      11-14  Stage 4   loop Tartini frequencies 1..4
+//      15-18  Stage 4   loop Tartini confidences 1..4
+//
+//  Evaluate this whole file (Cmd+Return) before test_tartini.scd,
+//  test_autotune.scd, test_bridge.scd, or test_dual_loop.scd. No synths are
+//  started here -- instantiation belongs to the test scripts.
 //
 //  If you re-evaluate this file while the server is running, the
 //  ServerOptions below do NOT change; reboot first (s.reboot).
@@ -17,7 +23,14 @@
 // --- 1. Configuration ------------------------------------------------------
 var blockSize  = 64;            // samples per control block: 64 / 48000 = 1.33 ms
 var sampleRate = 48000;         // must match the interface (see Audio MIDI Setup)
-// Human: set this to your audio interface name; see ServerOptions.devices
+// Human: set this to one CoreAudio device name; see ServerOptions.devices.
+//
+// scsynth opens ONE device for both input and output.  It cannot read from an
+// interface and write to a different headphones/DAC directly.  For that, create
+// an Aggregate Device in Audio MIDI Setup (README_stage4.md "Separate input and
+// output devices"), order the output device first so its outputs become SC
+// channels 0/1 (the interface's inputs are still SC 0/1 if it has no-input
+// devices in front of it), and set deviceName to the aggregate's name.
 var deviceName = "REPLACE_ME";
 
 // --- 2. ServerOptions -----------------------------------------------------
@@ -52,9 +65,10 @@ if (s.serverRunning) {
 
 // --- 4. Boot --------------------------------------------------------------
 s.waitForBoot({
-    var idx;
+    var idx, stage4Buses, stage4Present;
 
-    // 4a. Allocate the reserved control buses (Stage 0: 0-4, Stage 1: 5-7).
+    // 4a. Allocate the reserved control buses (Stage 0: 0-4, Stage 1: 5-7,
+    //     Stage 4: 8-18).
     //     If a bus already exists we RE-USE it instead of freeing and
     //     reallocating: re-use keeps the numbering stable (SynthDefs bake the
     //     indices into their graphs) and keeps the client-side bus allocator
@@ -79,20 +93,76 @@ s.waitForBoot({
         "Stage 1 buses already allocated -- re-using them.".postln;
     };
 
-    "JI system buses allocated: freq1=% freq2=% hasfreq1=% hasfreq2=% cpu=% autotune_freq1=% autotune_hasfreq1=% autotune_target1=%".format(
+    // Stage 4: buses 8-18.  Allocate the whole block when none of it exists; on
+    // re-evaluation re-use the existing block.  A partial block is completed at
+    // the end (with a warning) so every ~ji_loop_* variable always exists; the
+    // sanity check below then reports any numbering that is not 0-18.
+    stage4Buses = [
+        ~ji_autotune_freq2, ~ji_autotune_hasfreq2, ~ji_autotune_target2,
+        ~ji_loop_freq1, ~ji_loop_freq2, ~ji_loop_freq3, ~ji_loop_freq4,
+        ~ji_loop_hasfreq1, ~ji_loop_hasfreq2, ~ji_loop_hasfreq3, ~ji_loop_hasfreq4
+    ];
+    stage4Present = stage4Buses.select { |bus| bus.notNil }.size;
+
+    if (stage4Present == 0) {
+        ~ji_autotune_freq2    = Bus.control(s, 1);
+        ~ji_autotune_hasfreq2 = Bus.control(s, 1);
+        ~ji_autotune_target2  = Bus.control(s, 1);
+        ~ji_loop_freq1        = Bus.control(s, 1);
+        ~ji_loop_freq2        = Bus.control(s, 1);
+        ~ji_loop_freq3        = Bus.control(s, 1);
+        ~ji_loop_freq4        = Bus.control(s, 1);
+        ~ji_loop_hasfreq1     = Bus.control(s, 1);
+        ~ji_loop_hasfreq2     = Bus.control(s, 1);
+        ~ji_loop_hasfreq3     = Bus.control(s, 1);
+        ~ji_loop_hasfreq4     = Bus.control(s, 1);
+        "Stage 4 buses allocated (8-18).".postln;
+    } {
+        if (stage4Present != 11) {
+            "*** WARNING: only % of the 11 Stage 4 buses exist -- allocating the missing ones at the end.".format(stage4Present).postln;
+            "***          Bus numbers will differ from 8-18; the NOTE below reports them.".postln;
+            if (~ji_autotune_freq2.isNil)    { ~ji_autotune_freq2    = Bus.control(s, 1) };
+            if (~ji_autotune_hasfreq2.isNil) { ~ji_autotune_hasfreq2 = Bus.control(s, 1) };
+            if (~ji_autotune_target2.isNil)  { ~ji_autotune_target2  = Bus.control(s, 1) };
+            if (~ji_loop_freq1.isNil)        { ~ji_loop_freq1        = Bus.control(s, 1) };
+            if (~ji_loop_freq2.isNil)        { ~ji_loop_freq2        = Bus.control(s, 1) };
+            if (~ji_loop_freq3.isNil)        { ~ji_loop_freq3        = Bus.control(s, 1) };
+            if (~ji_loop_freq4.isNil)        { ~ji_loop_freq4        = Bus.control(s, 1) };
+            if (~ji_loop_hasfreq1.isNil)     { ~ji_loop_hasfreq1     = Bus.control(s, 1) };
+            if (~ji_loop_hasfreq2.isNil)     { ~ji_loop_hasfreq2     = Bus.control(s, 1) };
+            if (~ji_loop_hasfreq3.isNil)     { ~ji_loop_hasfreq3     = Bus.control(s, 1) };
+            if (~ji_loop_hasfreq4.isNil)     { ~ji_loop_hasfreq4     = Bus.control(s, 1) };
+        } {
+            "Stage 4 buses already allocated -- re-using them.".postln;
+        };
+    };
+
+    "JI system buses allocated: freq1=% freq2=% hasfreq1=% hasfreq2=% cpu=% autotune_freq1=% autotune_hasfreq1=% autotune_target1=% autotune_freq2=% autotune_hasfreq2=% autotune_target2=% loop_freq=% loop_hasfreq=%".format(
         ~ji_tartini_freq1.index, ~ji_tartini_freq2.index,
         ~ji_tartini_hasfreq1.index, ~ji_tartini_hasfreq2.index,
         ~ji_cpu.index,
         ~ji_autotune_freq1.index, ~ji_autotune_hasfreq1.index,
-        ~ji_autotune_target1.index
+        ~ji_autotune_target1.index,
+        ~ji_autotune_freq2.index, ~ji_autotune_hasfreq2.index,
+        ~ji_autotune_target2.index,
+        [~ji_loop_freq1.index, ~ji_loop_freq2.index,
+         ~ji_loop_freq3.index, ~ji_loop_freq4.index],
+        [~ji_loop_hasfreq1.index, ~ji_loop_hasfreq2.index,
+         ~ji_loop_hasfreq3.index, ~ji_loop_hasfreq4.index]
     ).postln;
 
-    // 4b. Sanity checks: the contract reserves 0-7, all distinct.
+    // 4b. Sanity checks: the contract reserves 0-18, all distinct.
     idx = [~ji_tartini_freq1.index, ~ji_tartini_freq2.index,
            ~ji_tartini_hasfreq1.index, ~ji_tartini_hasfreq2.index,
            ~ji_cpu.index,
            ~ji_autotune_freq1.index, ~ji_autotune_hasfreq1.index,
-           ~ji_autotune_target1.index];
+           ~ji_autotune_target1.index,
+           ~ji_autotune_freq2.index, ~ji_autotune_hasfreq2.index,
+           ~ji_autotune_target2.index,
+           ~ji_loop_freq1.index, ~ji_loop_freq2.index,
+           ~ji_loop_freq3.index, ~ji_loop_freq4.index,
+           ~ji_loop_hasfreq1.index, ~ji_loop_hasfreq2.index,
+           ~ji_loop_hasfreq3.index, ~ji_loop_hasfreq4.index];
 
     if (idx.asSet.size != idx.size) {
         "*** ERROR: two ~ji buses share the same index -- SynthDefs would".postln;
@@ -102,8 +172,8 @@ s.waitForBoot({
         "***        server, then evaluate startup.scd again.".postln;
     };
 
-    if (idx.sort != [0, 1, 2, 3, 4, 5, 6, 7]) {
-        "*** NOTE: the ji buses are not in the reserved slots 0-7 (they are %).".format(idx).postln;
+    if (idx.sort != (0..18).asArray) {
+        "*** NOTE: the ji buses are not in the reserved slots 0-18 (they are %).".format(idx).postln;
         "***       Everything still works, but the numbers differ from the".postln;
         "***       contract. For a clean allocation: restart the interpreter,".postln;
         "***       reboot the server, then evaluate this file again.".postln;
@@ -133,7 +203,14 @@ s.waitForBoot({
         "*** WARNING: SynthDefs not loaded (project folder unknown).".postln;
     };
 
-    "Startup complete -- now evaluate test_tartini.scd or test_autotune.scd.".postln;
+    ("Audio I/O: % in / % out, % Hz, blockSize %".format(
+        s.options.numInputBusChannels,
+        s.options.numOutputBusChannels,
+        s.sampleRate.asInteger,
+        s.options.blockSize
+    )).postln;
+    "Startup complete (Stage 4: 2 in / 2 out, buses 0-18).".postln;
+    "Next: test_tartini.scd, test_autotune.scd, test_bridge.scd, or test_dual_loop.scd.".postln;
 
 }, onFailure: {
     "*** scsynth FAILED TO BOOT.".postln;
