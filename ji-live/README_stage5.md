@@ -237,7 +237,7 @@ Create eight **audio tracks** and set each one's input to its BlackHole pair:
 | 3 | Loop 2 (reserved) | BlackHole 16ch | 5/6 | **In** |
 | 4 | Loop 3 (reserved) | BlackHole 16ch | 7/8 | **In** |
 | 5 | Loop 4 (reserved) | BlackHole 16ch | 9/10 | **In** |
-| 6 | Granular (Stage 8) | BlackHole 16ch | 11/12 | **In** |
+| 6 | Granular (Stage 9) | BlackHole 16ch | 11/12 | **In** |
 | 7 | Dry / diagnostic | BlackHole 16ch | 13/14 | **In** |
 | 8 | Reserved | BlackHole 16ch | 15/16 | **In** |
 
@@ -434,7 +434,7 @@ is §4.2.
 | 4–5 | 3 | 5/6 | Loop 2 (reserved — Stage 8) |
 | 6–7 | 4 | 7/8 | Loop 3 (reserved — Stage 8) |
 | 8–9 | 5 | 9/10 | Loop 4 (reserved — Stage 8) |
-| 10–11 | 6 | 11/12 | Granular FX (Stage 8, reserved) |
+| 10–11 | 6 | 11/12 | Granular FX (Stage 9, reserved) |
 | 12–13 | 7 | 13/14 | dry/diagnostic (reserved) |
 | 14–15 | 8 | 15/16 | reserved |
 
@@ -527,9 +527,9 @@ Stage 4 or Stage 5 is called accepted.
 - **Per-loop dedicated pairs are deferred to Stage 8**, together with loop
   transport/routing. The channel map documents the reservation; it is not a
   claim that those tracks carry audio today.
-- **No granular FX** (Stage 8), **no MIDI mutation** (Stage 8), **no MPE /
-  bass-drone** (Stage 6), **no UI** (Stage 9), **no VST hosting**, and **no
-  Ableton API automation**.
+- **No granular FX** (Stage 9), **no MIDI mutation** (Stage 8), **no MPE /
+  bass-drone** in Stage 5 (Stage 6 is now complete), **no UI** (Stage 7, next),
+  **no VST hosting**, and **no Ableton API automation**.
 - **No Python or OSC protocol change.** Python still owns the `MutationEngine`
   and sends only `/ji/freqset/update`; sclang still owns the nearest-class
   lookup.

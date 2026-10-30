@@ -1,9 +1,11 @@
 # JI Station — Stage 6 MPE MIDI (Anchor Drone + Set Arp)
 
-**Status:** implemented; **not MIDI/Ableton acceptance-tested by the agent.**
-The pure Python harness passes without `mido`. The human must run the IAC /
-Ableton checks below. Stage 6 is not complete until the human hears the drone
-and arp through Ableton and confirms MIDI connectivity.
+**Status:** implemented and **owner-confirmed 2026-10-30** — both IAC buses,
+calibration, the drone/arp sound, and no-stuck-note behavior were verified by
+the human; the existing four-channel audio rig was unchanged. The agent's pure
+Python harness passes without `mido`, but the human report is the authority.
+**Next: Stage 7 — Minimal Performance GUI** (see `PROMPT_stage7_gui.md` and
+design doc §8.8).
 
 Stage 6 is MIDI-only. It adds **no SuperCollider SynthDef, no audio bus, and no
 new OSC address**. The existing Stage 5.5 audio rig and the
@@ -354,7 +356,7 @@ Record the verified value in `config/mpe_config.json`.
 
 ---
 
-## 11. Human acceptance checklist
+## 11. Human acceptance checklist (completed 2026-10-30)
 
 1. `mido.get_output_names()` lists both `IAC Driver Bus 1` and
    `IAC Driver Bus 2`; `test_mpe.py --ports` passes.
@@ -372,8 +374,11 @@ Record the verified value in `config/mpe_config.json`.
 8. Quit the bridge: both MIDI tracks stop, with no stuck notes.
 9. The existing four-channel audio rig and `/ji/freqset/update` behavior are
    unchanged.
-10. Record the result. **Stage 6 is not complete until the human hears the drone
-    and arp through Ableton and confirms MIDI connectivity.**
+10. **Owner-confirmed 2026-10-30:** the drone and arp were heard through
+    Ableton, MIDI connectivity/calibration was accepted, and no stuck notes were
+    observed. The existing four-channel audio rig and `/ji/freqset/update`
+    behavior were unchanged. **Stage 6 is complete; the next feature is Stage 7,
+    the minimal performance GUI.**
 
 ---
 
@@ -394,5 +399,6 @@ uv run --with python-osc python test_mutation.py
 uv run --with python-osc python test_mutation_controls.py
 ```
 
-All passed. **This does not verify MIDI, IAC, Ableton, the MPE bend range, or
-audio. Those remain human acceptance items.**
+All passed. The agent environment did not verify MIDI, IAC, Ableton, the MPE
+bend range, or audio; the human verified those on 2026-10-30 and Stage 6 is
+owner-confirmed. Stage 7 is the next feature.

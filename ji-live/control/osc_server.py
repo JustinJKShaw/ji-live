@@ -14,6 +14,10 @@ No audio and no scsynth calls live here.  Addresses:
 ``/ji/mutation/set_temperature`` (float)
 ``/ji/mutation/set_anchor_mobility`` (float)
     Update a parameter.
+``/ji/ui/hello``
+    Stage 7 UI handshake.  Calls the optional ``on_ui_hello`` callback after the
+    server lock has been released, so the bridge can reply with a status
+    snapshot without holding the mutation lock.
 
 The server runs in a daemon thread so ``start()`` returns immediately.  Stage 3
 attaches an outgoing bridge through the optional ``on_event`` / ``on_octave``
@@ -35,6 +39,10 @@ try:  # Support both ``python -m control.osc_server`` and direct execution.
 except ImportError:  # pragma: no cover - exercised only by direct execution
     from mutation import MutationBatch, MutationEngine, MutationEvent, OctaveEvent
 
+# Stage 7 UI handshake.  Kept as a module constant so callers can import it
+# without constructing a server.
+UI_HELLO_ADDRESS = "/ji/ui/hello"
+
 
 class MutationOSCServer:
     """Listen on UDP and edit a :class:`MutationEngine` from OSC messages."""
@@ -48,6 +56,7 @@ class MutationOSCServer:
     CHANGE_COUNT_ADDRESS = "/ji/mutation/set_change_count"
     TEMPERATURE_ADDRESS = "/ji/mutation/set_temperature"
     ANCHOR_MOBILITY_ADDRESS = "/ji/mutation/set_anchor_mobility"
+    UI_HELLO_ADDRESS = UI_HELLO_ADDRESS
 
     def __init__(
         self,
@@ -56,6 +65,7 @@ class MutationOSCServer:
         listen_port: int = 9000,
         on_event: Callable[[MutationEvent | MutationBatch], None] | None = None,
         on_octave: Callable[[OctaveEvent], None] | None = None,
+        on_ui_hello: Callable[[], None] | None = None,
     ) -> None:
         if not isinstance(engine, MutationEngine):
             raise TypeError("engine must be a MutationEngine")
@@ -67,12 +77,15 @@ class MutationOSCServer:
             raise TypeError("on_event must be callable or None")
         if on_octave is not None and not callable(on_octave):
             raise TypeError("on_octave must be callable or None")
+        if on_ui_hello is not None and not callable(on_ui_hello):
+            raise TypeError("on_ui_hello must be callable or None")
 
         self._engine = engine
         self.listen_host = str(listen_host)
         self.listen_port = listen_port
         self._on_event = on_event
         self._on_octave = on_octave
+        self._on_ui_hello = on_ui_hello
 
         self._lock = threading.RLock()
         # Serializes apply -> print -> callback so a threaded OSC server cannot
@@ -101,6 +114,7 @@ class MutationOSCServer:
         dispatcher.map(
             self.ANCHOR_MOBILITY_ADDRESS, self._handle_set_anchor_mobility
         )
+        dispatcher.map(self.UI_HELLO_ADDRESS, self._handle_ui_hello)
         self._dispatcher = dispatcher
 
     # ------------------------------------------------------------------
@@ -408,6 +422,24 @@ class MutationOSCServer:
         if value is None:
             return
         self.set_anchor_mobility(value)
+
+    def _handle_ui_hello(self, _address: str, *args: Any) -> None:
+        """Stage 7 handshake: reply with status after releasing the lock.
+
+        Handlers run outside ``self._lock``, and the callback is a plain
+        snapshot send, so this must not take the parameter lock.  A failing
+        bridge callback is logged and never kills the OSC thread.
+        """
+
+        if args:
+            _warn(f"{self.UI_HELLO_ADDRESS} takes no arguments; ignoring extras")
+        callback = self._on_ui_hello
+        if callback is None:
+            return
+        try:
+            callback()
+        except Exception as exc:  # deliberately broad: UI status is soft
+            _warn(f"ui hello callback failed: {exc!r}")
 
 
 def _one_float(args: tuple[Any, ...], address: str) -> float | None:

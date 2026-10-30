@@ -19,6 +19,11 @@ Stage 6 adds optional MPE MIDI output (``--midi``).  The same engine snapshot is
 handed to :class:`~control.midi_rig.MIDIRig`, which drives an anchor drone on
 IAC Bus 1 and a set arp on IAC Bus 2.  MIDI is off by default; mido is imported
 lazily only when a real port is opened.  The OSC payload above is unchanged.
+
+Stage 7 adds an optional UI status stream to ``--ui-host``/``--ui-port``
+(default ``127.0.0.1:9001``): one ``/ji/freqset/changed``, one ``/ji/ui/state``,
+and one ``/ji/midi/status`` after every set and on ``/ji/ui/hello``.  The UI is a
+separate process; the bridge never reads or controls it.
 """
 
 from __future__ import annotations
@@ -27,6 +32,7 @@ import argparse
 import math
 import sys
 import threading
+from typing import Any
 
 from pythonosc.udp_client import SimpleUDPClient
 
@@ -40,6 +46,9 @@ except ImportError:  # pragma: no cover - exercised only by direct execution
 FUNDAMENTAL = 220.0
 INITIAL_RATIOS = [1.0, 9.0 / 8.0, 5.0 / 4.0, 4.0 / 3.0, 3.0 / 2.0, 5.0 / 3.0, 15.0 / 8.0]
 FREQSET_ADDRESS = "/ji/freqset/update"
+FREQSET_CHANGED_ADDRESS = "/ji/freqset/changed"
+UI_STATE_ADDRESS = "/ji/ui/state"
+MIDI_STATUS_ADDRESS = "/ji/midi/status"
 MAX_RATIOS = 12
 
 
@@ -94,11 +103,15 @@ class JIBridge:
         anchor_mobility: float = 0.25,
         midi: bool = False,
         mpe_config: str | None = None,
+        ui_host: str = "127.0.0.1",
+        ui_port: int = 9001,
     ) -> None:
         self.sc_host = str(sc_host)
         self.sc_port = int(sc_port)
         self.listen_host = str(listen_host)
         self.listen_port = int(listen_port)
+        self.ui_host = str(ui_host)
+        self.ui_port = int(ui_port)
 
         self.engine = MutationEngine(
             INITIAL_RATIOS,
@@ -111,12 +124,16 @@ class JIBridge:
             anchor_mobility=anchor_mobility,
         )
         self.client = SimpleUDPClient(self.sc_host, self.sc_port)
+        # Stage 7 UI status is a separate, best-effort UDP stream.  It never
+        # feeds back into the mutation engine or the sclang frequency set.
+        self.ui_client = SimpleUDPClient(self.ui_host, self.ui_port)
         self.server = MutationOSCServer(
             self.engine,
             listen_host=self.listen_host,
             listen_port=self.listen_port,
             on_event=self._on_event,
             on_octave=self._on_octave,
+            on_ui_hello=self._send_ui_state,
         )
         # Stage 2 API: this is the glide carried by every subsequent event.
         self.server.set_glide_time(glide_time)
@@ -179,6 +196,10 @@ class JIBridge:
         # start applies it so the drone and arp begin from the initial set.
         self._notify_midi()
 
+        # Stage 7: mirror the resulting state to any listening UI.  This is
+        # best-effort and deliberately independent of the sclang send result.
+        self._send_ui_state()
+
         if sent:
             print(
                 f"[BRIDGE] -> {FREQSET_ADDRESS} classes={len(args) - 2} "
@@ -199,6 +220,63 @@ class JIBridge:
             )
         except Exception as exc:  # deliberately broad: MIDI is non-critical
             print(f"[MIDI] set update failed: {exc}", file=sys.stderr)
+
+    # ------------------------------------------------------------------
+    # Stage 7 UI status
+    # ------------------------------------------------------------------
+
+    def _send_ui_state(self) -> None:
+        """Send the current set, control state, and MIDI state to the UI.
+
+        Called after every :meth:`send_set` and on ``/ji/ui/hello``.  The
+        frequencies are the octave-reduced classes sorted by pitch; the UI
+        derives Hz from the fundamental and each ratio.  A missing anchor is
+        encoded as ``-1.0``, matching the Stage 7 contract.
+        """
+
+        ratios = sorted(float(ratio) for ratio in self.engine.current_ratios)
+        anchor = self.engine.anchor_ratio
+        freqset_args = [
+            float(self.engine.fundamental),
+            float(anchor) if anchor is not None else -1.0,
+            *ratios,
+        ]
+
+        server = self.server
+        ui_state_args = [
+            float(server.randomness),
+            float(server.dissonance_bias),
+            float(server.stepwise_bias),
+            float(server.glide_time),
+            int(server.change_count),
+            float(server.temperature),
+            float(server.anchor_mobility),
+            int(server.max_changes),
+        ]
+
+        self._send_ui_message(FREQSET_CHANGED_ADDRESS, freqset_args)
+        self._send_ui_message(UI_STATE_ADDRESS, ui_state_args)
+        self._send_midi_status()
+
+    def _send_midi_status(self) -> None:
+        """Send ``[enabled, drone_port, arp_port]``; empty ports when off."""
+
+        if self.midi is None:
+            args: list[Any] = [0, "", ""]
+        else:
+            config = getattr(self.midi, "config", None)
+            drone_port = str(getattr(config, "drone_port", "") or "")
+            arp_port = str(getattr(config, "arp_port", "") or "")
+            args = [1, drone_port, arp_port]
+        self._send_ui_message(MIDI_STATUS_ADDRESS, args)
+
+    def _send_ui_message(self, address: str, args: list[Any]) -> None:
+        """Best-effort UI UDP send; a missing UI must never break the bridge."""
+
+        try:
+            self.ui_client.send_message(address, args)
+        except (OSError, ValueError) as exc:
+            print(f"[BRIDGE] UI status send failed: {exc}", file=sys.stderr)
 
     # ------------------------------------------------------------------
     # MutationOSCServer callbacks (called after the engine lock is released)
@@ -345,14 +423,25 @@ def run_interactive(bridge: JIBridge) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Stage 3/6 bridge: mutation engine -> sclang /ji/freqset/update "
-            "and optional MPE MIDI rig"
+            "Stage 3/6/7 bridge: mutation engine -> sclang "
+            "/ji/freqset/update, optional MPE MIDI rig, and Stage 7 UI status"
         )
     )
     parser.add_argument("--sc-host", default="127.0.0.1")
     parser.add_argument("--sc-port", type=int, default=57120)
     parser.add_argument("--listen-host", default="127.0.0.1")
     parser.add_argument("--listen-port", type=int, default=9000)
+    parser.add_argument(
+        "--ui-host",
+        default="127.0.0.1",
+        help="Stage 7 UI status destination host (default 127.0.0.1)",
+    )
+    parser.add_argument(
+        "--ui-port",
+        type=int,
+        default=9001,
+        help="Stage 7 UI status destination port (default 9001)",
+    )
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--glide-time", type=float, default=0.15)
     parser.add_argument(
@@ -405,6 +494,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--sc-port must be between 1 and 65535")
     if not 1 <= args.listen_port <= 65535:
         parser.error("--listen-port must be between 1 and 65535")
+    if not 1 <= args.ui_port <= 65535:
+        parser.error("--ui-port must be between 1 and 65535")
     if not math.isfinite(args.glide_time) or args.glide_time < 0.0:
         parser.error("--glide-time must be finite and non-negative")
     if not 1 <= args.max_changes <= MAX_RATIOS:
@@ -432,6 +523,8 @@ def main(argv: list[str] | None = None) -> int:
         anchor_mobility=args.anchor_mobility,
         midi=args.midi,
         mpe_config=args.mpe_config,
+        ui_host=args.ui_host,
+        ui_port=args.ui_port,
     )
 
     try:

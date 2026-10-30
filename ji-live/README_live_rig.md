@@ -1,10 +1,11 @@
 # JI Station — Live Rig (2 inputs + 2 loops → 4 outputs)
 
-**Status:** implemented; **the owner reported all sound checks passed on
-2026-10-30**. The adjustable loop length (8 s default, per-take override and
-`~ji_set_loop_default`) was added after that report; a quick re-check of the
-length control is recommended. This is the integration rig that combines
-Stages 1–5 with the Python mutation bridge.
+**Status:** implemented; **owner-confirmed 2026-10-30**, including the
+adjustable loop length (8 s default, per-take override and
+`~ji_set_loop_default`). **Next: Stage 7 — Minimal Performance GUI** (one window
+for mutation, live autotune, loop transport/length, and status; see
+`PROMPT_stage7_gui.md` and design doc §8.8). This is the integration rig that
+combines Stages 1–5.5 with the Python mutation bridge and the Stage 6 MIDI rig.
 
 ```text
 MiniFuse 2 input 0 (mic)    → Tartini → nearest class → PitchShift → SC out 0 → Ableton track 1
@@ -328,7 +329,8 @@ known old variables and old loop buffers.
 - Loop length is adjustable (`~ji_set_loop_default.` or per-take seconds), but
   recording is overwrite-only, mono, in-memory; no overdub, persistence, or
   crossfade. Memory scales with length.
-- No per-loop stereo routing, MIDI/MPE mutation, granular FX, or UI.
+- No per-loop stereo routing, MIDI/MPE mutation, granular FX (Stage 9), or UI
+  (Stage 7, next).
 - The Python mutation engine and `/ji/freqset/update` protocol are unchanged.
 - The 48 kHz rate comes from the two devices; `s.options.sampleRate` is not
   forced.
