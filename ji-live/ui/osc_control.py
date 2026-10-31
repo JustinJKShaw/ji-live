@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Stage 7 pure OSC message/state layer for the performance GUI.
 
-This module is deliberately free of PyQt6 imports so ``test_ui.py --pure`` can
+This module is deliberately free of PyQt6 imports so ``tests/test_ui.py --pure`` can
 run without Qt.  It owns:
 
 * pure message builders (address + argument list) for every Stage 7 control;
@@ -11,7 +11,7 @@ run without Qt.  It owns:
 * :class:`OSCController`, which owns the two outgoing UDP clients and the
   background status listener.
 
-Topology (see ``README_stage7.md``)::
+Topology (see ``docs/README_stage7.md``)::
 
     mutation controls -> bridge  (default 127.0.0.1:9000)
     autotune/loops/query -> sclang (default 127.0.0.1:57120)
@@ -55,6 +55,17 @@ MIDI_STATUS = "/ji/midi/status"
 MIDI_STATE = "/ji/midi/state"
 MIDI_SET_ENABLED = "/ji/midi/set_enabled"
 
+RHYTHM_SET_TEMPO = "/ji/rhythm/set_tempo"
+RHYTHM_SET_METER = "/ji/rhythm/set_meter"
+RHYTHM_TRANSPORT = "/ji/rhythm/transport"
+RHYTHM_STATE = "/ji/rhythm/state"
+RHYTHM_REQUEST = "/ji/rhythm/request"
+
+DRUMS_SET_ENABLED = "/ji/drums/set_enabled"
+DRUMS_SET_LANE = "/ji/drums/set_lane"
+DRUMS_SET_RATE = "/ji/drums/set_rate"
+DRUMS_STATE = "/ji/drums/state"
+
 AUTOTUNE_SET = "/ji/autotune/set"
 AUTOTUNE_STATE = "/ji/autotune/state"
 
@@ -66,6 +77,10 @@ LOOP_STOP = "/ji/loop/stop"
 LOOP_STOP_ALL = "/ji/loop/stop_all"
 LOOP_CLEAR = "/ji/loop/clear"
 LOOP_SET_DEFAULT_LENGTH = "/ji/loop/set_default_length"
+LOOP_SET_MODE = "/ji/loop/set_mode"
+LOOP_SET_BEATS = "/ji/loop/set_beats"
+LOOP_SET_LENGTH = "/ji/loop/set_length"
+LOOP_CONFIG = "/ji/loop/config"
 LOOP_STATE = "/ji/loop/state"
 
 STATUS_QUERY = "/ji/status/query"
@@ -76,8 +91,11 @@ STATUS_ADDRESSES = (
     UI_STATE,
     MIDI_STATUS,
     MIDI_STATE,
+    RHYTHM_STATE,
+    DRUMS_STATE,
     CPU,
     LOOP_STATE,
+    LOOP_CONFIG,
     AUTOTUNE_STATE,
 )
 
@@ -96,6 +114,48 @@ SC_LOOP_SECONDS_MIN = 0.1
 SC_LOOP_SECONDS_MAX = 60.0
 
 LOOP_STATES = ("empty", "recording", "recorded", "playing", "stopped")
+
+# Stage 8.1 rhythm / drum ranges.  Kept as plain constants (this module has no
+# PyQt6 or control-package import so it can run as a standalone UI module).
+BPM_MIN = 20.0
+BPM_MAX = 300.0
+BPM_DEFAULT = 120.0
+METER_NUM_MIN = 1
+METER_NUM_MAX = 16
+METER_NUM_DEFAULT = 4
+METER_DENOMINATORS = (1, 2, 4, 8, 16)
+METER_DEN_DEFAULT = 4
+DRUM_RATES = (0.5, 1.0, 2.0)
+DRUM_RATE_DEFAULT = 1.0
+DRUM_RATE_LABELS = ("Half", "Normal", "Double")
+LOOP_MODES = ("free", "beat")
+LOOP_MODE_DEFAULT = "free"
+LOOP_BEATS_MIN = 1.0
+LOOP_BEATS_MAX = 64.0
+LOOP_BEATS_DEFAULT = 4.0
+LANE_MASK_ALL = 0xFFFF
+
+# The UI's default lane labels.  config/rhythm_config.json ships the same map;
+# the lane_mask bit order is by list position (bit 0 = first lane / note 36).
+DRUM_LANE_DEFS: tuple[tuple[int, str, str], ...] = (
+    (36, "kick1", "Kick 1"),
+    (37, "kick2", "Kick 2"),
+    (38, "snare1", "Snare 1"),
+    (39, "snare2", "Snare 2"),
+    (40, "perc1", "Perc 1"),
+    (41, "perc2", "Perc 2"),
+    (42, "perc3", "Perc 3"),
+    (43, "perc4", "Perc 4"),
+    (44, "perc5", "Perc 5"),
+    (45, "perc6", "Perc 6"),
+    (46, "perc7", "Perc 7"),
+    (47, "perc8", "Perc 8"),
+    (48, "perc9", "Perc 9"),
+    (49, "perc10", "Perc 10"),
+    (50, "perc11", "Perc 11"),
+    (51, "perc12", "Perc 12"),
+)
+DRUM_LANE_DEFAULT_MASK = 0x0045  # kick1 + snare1 + perc3
 
 
 @dataclass(frozen=True)
@@ -271,6 +331,84 @@ def _validate_channel(channel: Any) -> int:
     return value
 
 
+def _validate_bpm(value: Any) -> float:
+    return clamp(_as_finite_float(value, "bpm"), BPM_MIN, BPM_MAX)
+
+
+def _validate_meter_num(value: Any) -> int:
+    return clamp_int(value, METER_NUM_MIN, METER_NUM_MAX)
+
+
+def _validate_meter_den(value: Any) -> int:
+    denominator = int(round(_as_finite_float(value, "meter denominator")))
+    if denominator not in METER_DENOMINATORS:
+        raise ValueError(
+            "meter denominator must be one of "
+            + ", ".join(str(item) for item in METER_DENOMINATORS)
+        )
+    return denominator
+
+
+def _validate_drum_rate(value: Any) -> float:
+    numeric = _as_finite_float(value, "drum rate")
+    for allowed in DRUM_RATES:
+        if math.isclose(numeric, allowed, rel_tol=0.0, abs_tol=1e-9):
+            return allowed
+    raise ValueError("drum rate must be 0.5, 1.0, or 2.0")
+
+
+def _validate_drum_note(value: Any) -> int:
+    note = clamp_int(value, 0, 127)
+    return note
+
+
+def _validate_loop_mode(value: Any) -> str:
+    mode = str(value).strip().lower()
+    if mode not in LOOP_MODES:
+        raise ValueError("loop mode must be 'free' or 'beat'")
+    return mode
+
+
+def _validate_loop_beats(value: Any) -> float:
+    return clamp(_as_finite_float(value, "loop beats"), LOOP_BEATS_MIN, LOOP_BEATS_MAX)
+
+
+def _validate_loop_seconds(value: Any) -> float:
+    return clamp(
+        _as_finite_float(value, "loop seconds"), LOOP_LENGTH_MIN, LOOP_LENGTH_MAX
+    )
+
+
+def drum_lane_bit(note: Any) -> int:
+    """Return the ``lane_mask`` bit index for a MIDI note (0 for 36)."""
+
+    numeric = int(round(_as_finite_float(note, "drum note")))
+    for index, (lane_note, _name, _label) in enumerate(DRUM_LANE_DEFS):
+        if lane_note == numeric:
+            return index
+    raise ValueError(f"note {numeric} is not one of the 16 drum lanes")
+
+
+def drum_lane_states(mask: Any) -> dict[int, bool]:
+    """Decode a 16-bit lane mask into ``{midi_note: enabled}``."""
+
+    value = clamp_int(mask, 0, LANE_MASK_ALL)
+    return {
+        note: bool(value & (1 << index))
+        for index, (note, _name, _label) in enumerate(DRUM_LANE_DEFS)
+    }
+
+
+def drum_lane_mask(states: Mapping[int, bool]) -> int:
+    """Encode ``{midi_note: enabled}`` into a 16-bit lane mask."""
+
+    mask = 0
+    for note, enabled in states.items():
+        if enabled:
+            mask |= 1 << drum_lane_bit(note)
+    return mask & LANE_MASK_ALL
+
+
 # ---------------------------------------------------------------------------
 # Pure message builders
 # ---------------------------------------------------------------------------
@@ -380,6 +518,69 @@ def build_set_midi_enabled(
     return MIDI_SET_ENABLED, [1 if drone else 0, 1 if arp else 0]
 
 
+# ---------------------------------------------------------------------------
+# Stage 8.1 rhythm / drum / loop-config builders
+# ---------------------------------------------------------------------------
+
+
+def build_set_tempo(bpm: Any) -> tuple[str, list[Any]]:
+    """Build ``/ji/rhythm/set_tempo [float bpm]`` clamped to 20-300."""
+
+    return RHYTHM_SET_TEMPO, [float(_validate_bpm(bpm))]
+
+
+def build_set_meter(numerator: Any, denominator: Any) -> tuple[str, list[Any]]:
+    """Build ``/ji/rhythm/set_meter [int num, int den]``.
+
+    The numerator is clamped to 1-16; an unsupported denominator raises
+    ``ValueError`` instead of being silently changed.
+    """
+
+    return RHYTHM_SET_METER, [
+        int(_validate_meter_num(numerator)),
+        int(_validate_meter_den(denominator)),
+    ]
+
+
+def build_transport(running: bool) -> tuple[str, list[Any]]:
+    """Build ``/ji/rhythm/transport [int running]``."""
+
+    return RHYTHM_TRANSPORT, [1 if running else 0]
+
+
+def build_rhythm_request() -> tuple[str, list[Any]]:
+    """Build ``/ji/rhythm/request`` (ask the bridge to re-broadcast tempo)."""
+
+    return RHYTHM_REQUEST, []
+
+
+def build_set_drums_enabled(enabled: bool) -> tuple[str, list[Any]]:
+    return DRUMS_SET_ENABLED, [1 if enabled else 0]
+
+
+def build_set_drum_lane(note: Any, enabled: bool) -> tuple[str, list[Any]]:
+    return DRUMS_SET_LANE, [int(_validate_drum_note(note)), 1 if enabled else 0]
+
+
+def build_set_drum_rate(rate: Any) -> tuple[str, list[Any]]:
+    return DRUMS_SET_RATE, [float(_validate_drum_rate(rate))]
+
+
+def build_loop_set_mode(index: Any, mode: Any) -> tuple[str, list[Any]]:
+    return LOOP_SET_MODE, [_validate_index(index), str(_validate_loop_mode(mode))]
+
+
+def build_loop_set_beats(index: Any, beats: Any) -> tuple[str, list[Any]]:
+    return LOOP_SET_BEATS, [_validate_index(index), float(_validate_loop_beats(beats))]
+
+
+def build_loop_set_length(index: Any, seconds: Any) -> tuple[str, list[Any]]:
+    return LOOP_SET_LENGTH, [
+        _validate_index(index),
+        float(_validate_loop_seconds(seconds)),
+    ]
+
+
 def build_request_state() -> tuple[str, list[Any]]:
     return STATUS_QUERY, []
 
@@ -435,6 +636,45 @@ class MidiToggleState:
 
     drone_enabled: bool
     arp_enabled: bool
+
+
+@dataclass(frozen=True)
+class RhythmStatus:
+    """Bridge rhythm/transport snapshot from ``/ji/rhythm/state``."""
+
+    bpm: float
+    meter_num: int
+    meter_den: int
+    running: bool
+    drums_enabled: bool
+    drum_rate: float
+
+    @property
+    def meter(self) -> str:
+        return f"{self.meter_num}/{self.meter_den}"
+
+
+@dataclass(frozen=True)
+class DrumStatus:
+    """Bridge drum snapshot from ``/ji/drums/state``."""
+
+    enabled: bool
+    port_ok: bool
+    rate: float
+    lane_mask: int
+
+    @property
+    def lane_states(self) -> dict[int, bool]:
+        return drum_lane_states(self.lane_mask)
+
+
+@dataclass(frozen=True)
+class LoopConfig:
+    """Per-loop mode/length reported by sclang's ``/ji/loop/config``."""
+
+    mode: str = LOOP_MODE_DEFAULT
+    beats: float = LOOP_BEATS_DEFAULT
+    seconds: float = LOOP_LENGTH_DEFAULT
 
 
 def parse_freqset(args: Sequence[Any]) -> FrequencySet:
@@ -526,6 +766,59 @@ def parse_cpu(args: Sequence[Any]) -> float:
     return clamp(_as_finite_float(args[0], "cpu"), 0.0, 100.0)
 
 
+def parse_rhythm_state(args: Sequence[Any]) -> RhythmStatus:
+    """Parse ``[bpm, num, den, running, drums_enabled, drum_rate]``."""
+
+    if len(args) != 6:
+        raise ValueError(
+            "rhythm state needs bpm, numerator, denominator, running, "
+            "drums_enabled, drum_rate"
+        )
+    return RhythmStatus(
+        bpm=_validate_bpm(args[0]),
+        meter_num=_validate_meter_num(args[1]),
+        meter_den=_validate_meter_den(args[2]),
+        running=_to_bool(args[3], "running"),
+        drums_enabled=_to_bool(args[4], "drums_enabled"),
+        drum_rate=_validate_drum_rate(args[5]),
+    )
+
+
+def parse_drums_state(args: Sequence[Any]) -> DrumStatus:
+    """Parse ``[enabled, port_ok, rate, lane_mask]``."""
+
+    if len(args) != 4:
+        raise ValueError("drums state needs enabled, port_ok, rate, lane_mask")
+    return DrumStatus(
+        enabled=_to_bool(args[0], "drums enabled"),
+        port_ok=_to_bool(args[1], "drums port_ok"),
+        rate=_validate_drum_rate(args[2]),
+        lane_mask=clamp_int(args[3], 0, LANE_MASK_ALL),
+    )
+
+
+def parse_loop_config(args: Sequence[Any]) -> tuple[int, LoopConfig]:
+    """Parse ``[index, mode, beats, seconds]``."""
+
+    if len(args) != 4:
+        raise ValueError("loop config needs index, mode, beats, seconds")
+    index = _validate_index(args[0])
+    mode = _validate_loop_mode(args[1])
+    beats = _validate_loop_beats(args[2])
+    seconds = _as_finite_float(args[3], "loop seconds")
+    if seconds < 0.0:
+        raise ValueError("loop seconds must be non-negative")
+    return index, LoopConfig(mode=mode, beats=beats, seconds=seconds)
+
+
+def _to_bool(value: Any, label: str) -> bool:
+    numeric = _as_finite_float(value, label)
+    rounded = int(round(numeric))
+    if rounded not in (0, 1):
+        raise ValueError(f"{label} must be 0 or 1")
+    return bool(rounded)
+
+
 def parse_loop_state(args: Sequence[Any]) -> tuple[int, str]:
     if len(args) != 2:
         raise ValueError("loop state needs index and state string")
@@ -559,8 +852,11 @@ STATUS_PARSERS: dict[str, Callable[[Sequence[Any]], Any]] = {
     UI_STATE: parse_ui_state,
     MIDI_STATUS: parse_midi_status,
     MIDI_STATE: parse_midi_state,
+    RHYTHM_STATE: parse_rhythm_state,
+    DRUMS_STATE: parse_drums_state,
     CPU: parse_cpu,
     LOOP_STATE: parse_loop_state,
+    LOOP_CONFIG: parse_loop_config,
     AUTOTUNE_STATE: parse_autotune_state,
 }
 
@@ -577,9 +873,15 @@ class StatusStore:
         self.control: BridgeControlState | None = None
         self.midi: MidiStatus | None = None
         self.midi_state: MidiToggleState | None = None
+        self.rhythm: RhythmStatus | None = None
+        self.drums: DrumStatus | None = None
         self.cpu: float | None = None
         self.loop_states: dict[int, str] = {
             index: "waiting" for index in range(LOOP_INDEX_MIN, LOOP_INDEX_MAX + 1)
+        }
+        self.loop_configs: dict[int, LoopConfig] = {
+            index: LoopConfig()
+            for index in range(LOOP_INDEX_MIN, LOOP_INDEX_MAX + 1)
         }
         self.autotune: dict[int, dict[str, float]] = {
             channel: default_autotune_values()
@@ -626,12 +928,22 @@ class StatusStore:
         elif address == MIDI_STATE:
             self.midi_state = parsed
             self.bridge_seen = True
+        elif address == RHYTHM_STATE:
+            self.rhythm = parsed
+            self.bridge_seen = True
+        elif address == DRUMS_STATE:
+            self.drums = parsed
+            self.bridge_seen = True
         elif address == CPU:
             self.cpu = parsed
             self.sclang_seen = True
         elif address == LOOP_STATE:
             index, state = parsed
             self.loop_states[index] = state
+            self.sclang_seen = True
+        elif address == LOOP_CONFIG:
+            index, config = parsed
+            self.loop_configs[index] = config
             self.sclang_seen = True
         elif address == AUTOTUNE_STATE:
             channel, values = parsed
@@ -896,6 +1208,47 @@ class OSCController:
         self._send_bridge(*message)
         return message
 
+    # -- Stage 8.1 rhythm / drums --------------------------------------
+
+    def set_tempo(self, bpm: Any) -> tuple[str, list[Any]]:
+        message = build_set_tempo(bpm)
+        self._send_bridge(*message)
+        return message
+
+    def set_meter(
+        self, numerator: Any, denominator: Any
+    ) -> tuple[str, list[Any]]:
+        message = build_set_meter(numerator, denominator)
+        self._send_bridge(*message)
+        return message
+
+    def set_transport(self, running: bool) -> tuple[str, list[Any]]:
+        message = build_transport(running)
+        self._send_bridge(*message)
+        return message
+
+    def request_rhythm_resync(self) -> tuple[str, list[Any]]:
+        message = build_rhythm_request()
+        self._send_bridge(*message)
+        return message
+
+    def set_drums_enabled(self, enabled: bool) -> tuple[str, list[Any]]:
+        message = build_set_drums_enabled(enabled)
+        self._send_bridge(*message)
+        return message
+
+    def set_drum_lane(
+        self, note: Any, enabled: bool
+    ) -> tuple[str, list[Any]]:
+        message = build_set_drum_lane(note, enabled)
+        self._send_bridge(*message)
+        return message
+
+    def set_drum_rate(self, rate: Any) -> tuple[str, list[Any]]:
+        message = build_set_drum_rate(rate)
+        self._send_bridge(*message)
+        return message
+
     def loop_record(
         self, index: Any, seconds: float | None = None
     ) -> tuple[str, list[Any]]:
@@ -933,6 +1286,21 @@ class OSCController:
         self._send_sc(*message)
         return message
 
+    def loop_set_mode(self, index: Any, mode: Any) -> tuple[str, list[Any]]:
+        message = build_loop_set_mode(index, mode)
+        self._send_sc(*message)
+        return message
+
+    def loop_set_beats(self, index: Any, beats: Any) -> tuple[str, list[Any]]:
+        message = build_loop_set_beats(index, beats)
+        self._send_sc(*message)
+        return message
+
+    def loop_set_length(self, index: Any, seconds: Any) -> tuple[str, list[Any]]:
+        message = build_loop_set_length(index, seconds)
+        self._send_sc(*message)
+        return message
+
     def hello(self) -> tuple[str, list[Any]]:
         message = build_ui_hello()
         self._send_bridge(*message)
@@ -947,41 +1315,72 @@ class OSCController:
 __all__ = [
     "AUTOTUNE_PARAMS",
     "AUTOTUNE_PARAM_MAP",
+    "BPM_DEFAULT",
+    "BPM_MAX",
+    "BPM_MIN",
     "BridgeControlState",
+    "DRUM_LANE_DEFAULT_MASK",
+    "DRUM_LANE_DEFS",
+    "DRUM_RATES",
+    "DRUM_RATE_DEFAULT",
+    "DrumStatus",
     "FrequencySet",
+    "LOOP_BEATS_DEFAULT",
+    "LOOP_BEATS_MAX",
+    "LOOP_BEATS_MIN",
     "LOOP_LENGTH_DEFAULT",
     "LOOP_LENGTH_MAX",
     "LOOP_LENGTH_MIN",
+    "LOOP_MODES",
     "LOOP_STATES",
+    "LoopConfig",
     "MUTATION_PARAMS",
     "MUTATION_PARAM_MAP",
+    "METER_DENOMINATORS",
     "MidiStatus",
     "MidiToggleState",
     "OSCController",
     "OSCStatusListener",
     "ParamSpec",
+    "RhythmStatus",
     "StatusStore",
     "build_loop_clear",
     "build_loop_play",
     "build_loop_record",
+    "build_loop_set_beats",
     "build_loop_set_default_length",
+    "build_loop_set_length",
+    "build_loop_set_mode",
     "build_loop_stop",
     "build_loop_stop_all",
     "build_loop_stop_record",
     "build_request_state",
+    "build_rhythm_request",
     "build_set_autotune",
+    "build_set_drum_lane",
+    "build_set_drum_rate",
+    "build_set_drums_enabled",
+    "build_set_meter",
     "build_set_midi_enabled",
     "build_set_mutation",
+    "build_set_tempo",
+    "build_transport",
     "build_trigger_mutation",
     "build_trigger_octave",
     "build_ui_hello",
     "clamp",
     "clamp_int",
+    "drum_lane_bit",
+    "drum_lane_mask",
+    "drum_lane_states",
     "parse_autotune_state",
     "parse_cpu",
+    "parse_drums_state",
     "parse_freqset",
+    "parse_loop_config",
     "parse_loop_state",
     "parse_midi_status",
     "parse_midi_state",
+    "parse_rhythm_state",
     "parse_ui_state",
 ]

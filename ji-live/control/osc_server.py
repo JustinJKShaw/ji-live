@@ -38,15 +38,30 @@ from pythonosc.dispatcher import Dispatcher
 from pythonosc.osc_server import ThreadingOSCUDPServer
 
 try:  # Support both ``python -m control.osc_server`` and direct execution.
+    from . import rhythm
     from .mutation import MutationBatch, MutationEngine, MutationEvent, OctaveEvent
 except ImportError:  # pragma: no cover - exercised only by direct execution
-    from mutation import MutationBatch, MutationEngine, MutationEvent, OctaveEvent
+    import rhythm  # type: ignore[no-redef]
+    from mutation import (  # type: ignore[no-redef]
+        MutationBatch,
+        MutationEngine,
+        MutationEvent,
+        OctaveEvent,
+    )
 
 # Stage 7 UI handshake.  Kept as a module constant so callers can import it
 # without constructing a server.
 UI_HELLO_ADDRESS = "/ji/ui/hello"
 # Stage 7.1: independent drone/arp bus switches from the UI.
 MIDI_SET_ENABLED_ADDRESS = "/ji/midi/set_enabled"
+# Stage 8.1 rhythm/transport and drum controls (UI -> Bridge).
+RHYTHM_SET_TEMPO_ADDRESS = "/ji/rhythm/set_tempo"
+RHYTHM_SET_METER_ADDRESS = "/ji/rhythm/set_meter"
+RHYTHM_TRANSPORT_ADDRESS = "/ji/rhythm/transport"
+RHYTHM_REQUEST_ADDRESS = "/ji/rhythm/request"
+DRUMS_SET_ENABLED_ADDRESS = "/ji/drums/set_enabled"
+DRUMS_SET_LANE_ADDRESS = "/ji/drums/set_lane"
+DRUMS_SET_RATE_ADDRESS = "/ji/drums/set_rate"
 
 
 class MutationOSCServer:
@@ -63,6 +78,13 @@ class MutationOSCServer:
     ANCHOR_MOBILITY_ADDRESS = "/ji/mutation/set_anchor_mobility"
     UI_HELLO_ADDRESS = UI_HELLO_ADDRESS
     MIDI_SET_ENABLED_ADDRESS = MIDI_SET_ENABLED_ADDRESS
+    RHYTHM_SET_TEMPO_ADDRESS = RHYTHM_SET_TEMPO_ADDRESS
+    RHYTHM_SET_METER_ADDRESS = RHYTHM_SET_METER_ADDRESS
+    RHYTHM_TRANSPORT_ADDRESS = RHYTHM_TRANSPORT_ADDRESS
+    RHYTHM_REQUEST_ADDRESS = RHYTHM_REQUEST_ADDRESS
+    DRUMS_SET_ENABLED_ADDRESS = DRUMS_SET_ENABLED_ADDRESS
+    DRUMS_SET_LANE_ADDRESS = DRUMS_SET_LANE_ADDRESS
+    DRUMS_SET_RATE_ADDRESS = DRUMS_SET_RATE_ADDRESS
 
     def __init__(
         self,
@@ -73,6 +95,13 @@ class MutationOSCServer:
         on_octave: Callable[[OctaveEvent], None] | None = None,
         on_ui_hello: Callable[[], None] | None = None,
         on_midi_enabled: Callable[[bool, bool], None] | None = None,
+        on_rhythm_tempo: Callable[[float], None] | None = None,
+        on_rhythm_meter: Callable[[int, int], None] | None = None,
+        on_rhythm_transport: Callable[[bool], None] | None = None,
+        on_drums_enabled: Callable[[bool], None] | None = None,
+        on_drums_lane: Callable[[int, bool], None] | None = None,
+        on_drums_rate: Callable[[float], None] | None = None,
+        on_rhythm_request: Callable[[], None] | None = None,
     ) -> None:
         if not isinstance(engine, MutationEngine):
             raise TypeError("engine must be a MutationEngine")
@@ -80,14 +109,21 @@ class MutationOSCServer:
             raise TypeError("listen_port must be an integer")
         if not 1 <= listen_port <= 65535:
             raise ValueError("listen_port must be between 1 and 65535")
-        if on_event is not None and not callable(on_event):
-            raise TypeError("on_event must be callable or None")
-        if on_octave is not None and not callable(on_octave):
-            raise TypeError("on_octave must be callable or None")
-        if on_ui_hello is not None and not callable(on_ui_hello):
-            raise TypeError("on_ui_hello must be callable or None")
-        if on_midi_enabled is not None and not callable(on_midi_enabled):
-            raise TypeError("on_midi_enabled must be callable or None")
+        for label, callback in (
+            ("on_event", on_event),
+            ("on_octave", on_octave),
+            ("on_ui_hello", on_ui_hello),
+            ("on_midi_enabled", on_midi_enabled),
+            ("on_rhythm_tempo", on_rhythm_tempo),
+            ("on_rhythm_meter", on_rhythm_meter),
+            ("on_rhythm_transport", on_rhythm_transport),
+            ("on_drums_enabled", on_drums_enabled),
+            ("on_drums_lane", on_drums_lane),
+            ("on_drums_rate", on_drums_rate),
+            ("on_rhythm_request", on_rhythm_request),
+        ):
+            if callback is not None and not callable(callback):
+                raise TypeError(f"{label} must be callable or None")
 
         self._engine = engine
         self.listen_host = str(listen_host)
@@ -96,6 +132,13 @@ class MutationOSCServer:
         self._on_octave = on_octave
         self._on_ui_hello = on_ui_hello
         self._on_midi_enabled = on_midi_enabled
+        self._on_rhythm_tempo = on_rhythm_tempo
+        self._on_rhythm_meter = on_rhythm_meter
+        self._on_rhythm_transport = on_rhythm_transport
+        self._on_drums_enabled = on_drums_enabled
+        self._on_drums_lane = on_drums_lane
+        self._on_drums_rate = on_drums_rate
+        self._on_rhythm_request = on_rhythm_request
 
         self._lock = threading.RLock()
         # Serializes apply -> print -> callback so a threaded OSC server cannot
@@ -128,6 +171,13 @@ class MutationOSCServer:
         dispatcher.map(
             self.MIDI_SET_ENABLED_ADDRESS, self._handle_midi_enabled
         )
+        dispatcher.map(self.RHYTHM_SET_TEMPO_ADDRESS, self._handle_set_tempo)
+        dispatcher.map(self.RHYTHM_SET_METER_ADDRESS, self._handle_set_meter)
+        dispatcher.map(self.RHYTHM_TRANSPORT_ADDRESS, self._handle_transport)
+        dispatcher.map(self.RHYTHM_REQUEST_ADDRESS, self._handle_rhythm_request)
+        dispatcher.map(self.DRUMS_SET_ENABLED_ADDRESS, self._handle_drums_enabled)
+        dispatcher.map(self.DRUMS_SET_LANE_ADDRESS, self._handle_drums_lane)
+        dispatcher.map(self.DRUMS_SET_RATE_ADDRESS, self._handle_drums_rate)
         self._dispatcher = dispatcher
 
     # ------------------------------------------------------------------
@@ -476,6 +526,128 @@ class MutationOSCServer:
             callback(drone, arp)
         except Exception as exc:  # MIDI/UI errors must not kill the OSC thread
             _warn(f"midi enabled callback failed: {exc!r}")
+
+    # -- Stage 8.1 rhythm / drums ---------------------------------------
+
+    def _handle_set_tempo(self, _address: str, *args: Any) -> None:
+        value = _one_float(args, self.RHYTHM_SET_TEMPO_ADDRESS)
+        if value is None:
+            return
+        try:
+            bpm = rhythm.clamp_bpm(value)
+        except (TypeError, ValueError) as exc:
+            _warn(f"{self.RHYTHM_SET_TEMPO_ADDRESS}: {exc}")
+            return
+        if not math.isclose(bpm, value, rel_tol=0.0, abs_tol=1e-9):
+            _warn(
+                f"{self.RHYTHM_SET_TEMPO_ADDRESS}: {value:.3f} clamped to {bpm:.3f}"
+            )
+        self._call_callback(self._on_rhythm_tempo, "rhythm tempo", bpm)
+
+    def _handle_set_meter(self, _address: str, *args: Any) -> None:
+        if len(args) != 2:
+            _warn(
+                f"{self.RHYTHM_SET_METER_ADDRESS} expects numerator and "
+                f"denominator; got {len(args)} arguments"
+            )
+            return
+        try:
+            numerator = rhythm.clamp_meter_numerator(args[0])
+            denominator = rhythm.validate_meter_denominator(args[1])
+        except (TypeError, ValueError) as exc:
+            _warn(f"{self.RHYTHM_SET_METER_ADDRESS}: {exc}")
+            return
+        self._call_callback(
+            self._on_rhythm_meter, "rhythm meter", numerator, denominator
+        )
+
+    def _handle_transport(self, _address: str, *args: Any) -> None:
+        if len(args) != 1:
+            _warn(
+                f"{self.RHYTHM_TRANSPORT_ADDRESS} expects one 0/1 value; "
+                f"got {len(args)} arguments"
+            )
+            return
+        try:
+            running = _one_bool(args[0], "transport")
+        except (TypeError, ValueError) as exc:
+            _warn(f"{self.RHYTHM_TRANSPORT_ADDRESS}: {exc}")
+            return
+        self._call_callback(
+            self._on_rhythm_transport, "rhythm transport", running
+        )
+
+    def _handle_rhythm_request(self, _address: str, *args: Any) -> None:
+        """sclang/UI asks the bridge to re-broadcast the canonical tempo."""
+
+        if args:
+            _warn(f"{self.RHYTHM_REQUEST_ADDRESS} takes no arguments; ignoring extras")
+        self._call_callback(self._on_rhythm_request, "rhythm request")
+
+    def _handle_drums_enabled(self, _address: str, *args: Any) -> None:
+        if len(args) != 1:
+            _warn(
+                f"{self.DRUMS_SET_ENABLED_ADDRESS} expects one 0/1 value; "
+                f"got {len(args)} arguments"
+            )
+            return
+        try:
+            enabled = _one_bool(args[0], "drums enabled")
+        except (TypeError, ValueError) as exc:
+            _warn(f"{self.DRUMS_SET_ENABLED_ADDRESS}: {exc}")
+            return
+        self._call_callback(self._on_drums_enabled, "drums enabled", enabled)
+
+    def _handle_drums_lane(self, _address: str, *args: Any) -> None:
+        if len(args) != 2:
+            _warn(
+                f"{self.DRUMS_SET_LANE_ADDRESS} expects a MIDI note and a "
+                f"0/1 value; got {len(args)} arguments"
+            )
+            return
+        try:
+            note = _one_int(args[0], "drum note")
+            if not 0 <= note <= 127:
+                raise ValueError("drum note must be 0..127")
+            enabled = _one_bool(args[1], "lane enabled")
+        except (TypeError, ValueError) as exc:
+            _warn(f"{self.DRUMS_SET_LANE_ADDRESS}: {exc}")
+            return
+        self._call_callback(
+            self._on_drums_lane, "drums lane", note, enabled
+        )
+
+    def _handle_drums_rate(self, _address: str, *args: Any) -> None:
+        value = _one_float(args, self.DRUMS_SET_RATE_ADDRESS)
+        if value is None:
+            return
+        try:
+            rate = rhythm.validate_drum_rate(value)
+        except (TypeError, ValueError) as exc:
+            _warn(f"{self.DRUMS_SET_RATE_ADDRESS}: {exc}")
+            return
+        self._call_callback(self._on_drums_rate, "drums rate", rate)
+
+    @staticmethod
+    def _call_callback(
+        callback: Callable[..., None] | None, label: str, *args: Any
+    ) -> None:
+        if callback is None:
+            return
+        try:
+            callback(*args)
+        except Exception as exc:  # bridge/MIDI errors must not kill the thread
+            _warn(f"{label} callback failed: {exc!r}")
+
+
+def _one_int(value: Any, label: str) -> int:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        raise TypeError(f"{label} must be a real number") from None
+    if not math.isfinite(numeric):
+        raise ValueError(f"{label} must be finite")
+    return int(round(numeric))
 
 
 def _one_bool(value: Any, label: str) -> bool:

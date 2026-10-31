@@ -1,7 +1,7 @@
 """Low-level MPE pitch-bend / note output for the Stage 6 MIDI rig.
 
 This module deliberately imports :mod:`mido` **lazily**.  The pure test harness
-(``test_mpe.py --pure``) and the existing Stage 2/3.5 harnesses must keep
+(``tests/test_mpe.py --pure``) and the existing Stage 2/3.5 harnesses must keep
 working on machines where ``mido`` is not installed.
 
 Design notes

@@ -1,0 +1,34 @@
+JI STATION - STAGE 8.1 - START TO FINISH
+Run all bash commands from the ji-live folder.
+
+ONE TIME (skip if already done)
+1. Audio MIDI Setup > IAC Driver: online, with buses named exactly
+   "IAC Driver Bus 1", "IAC Driver Bus 2", "IAC Driver Bus 3".
+2. Ableton: enable Track for all three IAC buses.
+3. Ableton: keep the 4 audio tracks (BlackHole 16ch inputs 1-4);
+   Drone = Bus 1, Arp = Bus 2, Monitor In, 48 st MPE.
+   Drums track: MIDI From "IAC Driver Bus 3", channel 10,
+   Monitor In, Drum Rack with pads 36-51 loaded.
+
+EVERY RUN - in this order
+1. sclang: evaluate startup.scd
+2. sclang: evaluate tests/sc/test_live_rig.scd
+3. bash terminal 1 (leave running):
+   uv run --with python-osc --with mido --with python-rtmidi python control/ji_bridge.py --interactive --midi --drums --glide-time 0.15
+4. sclang: evaluate ui/control_surface.scd
+5. bash terminal 2 (leave running):
+   uv run --with python-osc --with PyQt6 python ui/ji_ui.py
+6. In the GUI: Rhythm group > Play. Check the drum groove, then loops.
+
+IF YOU RE-EVALUATE tests/sc/test_live_rig.scd
+   re-evaluate ui/control_surface.scd afterwards.
+
+STOP
+- Close the GUI (the rig keeps running).
+- Bridge terminal: Ctrl+C.
+- sclang: ~ji_stop_all.();
+
+QUICK CHECK
+- Bridge log should show: [DRUMS] port=IAC Driver Bus 3 channel=10 rate=1.0
+- If it shows [MIDI] drums disabled: fix Bus 3, then restart the bridge.
+- Beat-mode loops need transport Play; free loops do not.

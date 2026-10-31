@@ -1,9 +1,11 @@
-"""MIDI rig orchestrator for Stage 6: anchor drone + set arp.
+"""MIDI rig orchestrator for Stage 6 MPE and the Stage 8.1 drum output.
 
-The rig owns two independent monophonic MPE outputs::
+The rig owns two independent monophonic MPE outputs and, optionally, one plain
+drum output::
 
     AnchorDrone -> IAC Driver Bus 1 -> Ableton "Drone" MIDI track
     SetArp      -> IAC Driver Bus 2 -> Ableton "Arp"   MIDI track
+    DrumRig     -> IAC Driver Bus 3 -> Ableton "Drums" MIDI track  (optional)
 
 Both buses use MIDI member channel 2 (mido index 1).  Ableton's MPE pitch-bend
 range is configured to 48 semitones; keep ``bend_range_semitones`` in
@@ -19,6 +21,7 @@ from __future__ import annotations
 
 import json
 import math
+import sys
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -28,10 +31,12 @@ from typing import Any
 try:  # Support both ``python -m control.midi_rig`` and direct execution.
     from .arp import SetArp
     from .drone import AnchorDrone
+    from .drums import DEFAULT_LANE_MASK, DRUM_RATE_DEFAULT, DrumRig
     from .mpe_output import MPEOutput
 except ImportError:  # pragma: no cover - exercised only by direct execution
     from arp import SetArp
     from drone import AnchorDrone
+    from drums import DEFAULT_LANE_MASK, DRUM_RATE_DEFAULT, DrumRig
     from mpe_output import MPEOutput
 
 DEFAULT_CONFIG_PATH = (
@@ -155,7 +160,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> MPEConfig:
 
 
 class MIDIRig:
-    """Own the Stage 6 drone and arp outputs and their threads.
+    """Own the MPE drone/arp outputs and the optional Stage 8.1 drum output.
 
     Args:
         config: An :class:`MPEConfig`, a mapping, a path, or ``None`` (use
@@ -163,6 +168,14 @@ class MIDIRig:
         config_path: Alternative config path when ``config`` is ``None``.
         drone_output: Optional fake output for tests.
         arp_output: Optional fake output for tests.
+        midi: Build the Stage 6 drone/arp buses (default ``True``).  Passing
+            ``False`` is used by ``--drums`` without ``--midi``; only the drum
+            output is created.
+        drums: Build the Stage 8.1 drum output (default ``False``).  A missing
+            Bus 3 disables drums but never raises from :meth:`start`.
+        drum_config: A :class:`~control.drums.DrumConfig`, mapping, path, or
+            ``None`` (default ``config/rhythm_config.json``).
+        drum_output: Optional fake output for the drum tests.
     """
 
     def __init__(
@@ -172,46 +185,67 @@ class MIDIRig:
         config_path: str | Path | None = None,
         drone_output: Any | None = None,
         arp_output: Any | None = None,
+        midi: bool = True,
+        drums: bool = False,
+        drum_config: Any | None = None,
+        drum_output: Any | None = None,
     ) -> None:
-        if config is None:
-            config = config_path if config_path is not None else DEFAULT_CONFIG_PATH
-        if isinstance(config, MPEConfig):
-            cfg = config
-        elif isinstance(config, (str, Path)):
-            cfg = load_config(config)
-        elif isinstance(config, Mapping):
-            cfg = MPEConfig.from_mapping(config)
-        else:
-            raise TypeError(
-                "config must be an MPEConfig, mapping, path, or None"
-            )
+        self._midi_enabled = bool(midi)
+        cfg: MPEConfig | None = None
+        if self._midi_enabled:
+            if config is None:
+                config = (
+                    config_path if config_path is not None else DEFAULT_CONFIG_PATH
+                )
+            if isinstance(config, MPEConfig):
+                cfg = config
+            elif isinstance(config, (str, Path)):
+                cfg = load_config(config)
+            elif isinstance(config, Mapping):
+                cfg = MPEConfig.from_mapping(config)
+            else:
+                raise TypeError(
+                    "config must be an MPEConfig, mapping, path, or None"
+                )
 
         self.config = cfg
-        self.drone_output = MPEOutput(
-            cfg.drone_port,
-            member_channel=cfg.member_channel,
-            bend_range_semitones=cfg.bend_range_semitones,
-            velocity=cfg.drone_velocity,
-            output=drone_output,
-            label="drone",
-        )
-        self.arp_output = MPEOutput(
-            cfg.arp_port,
-            member_channel=cfg.member_channel,
-            bend_range_semitones=cfg.bend_range_semitones,
-            velocity=cfg.arp_velocity,
-            output=arp_output,
-            label="arp",
-        )
-        self.drone = AnchorDrone(self.drone_output, velocity=cfg.drone_velocity)
-        self.arp = SetArp(
-            self.arp_output,
-            step_seconds=cfg.step_seconds,
-            gate_seconds=cfg.gate_seconds,
-            octave_offsets=cfg.arp_octave_offsets,
-            shared_mode=cfg.arp_shared_mode,
-            seed=cfg.arp_seed,
-            velocity=cfg.arp_velocity,
+        if cfg is not None:
+            self.drone_output: MPEOutput | None = MPEOutput(
+                cfg.drone_port,
+                member_channel=cfg.member_channel,
+                bend_range_semitones=cfg.bend_range_semitones,
+                velocity=cfg.drone_velocity,
+                output=drone_output,
+                label="drone",
+            )
+            self.arp_output: MPEOutput | None = MPEOutput(
+                cfg.arp_port,
+                member_channel=cfg.member_channel,
+                bend_range_semitones=cfg.bend_range_semitones,
+                velocity=cfg.arp_velocity,
+                output=arp_output,
+                label="arp",
+            )
+            self.drone: AnchorDrone | None = AnchorDrone(
+                self.drone_output, velocity=cfg.drone_velocity
+            )
+            self.arp: SetArp | None = SetArp(
+                self.arp_output,
+                step_seconds=cfg.step_seconds,
+                gate_seconds=cfg.gate_seconds,
+                octave_offsets=cfg.arp_octave_offsets,
+                shared_mode=cfg.arp_shared_mode,
+                seed=cfg.arp_seed,
+                velocity=cfg.arp_velocity,
+            )
+        else:
+            self.drone_output = None
+            self.arp_output = None
+            self.drone = None
+            self.arp = None
+
+        self.drums: DrumRig | None = (
+            DrumRig(drum_config, output=drum_output) if drums else None
         )
 
         self._lock = threading.Lock()
@@ -227,58 +261,83 @@ class MIDIRig:
     # ------------------------------------------------------------------
 
     def start(self) -> None:
-        """Open both IAC ports and start the arp thread.
+        """Open the configured ports and start the arp / drums.
 
-        The drone starts on the first :meth:`on_set`.  If a set snapshot was
-        supplied before ``start``, it is applied immediately; otherwise the arp
-        thread waits for the bridge's initial set update.
+        The Stage 6 drone starts on the first :meth:`on_set`.  If a set
+        snapshot was supplied before ``start``, it is applied immediately.
+        A missing drum port is handled by :class:`~control.drums.DrumRig`:
+        it prints ``[MIDI] drums disabled: ...; drone/arp continue`` and the
+        drone/arp/audio paths keep running.
         """
 
         with self._lock:
             if self._started:
                 return
-            try:
-                self.drone_output.open()
-                self.arp_output.open()
-            except Exception:
-                self.drone_output.close()
-                self.arp_output.close()
-                raise
+            if self._midi_enabled:
+                try:
+                    self.drone_output.open()
+                    self.arp_output.open()
+                except Exception:
+                    self.drone_output.close()
+                    self.arp_output.close()
+                    raise
             self._started = True
             snapshot = self._snapshot
 
-        print(
-            f"[MIDI] drone port={self.config.drone_port} "
-            f"channel={self.config.member_channel} "
-            f"bend_range={self.config.bend_range_semitones:g}"
-        )
-        print(
-            f"[MIDI] arp port={self.config.arp_port} "
-            f"channel={self.config.member_channel} "
-            f"step={self.config.step_seconds:.2f}s "
-            f"gate={self.config.gate_seconds:.2f}s"
-        )
+        if self._midi_enabled:
+            print(
+                f"[MIDI] drone port={self.config.drone_port} "
+                f"channel={self.config.member_channel} "
+                f"bend_range={self.config.bend_range_semitones:g}"
+            )
+            print(
+                f"[MIDI] arp port={self.config.arp_port} "
+                f"channel={self.config.member_channel} "
+                f"step={self.config.step_seconds:.2f}s "
+                f"gate={self.config.gate_seconds:.2f}s"
+            )
+
+        drum_ok = True
+        if self.drums is not None:
+            drum_ok = self.drums.start()
 
         try:
-            if snapshot is not None:
-                self._apply(snapshot)
-            if self._arp_enabled:
-                self.arp.start()
+            if self._midi_enabled:
+                if snapshot is not None:
+                    self._apply(snapshot)
+                if self._arp_enabled:
+                    self.arp.start()
         except Exception:
             self._started = False
-            self.arp.stop()
-            self.drone.stop()
-            self.drone_output.close()
-            self.arp_output.close()
+            if self._midi_enabled:
+                self.arp.stop()
+                self.drone.stop()
+                self.drone_output.close()
+                self.arp_output.close()
+            if self.drums is not None and drum_ok:
+                self.drums.stop()
             raise
 
     def stop(self) -> None:
-        """Stop the arp thread, send All Notes Off on both buses, close ports."""
+        """Stop all voices, send All Notes Off, and close the ports.
+
+        A drum port that never opened is skipped safely, so a missing Bus 3
+        cannot block shutdown.
+        """
 
         with self._lock:
             started = self._started
             self._started = False
             self._snapshot = None
+
+        if self.drums is not None:
+            try:
+                self.drums.stop()
+            except Exception as exc:  # drums are non-critical
+                print(f"[MIDI] drum stop failed: {exc}", file=sys.stderr)
+
+        if not self._midi_enabled:
+            return
 
         if not started:
             self.drone_output.close()
@@ -303,6 +362,42 @@ class MIDIRig:
         with self._lock:
             return self._started
 
+    @property
+    def midi_enabled(self) -> bool:
+        return self._midi_enabled
+
+    @property
+    def drum_port(self) -> str:
+        return "" if self.drums is None else self.drums.port
+
+    @property
+    def drums_enabled(self) -> bool:
+        return False if self.drums is None else self.drums.enabled
+
+    @property
+    def drums_port_ok(self) -> bool:
+        return False if self.drums is None else self.drums.port_ok
+
+    @property
+    def drum_rate(self) -> float:
+        return DRUM_RATE_DEFAULT if self.drums is None else self.drums.rate
+
+    @property
+    def drum_lane_mask(self) -> int:
+        return DEFAULT_LANE_MASK if self.drums is None else self.drums.lane_mask
+
+    def drums_state(self) -> tuple[bool, bool, float, int]:
+        """``(enabled, port_ok, rate, lane_mask)`` for ``/ji/drums/state``."""
+
+        if self.drums is None:
+            return False, False, DRUM_RATE_DEFAULT, DEFAULT_LANE_MASK
+        return (
+            self.drums.enabled,
+            self.drums.port_ok,
+            self.drums.rate,
+            self.drums.lane_mask,
+        )
+
     # ------------------------------------------------------------------
     # Stage 7.1 per-bus UI toggles
     # ------------------------------------------------------------------
@@ -310,12 +405,12 @@ class MIDIRig:
     @property
     def drone_enabled(self) -> bool:
         with self._lock:
-            return self._drone_enabled
+            return self._drone_enabled if self._midi_enabled else False
 
     @property
     def arp_enabled(self) -> bool:
         with self._lock:
-            return self._arp_enabled
+            return self._arp_enabled if self._midi_enabled else False
 
     def set_drone_enabled(self, enabled: bool) -> None:
         """Mute or unmute the drone without closing its MIDI port.
@@ -323,8 +418,13 @@ class MIDIRig:
         Disabling note-offs the held drone note and sends All Notes Off on the
         drone bus.  Enabling re-applies the last set snapshot, which note-ons
         the current anchor again.  Both operations are no-ops if the requested
-        state is already active.
+        state is already active.  With ``midi=False`` (drums-only rig) this is
+        a logged no-op.
         """
+
+        if not self._midi_enabled:
+            print("[MIDI] drone switch ignored: MIDI buses are disabled")
+            return
 
         enabled = bool(enabled)
         with self._lock:
@@ -350,6 +450,10 @@ class MIDIRig:
 
     def set_arp_enabled(self, enabled: bool) -> None:
         """Start or stop the arp thread without closing its MIDI port."""
+
+        if not self._midi_enabled:
+            print("[MIDI] arp switch ignored: MIDI buses are disabled")
+            return
 
         enabled = bool(enabled)
         with self._lock:
@@ -393,16 +497,49 @@ class MIDIRig:
         with self._lock:
             self._snapshot = snapshot
             started = self._started
-        if started:
+        if started and self._midi_enabled:
             self._apply(snapshot)
 
     update = on_set
+
+    # ------------------------------------------------------------------
+    # Stage 8.1 drum output
+    # ------------------------------------------------------------------
+
+    def set_drums_enabled(self, enabled: bool) -> bool:
+        if self.drums is None:
+            return False
+        return self.drums.set_enabled(enabled)
+
+    def set_drums_lane(self, note: int, enabled: bool) -> bool:
+        if self.drums is None:
+            raise RuntimeError("drums are not configured")
+        return self.drums.set_lane(note, enabled)
+
+    def set_drums_rate(self, rate: float) -> float:
+        if self.drums is None:
+            raise RuntimeError("drums are not configured")
+        return self.drums.set_rate(rate)
+
+    def set_drums_transport(self, running: bool) -> None:
+        if self.drums is not None:
+            self.drums.set_transport(running)
+
+    def set_drums_bpm(self, bpm: float) -> None:
+        if self.drums is not None:
+            self.drums.set_bpm(bpm)
+
+    def set_drums_meter(self, meter_num: int, meter_den: int) -> None:
+        if self.drums is not None:
+            self.drums.set_meter(meter_num, meter_den)
 
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
 
     def _apply(self, snapshot: tuple[list[float], float | None, float]) -> None:
+        if not self._midi_enabled:
+            return
         ratios, anchor, fundamental = snapshot
         if self._drone_enabled:
             self.drone.on_set(ratios, anchor, fundamental)

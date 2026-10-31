@@ -24,6 +24,12 @@ Stage 7 adds an optional UI status stream to ``--ui-host``/``--ui-port``
 (default ``127.0.0.1:9001``): one ``/ji/freqset/changed``, one ``/ji/ui/state``,
 and one ``/ji/midi/status`` after every set and on ``/ji/ui/hello``.  The UI is a
 separate process; the bridge never reads or controls it.
+
+Stage 8.1 makes the bridge the canonical owner of quarter-note BPM, meter, and
+transport.  ``--drums`` adds the optional drum output on IAC Bus 3 and the
+``/ji/rhythm/*`` + ``/ji/drums/*`` control/status surface; ``/ji/rhythm/tempo``
+is broadcast to sclang for loop quantization.  A missing Bus 3 disables drums
+but leaves the drone/arp/audio rig running.
 """
 
 from __future__ import annotations
@@ -37,11 +43,15 @@ from typing import Any
 from pythonosc.udp_client import SimpleUDPClient
 
 try:  # Support both ``python -m control.ji_bridge`` and direct execution.
+    from .drums import DEFAULT_LANE_MASK, DRUM_RATE_DEFAULT
     from .mutation import MutationBatch, MutationEngine, MutationEvent, OctaveEvent
     from .osc_server import MutationOSCServer
+    from .rhythm import RhythmEngine, RhythmState
 except ImportError:  # pragma: no cover - exercised only by direct execution
+    from drums import DEFAULT_LANE_MASK, DRUM_RATE_DEFAULT
     from mutation import MutationBatch, MutationEngine, MutationEvent, OctaveEvent
     from osc_server import MutationOSCServer
+    from rhythm import RhythmEngine, RhythmState
 
 FUNDAMENTAL = 220.0
 INITIAL_RATIOS = [1.0, 9.0 / 8.0, 5.0 / 4.0, 4.0 / 3.0, 3.0 / 2.0, 5.0 / 3.0, 15.0 / 8.0]
@@ -50,6 +60,9 @@ FREQSET_CHANGED_ADDRESS = "/ji/freqset/changed"
 UI_STATE_ADDRESS = "/ji/ui/state"
 MIDI_STATUS_ADDRESS = "/ji/midi/status"
 MIDI_STATE_ADDRESS = "/ji/midi/state"
+RHYTHM_STATE_ADDRESS = "/ji/rhythm/state"
+RHYTHM_TEMPO_ADDRESS = "/ji/rhythm/tempo"
+DRUMS_STATE_ADDRESS = "/ji/drums/state"
 MAX_RATIOS = 12
 
 
@@ -106,6 +119,8 @@ class JIBridge:
         mpe_config: str | None = None,
         ui_host: str = "127.0.0.1",
         ui_port: int = 9001,
+        drums: bool = False,
+        rhythm_config: str | None = None,
     ) -> None:
         self.sc_host = str(sc_host)
         self.sc_port = int(sc_port)
@@ -128,31 +143,71 @@ class JIBridge:
         # Stage 7 UI status is a separate, best-effort UDP stream.  It never
         # feeds back into the mutation engine or the sclang frequency set.
         self.ui_client = SimpleUDPClient(self.ui_host, self.ui_port)
+        # Stage 8.1: the bridge owns the canonical rhythm state.  The default
+        # is 120 BPM, 4/4, transport stopped.  A rhythm config's bpm/meter are
+        # applied below when drums are configured.
+        self.rhythm = RhythmEngine()
         self.server = MutationOSCServer(
             self.engine,
             listen_host=self.listen_host,
             listen_port=self.listen_port,
             on_event=self._on_event,
             on_octave=self._on_octave,
-            on_ui_hello=self._send_ui_state,
+            on_ui_hello=self._on_ui_hello,
             on_midi_enabled=self._set_midi_enabled,
+            on_rhythm_tempo=self._on_rhythm_tempo,
+            on_rhythm_meter=self._on_rhythm_meter,
+            on_rhythm_transport=self._on_rhythm_transport,
+            on_drums_enabled=self._on_drums_enabled,
+            on_drums_lane=self._on_drums_lane,
+            on_drums_rate=self._on_drums_rate,
+            on_rhythm_request=self._on_rhythm_request,
         )
         # Stage 2 API: this is the glide carried by every subsequent event.
         self.server.set_glide_time(glide_time)
         self.server.set_change_count(change_count)
         self.server.set_temperature(temperature)
 
-        # Stage 6 MIDI is optional and off by default.  Importing/constructing
-        # the rig never imports mido; ports open in MIDIRig.start().
+        # Stage 6 MIDI and/or the Stage 8.1 drum output are optional and off by
+        # default.  Constructing either never imports mido; ports open in
+        # MIDIRig.start().
         self.mpe_config = mpe_config
         self.midi = None
-        if midi:
+        if midi or drums:
             try:
                 from .midi_rig import MIDIRig
             except ImportError:  # pragma: no cover - direct execution
                 from midi_rig import MIDIRig
 
-            self.midi = MIDIRig(mpe_config or "config/mpe_config.json")
+            # None lets MIDIRig use its package-relative default config, so
+            # the bridge no longer depends on the current working directory.
+            try:
+                self.midi = MIDIRig(
+                    mpe_config,
+                    midi=midi,
+                    drums=drums,
+                    drum_config=rhythm_config,
+                )
+            except Exception as exc:
+                if not drums:
+                    raise
+                # A bad rhythm config must not take the audio/MIDI rig down.
+                print(
+                    f"[MIDI] drums disabled: {exc}; drone/arp continue",
+                    file=sys.stderr,
+                )
+                self.midi = (
+                    MIDIRig(mpe_config, midi=midi, drums=False) if midi else None
+                )
+
+        # When drums are configured, their config supplies the initial rhythm
+        # defaults (120 BPM, 4/4 by default).  Explicit changes arrive later
+        # through /ji/rhythm/*.
+        drum_rig = getattr(self.midi, "drums", None)
+        if drum_rig is not None:
+            config = drum_rig.config
+            self.rhythm.set_bpm(config.bpm)
+            self.rhythm.set_meter(config.meter_num, config.meter_den)
 
     # ------------------------------------------------------------------
     # Lifecycle / transport
@@ -174,6 +229,14 @@ class JIBridge:
         self.send_set(0.0)
         if self.midi is not None:
             self.midi.start()
+        self._sync_drums_context()
+        # Broadcast the canonical tempo even if the UI was not running when
+        # the bridge started.  A control surface installed later asks for a
+        # resync with /ji/rhythm/request.
+        self._broadcast_rhythm()
+        self._print_rhythm()
+        self._send_rhythm_state()
+        self._send_drums_state()
 
     def stop(self) -> None:
         try:
@@ -264,7 +327,10 @@ class JIBridge:
     def _send_midi_status(self) -> None:
         """Send ``[enabled, drone_port, arp_port]``; empty ports when off."""
 
-        if self.midi is None:
+        enabled = self.midi is not None and bool(
+            getattr(self.midi, "midi_enabled", True)
+        )
+        if not enabled:
             args: list[Any] = [0, "", ""]
         else:
             config = getattr(self.midi, "config", None)
@@ -276,7 +342,10 @@ class JIBridge:
     def _send_midi_state(self) -> None:
         """Send ``[drone_on, arp_on]`` so the UI checkboxes resync."""
 
-        if self.midi is None:
+        enabled = self.midi is not None and bool(
+            getattr(self.midi, "midi_enabled", True)
+        )
+        if not enabled:
             args: list[Any] = [0, 0]
         else:
             args = [
@@ -288,7 +357,9 @@ class JIBridge:
     def _set_midi_enabled(self, drone: bool, arp: bool) -> None:
         """Stage 7.1: apply independent Drone/Arp switches from the UI."""
 
-        if self.midi is None:
+        if self.midi is None or not bool(
+            getattr(self.midi, "midi_enabled", True)
+        ):
             print(
                 "[MIDI] UI toggle ignored: MIDI is disabled "
                 "(start the bridge with --midi)",
@@ -303,6 +374,164 @@ class JIBridge:
             print(f"[MIDI] UI toggle failed: {exc}", file=sys.stderr)
         finally:
             self._send_midi_state()
+
+    # ------------------------------------------------------------------
+    # Stage 8.1 rhythm / drum status
+    # ------------------------------------------------------------------
+
+    def _on_ui_hello(self) -> None:
+        """Reply to a UI handshake with the full Stage 7/8.1 snapshot."""
+
+        self._send_ui_state()
+        self._send_rhythm_state()
+        self._send_drums_state()
+
+    def _drums_snapshot(self) -> tuple[bool, bool, float, int]:
+        getter = getattr(self.midi, "drums_state", None)
+        if callable(getter):
+            try:
+                return getter()
+            except Exception as exc:  # keep the UI status alive
+                print(f"[DRUMS] state failed: {exc}", file=sys.stderr)
+        return False, False, DRUM_RATE_DEFAULT, DEFAULT_LANE_MASK
+
+    def _send_rhythm_state(self) -> None:
+        enabled, _port_ok, rate, _mask = self._drums_snapshot()
+        state: RhythmState = self.rhythm.state
+        self._send_ui_message(
+            RHYTHM_STATE_ADDRESS, state.as_state_args(enabled, rate)
+        )
+
+    def _send_drums_state(self) -> None:
+        enabled, port_ok, rate, lane_mask = self._drums_snapshot()
+        self._send_ui_message(
+            DRUMS_STATE_ADDRESS,
+            [int(enabled), int(port_ok), float(rate), int(lane_mask)],
+        )
+
+    def _broadcast_rhythm(self) -> None:
+        """Send the canonical tempo/meter/transport to sclang."""
+
+        state = self.rhythm.state
+        try:
+            self.client.send_message(
+                RHYTHM_TEMPO_ADDRESS, state.as_tempo_args()
+            )
+        except (OSError, ValueError) as exc:
+            print(f"[RHYTHM] sclang tempo send failed: {exc}", file=sys.stderr)
+
+    def _print_rhythm(self) -> None:
+        state = self.rhythm.state
+        print(
+            f"[RHYTHM] bpm={state.bpm:.1f} meter={state.meter} "
+            f"running={int(state.running)}"
+        )
+
+    def _sync_drums_context(self) -> None:
+        state = self.rhythm.state
+        self._midi_call("set_drums_bpm", state.bpm)
+        self._midi_call("set_drums_meter", state.meter_num, state.meter_den)
+        self._midi_call("set_drums_transport", state.running)
+
+    def _midi_call(self, name: str, *args: Any) -> Any:
+        """Call a MIDIRig drum method if the injected rig provides it."""
+
+        if self.midi is None:
+            return None
+        method = getattr(self.midi, name, None)
+        if not callable(method):
+            return None
+        try:
+            return method(*args)
+        except Exception as exc:  # drums are non-critical
+            print(f"[DRUMS] {name} failed: {exc}", file=sys.stderr)
+            return None
+
+    def _on_rhythm_tempo(self, bpm: float) -> None:
+        try:
+            state = self.rhythm.set_bpm(bpm)
+        except (TypeError, ValueError) as exc:
+            print(f"[RHYTHM] invalid tempo: {exc}", file=sys.stderr)
+            return
+        self._midi_call("set_drums_bpm", state.bpm)
+        self._broadcast_rhythm()
+        self._send_rhythm_state()
+        self._print_rhythm()
+
+    def _on_rhythm_meter(self, meter_num: int, meter_den: int) -> None:
+        try:
+            state = self.rhythm.set_meter(meter_num, meter_den)
+        except (TypeError, ValueError) as exc:
+            print(f"[RHYTHM] invalid meter: {exc}", file=sys.stderr)
+            return
+        self._midi_call("set_drums_meter", state.meter_num, state.meter_den)
+        self._broadcast_rhythm()
+        self._send_rhythm_state()
+        self._print_rhythm()
+
+    def _on_rhythm_transport(self, running: bool) -> None:
+        state = self.rhythm.set_running(bool(running))
+        # Stopping the scheduler sends note-offs + CC 123; starting it resets
+        # to step 0.  Drums run only while the transport is running.
+        self._midi_call("set_drums_transport", state.running)
+        self._broadcast_rhythm()
+        self._send_rhythm_state()
+        self._print_rhythm()
+
+    def _on_rhythm_request(self) -> None:
+        """Resync: re-broadcast the canonical tempo without changing state."""
+
+        self._broadcast_rhythm()
+
+    def _on_drums_enabled(self, enabled: bool) -> None:
+        _current, port_ok, _rate, _mask = self._drums_snapshot()
+        if self.midi is None or not port_ok:
+            print(
+                "[MIDI] drums unavailable: start the bridge with --drums and "
+                "a configured IAC Driver Bus 3",
+                file=sys.stderr,
+            )
+            self._send_drums_state()
+            self._send_rhythm_state()
+            return
+        self._midi_call("set_drums_enabled", bool(enabled))
+        self._send_drums_state()
+        self._send_rhythm_state()
+        self._print_drums_state()
+
+    def _on_drums_lane(self, note: int, enabled: bool) -> None:
+        _current, port_ok, _rate, _mask = self._drums_snapshot()
+        if self.midi is None or not port_ok:
+            print(
+                f"[DRUMS] lane {note} ignored: drums are unavailable",
+                file=sys.stderr,
+            )
+            self._send_drums_state()
+            return
+        try:
+            self._midi_call("set_drums_lane", int(note), bool(enabled))
+        except (TypeError, ValueError):
+            pass
+        self._send_drums_state()
+        self._print_drums_state()
+
+    def _on_drums_rate(self, rate: float) -> None:
+        _current, port_ok, _rate, _mask = self._drums_snapshot()
+        if self.midi is None or not port_ok:
+            print("[DRUMS] rate ignored: drums are unavailable", file=sys.stderr)
+            self._send_drums_state()
+            return
+        self._midi_call("set_drums_rate", rate)
+        self._send_drums_state()
+        self._send_rhythm_state()
+        self._print_drums_state()
+
+    def _print_drums_state(self) -> None:
+        enabled, port_ok, rate, mask = self._drums_snapshot()
+        print(
+            f"[DRUMS] enabled={int(enabled)} port_ok={int(port_ok)} "
+            f"rate={rate:.1f} lanes=0x{mask:04x}"
+        )
 
     def _send_ui_message(self, address: str, args: list[Any]) -> None:
         """Best-effort UI UDP send; a missing UI must never break the bridge."""
@@ -457,8 +686,8 @@ def run_interactive(bridge: JIBridge) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Stage 3/6/7 bridge: mutation engine -> sclang "
-            "/ji/freqset/update, optional MPE MIDI rig, and Stage 7 UI status"
+            "Stage 3/6/7/8.1 bridge: mutation engine -> sclang /ji/freqset/update, "
+            "optional MPE MIDI rig, drum output, rhythm state, and UI status"
         )
     )
     parser.add_argument("--sc-host", default="127.0.0.1")
@@ -514,8 +743,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--mpe-config",
-        default="config/mpe_config.json",
-        help="Stage 6 MIDI config path (default: config/mpe_config.json)",
+        default=None,
+        help=(
+            "Stage 6 MIDI config path "
+            "(default: config/mpe_config.json next to the project)"
+        ),
+    )
+    parser.add_argument(
+        "--drums",
+        action="store_true",
+        help=(
+            "enable the Stage 8.1 drum MIDI output on IAC Driver Bus 3 "
+            "(default: off; works with or without --midi)"
+        ),
+    )
+    parser.add_argument(
+        "--rhythm-config",
+        default=None,
+        help=(
+            "drum/rhythm config path "
+            "(default: config/rhythm_config.json next to the project)"
+        ),
     )
     return parser
 
@@ -557,6 +805,8 @@ def main(argv: list[str] | None = None) -> int:
         anchor_mobility=args.anchor_mobility,
         midi=args.midi,
         mpe_config=args.mpe_config,
+        drums=args.drums,
+        rhythm_config=args.rhythm_config,
         ui_host=args.ui_host,
         ui_port=args.ui_port,
     )

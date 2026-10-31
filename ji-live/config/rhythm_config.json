@@ -1,0 +1,29 @@
+{
+  "port": "IAC Driver Bus 3",
+  "channel": 10,
+  "velocity": 100,
+  "gate_seconds": 0.05,
+  "enabled": true,
+  "rate": 1.0,
+  "lane_mask": 69,
+  "bpm": 120,
+  "meter": [4, 4],
+  "lanes": [
+    {"note": 36, "name": "kick1", "label": "Kick 1", "role": "four-on-the-floor kick"},
+    {"note": 37, "name": "kick2", "label": "Kick 2", "role": "second kick"},
+    {"note": 38, "name": "snare1", "label": "Snare 1", "role": "backbeat snare"},
+    {"note": 39, "name": "snare2", "label": "Snare 2", "role": "second snare"},
+    {"note": 40, "name": "perc1", "label": "Perc 1", "role": "rim/click"},
+    {"note": 41, "name": "perc2", "label": "Perc 2", "role": "clap"},
+    {"note": 42, "name": "perc3", "label": "Perc 3", "role": "closed hat"},
+    {"note": 43, "name": "perc4", "label": "Perc 4", "role": "pedal hat"},
+    {"note": 44, "name": "perc5", "label": "Perc 5", "role": "open hat"},
+    {"note": 45, "name": "perc6", "label": "Perc 6", "role": "low tom"},
+    {"note": 46, "name": "perc7", "label": "Perc 7", "role": "mid tom"},
+    {"note": 47, "name": "perc8", "label": "Perc 8", "role": "high tom"},
+    {"note": 48, "name": "perc9", "label": "Perc 9", "role": "crash"},
+    {"note": 49, "name": "perc10", "label": "Perc 10", "role": "ride"},
+    {"note": 50, "name": "perc11", "label": "Perc 11", "role": "shaker"},
+    {"note": 51, "name": "perc12", "label": "Perc 12", "role": "cowbell"}
+  ]
+}

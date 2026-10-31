@@ -20,10 +20,10 @@
 //  live/loop audio deliberately stays on pair 0/1 (Ableton track 1); the rest
 //  of the 16-channel map is reserved (see config/ableton_routing.json).
 //
-//  Evaluate this whole file (Cmd+Return) before test_ableton_routing.scd,
-//  test_tartini.scd, test_autotune.scd, test_bridge.scd, or
-//  test_dual_loop.scd. No synths are started here -- instantiation belongs to
-//  the test scripts.
+//  Evaluate this whole file (Cmd+Return) before any script in tests/sc/
+//  (test_ableton_routing.scd, test_tartini.scd, test_autotune.scd,
+//  test_bridge.scd, test_dual_loop.scd, test_live_rig.scd). No synths are
+//  started here -- instantiation belongs to the test scripts.
 //
 //  If you re-evaluate this file while the server is running, the
 //  ServerOptions below do NOT change; reboot first (s.reboot).
@@ -43,7 +43,7 @@ var outDeviceName = "BlackHole 16ch";   // 16 outputs = 8 stereo pairs
 
 // Fallback for a single shared device (e.g. an Aggregate Device, or a
 // macOS/SC combination that cannot open separate devices).  Leave REPLACE_ME
-// for the primary path; see README_stage5.md for the Aggregate fallback.
+// for the primary path; see docs/README_stage5.md for the Aggregate fallback.
 var singleDeviceName = "REPLACE_ME";
 
 var useSeparate, knownIns, knownOuts;
@@ -309,7 +309,7 @@ s.waitForBoot({
     )).postln;
     ("Server device setting: %".format(s.options.device)).postln;
     "Startup complete (Stage 5: 2 in / 16 out, buses 0-18).".postln;
-    "Next: test_ableton_routing.scd (Stage 5), then test_dual_loop.scd (Stage 4).".postln;
+    "Next: tests/sc/test_ableton_routing.scd (Stage 5), then tests/sc/test_live_rig.scd or tests/sc/test_dual_loop.scd.".postln;
 
 }, onFailure: {
     "*** scsynth FAILED TO BOOT.".postln;

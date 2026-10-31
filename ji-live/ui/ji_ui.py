@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Stage 7 minimal performance GUI: one PyQt6 window.
+"""Stage 7/8.1 performance GUI: one PyQt6 window.
 
-Run from ``ji-live/`` after ``test_live_rig.scd`` and
+Run from ``ji-live/`` after ``tests/sc/test_live_rig.scd`` and
 ``ui/control_surface.scd`` are evaluated, and after the bridge is running::
 
     uv run --with python-osc --with PyQt6 python ui/ji_ui.py
@@ -24,7 +24,9 @@ try:
     from PyQt6.QtWidgets import (
         QApplication,
         QCheckBox,
+        QComboBox,
         QDial,
+        QDoubleSpinBox,
         QGridLayout,
         QGroupBox,
         QHBoxLayout,
@@ -32,15 +34,17 @@ try:
         QMainWindow,
         QMessageBox,
         QPushButton,
+        QScrollArea,
+        QSpinBox,
         QVBoxLayout,
         QWidget,
     )
 except ImportError as exc:  # pragma: no cover - depends on the human's env
     raise SystemExit(
-        "PyQt6 is required for the Stage 7 GUI.\n"
+        "PyQt6 is required for the Stage 7/8.1 GUI.\n"
         "Install/run it with: uv run --with python-osc --with PyQt6 "
         "python ui/ji_ui.py\n"
-        "See README_stage7.md for details."
+        "See docs/README_stage8.md for details."
     ) from exc
 
 if __package__:  # ``python -m ui.ji_ui`` and normal package imports
@@ -48,9 +52,24 @@ if __package__:  # ``python -m ui.ji_ui`` and normal package imports
     from .osc_control import (
         AUTOTUNE_CHANNELS,
         AUTOTUNE_PARAMS,
+        BPM_DEFAULT,
+        BPM_MAX,
+        BPM_MIN,
+        DRUM_LANE_DEFAULT_MASK,
+        DRUM_LANE_DEFS,
+        DRUM_RATE_LABELS,
+        DRUM_RATES,
+        LOOP_BEATS_DEFAULT,
+        LOOP_BEATS_MAX,
+        LOOP_BEATS_MIN,
         LOOP_LENGTH_DEFAULT,
         LOOP_LENGTH_MAX,
         LOOP_LENGTH_MIN,
+        METER_DEN_DEFAULT,
+        METER_DENOMINATORS,
+        METER_NUM_DEFAULT,
+        METER_NUM_MAX,
+        METER_NUM_MIN,
         MUTATION_PARAMS,
         OSCController,
         StatusStore,
@@ -60,9 +79,24 @@ else:  # pragma: no cover - direct ``python ui/ji_ui.py``
     from osc_control import (  # type: ignore[no-redef]
         AUTOTUNE_CHANNELS,
         AUTOTUNE_PARAMS,
+        BPM_DEFAULT,
+        BPM_MAX,
+        BPM_MIN,
+        DRUM_LANE_DEFAULT_MASK,
+        DRUM_LANE_DEFS,
+        DRUM_RATE_LABELS,
+        DRUM_RATES,
+        LOOP_BEATS_DEFAULT,
+        LOOP_BEATS_MAX,
+        LOOP_BEATS_MIN,
         LOOP_LENGTH_DEFAULT,
         LOOP_LENGTH_MAX,
         LOOP_LENGTH_MIN,
+        METER_DEN_DEFAULT,
+        METER_DENOMINATORS,
+        METER_NUM_DEFAULT,
+        METER_NUM_MAX,
+        METER_NUM_MIN,
         MUTATION_PARAMS,
         OSCController,
         StatusStore,
@@ -105,16 +139,16 @@ class Knob(QWidget):
 
         self.dial = QDial()
         self.dial.setRange(0, self._steps)
-        self.dial.setNotchesVisible(True)
-        self.dial.setFixedSize(44, 44)
+        self.dial.setNotchesVisible(False)
+        self.dial.setFixedSize(32, 32)
 
         self.value_label = QLabel()
         self.value_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        self.value_label.setMinimumWidth(58)
+        self.value_label.setMinimumWidth(46)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(2, 1, 2, 1)
-        layout.setSpacing(1)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
         layout.addWidget(self.caption_label)
         layout.addWidget(self.dial, 0, Qt.AlignmentFlag.AlignHCenter)
         layout.addWidget(self.value_label)
@@ -207,7 +241,7 @@ class _StatusRelay(QObject):
 
 
 class MainWindow(QMainWindow):
-    """One-screen performance surface: Mutation, Live Autotune, Loops, Status."""
+    """One-screen performance surface: Mutation, Live Autotune, Loops, Rhythm, Status."""
 
     def __init__(
         self,
@@ -223,6 +257,10 @@ class MainWindow(QMainWindow):
         self._status_seen = False
         self._started = False
         self._midi_sync = False
+        self._rhythm_sync = False
+        self._drum_sync = False
+        self._loop_sync = False
+        self._loop_custom: set[int] = set()
 
         self._relay = _StatusRelay()
         self._relay.message.connect(
@@ -230,18 +268,36 @@ class MainWindow(QMainWindow):
         )
         self._wire_controller_callback()
 
-        self.setWindowTitle("JI Station - Stage 7 Performance")
-        self.resize(1180, 760)
+        self.setWindowTitle("JI Station - Stage 8.1 Performance")
+        self.resize(1280, 720)
+        self.setMinimumSize(1080, 600)
+        compact = QFont()
+        compact.setPointSize(8)
+        self.setFont(compact)
 
         central = QWidget()
+        central.setMinimumWidth(1040)
         outer = QVBoxLayout(central)
-        outer.setContentsMargins(6, 6, 6, 6)
-        outer.setSpacing(5)
-        outer.addWidget(self._build_mutation_group())
+        outer.setContentsMargins(4, 4, 4, 4)
+        outer.setSpacing(3)
+
+        top_row = QHBoxLayout()
+        top_row.setSpacing(4)
+        top_row.addWidget(self._build_mutation_group(), 3)
+        top_row.addWidget(self._build_midi_group(), 2)
+        outer.addLayout(top_row)
         outer.addWidget(self._build_autotune_group())
         outer.addWidget(self._build_loops_group())
-        outer.addWidget(self._build_status_group(), stretch=1)
-        self.setCentralWidget(central)
+        outer.addWidget(self._build_rhythm_group())
+        outer.addWidget(self._build_status_group())
+        outer.addStretch(1)
+
+        # A scroll area is only a safety net for small screens; the compact
+        # layout fits at the default size without scrolling.
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(central)
+        self.setCentralWidget(scroll)
 
         self._send_timer = QTimer(self)
         self._send_timer.setInterval(33)  # ~30 Hz coalesced knob sends
@@ -284,8 +340,15 @@ class MainWindow(QMainWindow):
         if address == osc_control.LOOP_STATE:
             index = int(round(float(args[0])))
             self._refresh_loop_label(index)
+        if address == osc_control.LOOP_CONFIG:
+            index = int(round(float(args[0])))
+            self._sync_loop_config(index)
         if address in (osc_control.MIDI_STATUS, osc_control.MIDI_STATE):
             self._sync_midi_controls()
+        if address == osc_control.RHYTHM_STATE:
+            self._sync_rhythm_controls()
+        if address == osc_control.DRUMS_STATE:
+            self._sync_drum_controls()
 
         self._refresh_status_labels()
 
@@ -293,11 +356,10 @@ class MainWindow(QMainWindow):
 
     def _build_mutation_group(self) -> QGroupBox:
         group = QGroupBox("Mutation")
-        layout = QVBoxLayout(group)
-        layout.setSpacing(3)
+        layout = QHBoxLayout(group)
+        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setSpacing(1)
 
-        knob_row = QHBoxLayout()
-        knob_row.setSpacing(2)
         self.mutation_knobs: dict[str, Knob] = {}
         for spec in MUTATION_PARAMS:
             steps = (
@@ -319,47 +381,69 @@ class MainWindow(QMainWindow):
                 lambda value, key=spec.key: self._on_mutation_knob(key, value)
             )
             self.mutation_knobs[spec.key] = knob
-            knob_row.addWidget(knob)
-        knob_row.addStretch(1)
-        layout.addLayout(knob_row)
+            layout.addWidget(knob)
 
-        button_row = QHBoxLayout()
+        layout.addSpacing(6)
         self.mutate_button = QPushButton("Mutate")
         self.octave_button = QPushButton("Octave")
         for button in (self.mutate_button, self.octave_button):
-            button.setMinimumHeight(34)
-            button.setMinimumWidth(110)
+            button.setMinimumHeight(26)
+            button.setMinimumWidth(78)
         self.mutate_button.clicked.connect(
             lambda: self._guard(self.controller.trigger_mutation)
         )
         self.octave_button.clicked.connect(
             lambda: self._guard(self.controller.trigger_octave)
         )
-        button_row.addWidget(self.mutate_button)
-        button_row.addWidget(self.octave_button)
-        button_row.addStretch(1)
-        layout.addLayout(button_row)
+        layout.addWidget(self.mutate_button)
+        layout.addWidget(self.octave_button)
+        layout.addStretch(1)
+        return group
+
+    def _build_midi_group(self) -> QGroupBox:
+        group = QGroupBox("MIDI")
+        layout = QVBoxLayout(group)
+        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setSpacing(1)
+
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        self.midi_drone_checkbox = QCheckBox("Drone on")
+        self.midi_arp_checkbox = QCheckBox("Arp on")
+        self.midi_drone_checkbox.setEnabled(False)
+        self.midi_arp_checkbox.setEnabled(False)
+        self.midi_drone_checkbox.toggled.connect(self._on_midi_toggle)
+        self.midi_arp_checkbox.toggled.connect(self._on_midi_toggle)
+        row.addWidget(self.midi_drone_checkbox)
+        row.addWidget(self.midi_arp_checkbox)
+        row.addStretch(1)
+        layout.addLayout(row)
+
+        self.midi_label = QLabel("MIDI: waiting for bridge")
+        self.midi_label.setWordWrap(True)
+        self.midi_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        layout.addWidget(self.midi_label)
         return group
 
     def _build_autotune_group(self) -> QGroupBox:
         group = QGroupBox("Live Autotune")
-        layout = QVBoxLayout(group)
-        layout.setSpacing(3)
+        layout = QHBoxLayout(group)
+        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setSpacing(4)
 
-        top = QHBoxLayout()
-        self.link_checkbox = QCheckBox("Link: move both inputs together")
-        top.addWidget(self.link_checkbox)
-        top.addStretch(1)
-        layout.addLayout(top)
+        self.link_checkbox = QCheckBox("Link")
+        self.link_checkbox.setToolTip("Move both input channels together")
+        layout.addWidget(self.link_checkbox, 0, Qt.AlignmentFlag.AlignVCenter)
 
-        channels = QHBoxLayout()
-        channels.setSpacing(4)
         self.autotune_knobs: dict[tuple[int, str], Knob] = {}
         for channel in AUTOTUNE_CHANNELS:
             channel_group = QGroupBox(f"Input {channel}")
-            grid = QGridLayout(channel_group)
-            grid.setSpacing(2)
-            for position, spec in enumerate(AUTOTUNE_PARAMS):
+            row = QHBoxLayout(channel_group)
+            row.setContentsMargins(3, 1, 3, 1)
+            row.setSpacing(1)
+            for spec in AUTOTUNE_PARAMS:
                 steps = (
                     int(round(spec.high - spec.low))
                     if spec.integer
@@ -385,39 +469,81 @@ class MainWindow(QMainWindow):
                     )
                 )
                 self.autotune_knobs[(channel, spec.key)] = knob
-                grid.addWidget(knob, position // 3, position % 3)
-            channels.addWidget(channel_group)
-        layout.addLayout(channels)
+                row.addWidget(knob)
+            layout.addWidget(channel_group)
+        layout.addStretch(1)
         return group
 
     def _build_loops_group(self) -> QGroupBox:
         group = QGroupBox("Loops")
         layout = QVBoxLayout(group)
-        layout.setSpacing(4)
+        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setSpacing(3)
 
         loop_row = QHBoxLayout()
-        loop_row.setSpacing(4)
+        loop_row.setSpacing(3)
         self.loop_state_labels: dict[int, QLabel] = {}
         self.loop_buttons: dict[tuple[int, str], QPushButton] = {}
+        self.loop_mode_combos: dict[int, QComboBox] = {}
+        self.loop_length_spins: dict[int, QDoubleSpinBox] = {}
 
         for index in range(1, 5):
             loop_group = QGroupBox(f"Loop {index}")
             loop_layout = QVBoxLayout(loop_group)
-            loop_layout.setSpacing(2)
+            loop_layout.setContentsMargins(3, 1, 3, 1)
+            loop_layout.setSpacing(1)
 
-            state_label = QLabel("State: waiting")
+            state_label = QLabel("waiting")
             state_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
             self.loop_state_labels[index] = state_label
             loop_layout.addWidget(state_label)
 
+            controls = QHBoxLayout()
+            controls.setSpacing(2)
+            mode_combo = QComboBox()
+            mode_combo.addItems(["Free", "Beat"])
+            mode_combo.setCurrentIndex(0)
+            mode_combo.setFixedWidth(68)
+            mode_combo.setToolTip(
+                "Free: seconds, immediate. Beat: next-beat quantized. Tempo "
+                "changes do not time-stretch an existing loop; stop and "
+                "re-record, or use free mode."
+            )
+            mode_combo.currentIndexChanged.connect(
+                lambda _position, i=index: self._on_loop_mode_changed(i)
+            )
+            self.loop_mode_combos[index] = mode_combo
+
+            length_spin = QDoubleSpinBox()
+            length_spin.setDecimals(1)
+            length_spin.setRange(LOOP_LENGTH_MIN, LOOP_LENGTH_MAX)
+            length_spin.setSingleStep(0.5)
+            length_spin.setValue(LOOP_LENGTH_DEFAULT)
+            length_spin.setSuffix(" s")
+            length_spin.setFixedWidth(78)
+            length_spin.setToolTip(
+                "Free: 1-30 seconds. Beat: 1-64 beats, taken as "
+                "beats * 60 / bpm at record time."
+            )
+            length_spin.valueChanged.connect(
+                lambda value, i=index: self._on_loop_length_changed(i, value)
+            )
+            self.loop_length_spins[index] = length_spin
+
+            controls.addWidget(mode_combo)
+            controls.addWidget(length_spin)
+            controls.addStretch(1)
+            loop_layout.addLayout(controls)
+
             grid = QGridLayout()
-            grid.setSpacing(2)
+            grid.setContentsMargins(0, 0, 0, 0)
+            grid.setSpacing(1)
             # QPushButton.clicked emits a bool; bind it to ``_checked`` so it
             # cannot override the loop index default.
             actions = (
                 (
                     "record",
-                    "Record",
+                    "Rec",
                     lambda _checked=False, i=index: self._record_loop(i),
                 ),
                 (
@@ -430,9 +556,7 @@ class MainWindow(QMainWindow):
                 (
                     "play",
                     "Play",
-                    lambda _checked=False, i=index: self._guard(
-                        self.controller.loop_play, i
-                    ),
+                    lambda _checked=False, i=index: self._play_loop(i),
                 ),
                 (
                     "stop",
@@ -449,54 +573,169 @@ class MainWindow(QMainWindow):
                     ),
                 ),
             )
-            positions = ((0, 0), (0, 1), (1, 0), (1, 1), (2, 0))
-            for (name, text, slot), (row, column) in zip(actions, positions):
+            placements = (
+                (0, 0, 1, 1),
+                (0, 1, 1, 1),
+                (0, 2, 1, 1),
+                (1, 0, 1, 1),
+                (1, 1, 1, 2),
+            )
+            for (name, text, slot), (row, column, row_span, col_span) in zip(
+                actions, placements
+            ):
                 button = QPushButton(text)
-                button.setMinimumHeight(26)
+                button.setMinimumHeight(20)
                 button.clicked.connect(slot)
                 self.loop_buttons[(index, name)] = button
-                if name == "clear":
-                    grid.addWidget(button, row, column, 1, 2)
-                else:
-                    grid.addWidget(button, row, column)
+                grid.addWidget(button, row, column, row_span, col_span)
             loop_layout.addLayout(grid)
             loop_row.addWidget(loop_group)
 
         layout.addLayout(loop_row)
 
         bottom = QHBoxLayout()
-        self.stop_all_button = QPushButton("Stop All Loops")
-        self.stop_all_button.setMinimumHeight(32)
-        self.stop_all_button.setMinimumWidth(150)
+        bottom.setSpacing(5)
+        self.stop_all_button = QPushButton("Stop All")
+        self.stop_all_button.setMinimumHeight(24)
+        self.stop_all_button.setMinimumWidth(90)
         self.stop_all_button.clicked.connect(
             lambda: self._guard(self.controller.loop_stop_all)
         )
-        self.length_knob = Knob(
-            "Length",
-            LOOP_LENGTH_MIN,
-            LOOP_LENGTH_MAX,
-            LOOP_LENGTH_DEFAULT,
-            steps=int(round((LOOP_LENGTH_MAX - LOOP_LENGTH_MIN) * 10)),
-            fmt="{:.1f}",
-            suffix=" s",
+        self.length_spin = QDoubleSpinBox()
+        self.length_spin.setDecimals(1)
+        self.length_spin.setRange(LOOP_LENGTH_MIN, LOOP_LENGTH_MAX)
+        self.length_spin.setSingleStep(0.5)
+        self.length_spin.setValue(LOOP_LENGTH_DEFAULT)
+        self.length_spin.setSuffix(" s")
+        self.length_spin.setFixedWidth(80)
+        self.length_spin.setToolTip(
+            "Default free-loop length; loops you have not set individually "
+            "follow this value."
         )
-        self.length_knob.valueChanged.connect(self._on_length_knob)
+        self.length_spin.valueChanged.connect(self._on_length_changed)
         bottom.addWidget(self.stop_all_button)
-        bottom.addSpacing(10)
-        bottom.addWidget(self.length_knob)
+        bottom.addWidget(QLabel("Default len"))
+        bottom.addWidget(self.length_spin)
         bottom.addStretch(1)
         layout.addLayout(bottom)
+        return group
+
+    def _build_rhythm_group(self) -> QGroupBox:
+        group = QGroupBox("Rhythm")
+        layout = QVBoxLayout(group)
+        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setSpacing(1)
+
+        top = QHBoxLayout()
+        top.setSpacing(4)
+
+        self.transport_button = QPushButton("Play")
+        self.transport_button.setCheckable(True)
+        self.transport_button.setMinimumHeight(24)
+        self.transport_button.setMinimumWidth(64)
+        self.transport_button.setToolTip(
+            "Start/stop rhythm scheduling. Beat-mode loops stop on transport "
+            "stop; free loops keep running."
+        )
+        self.transport_button.toggled.connect(self._on_transport_toggled)
+        top.addWidget(self.transport_button)
+
+        top.addWidget(QLabel("BPM"))
+        self.bpm_spin = QSpinBox()
+        self.bpm_spin.setRange(int(BPM_MIN), int(BPM_MAX))
+        self.bpm_spin.setValue(int(BPM_DEFAULT))
+        self.bpm_spin.setFixedWidth(64)
+        self.bpm_spin.setToolTip(
+            "Quarter-note BPM (20-300). Changes while running take effect on "
+            "the next drum step and on sclang's loop clock."
+        )
+        self.bpm_spin.valueChanged.connect(self._on_bpm_changed)
+        top.addWidget(self.bpm_spin)
+
+        top.addSpacing(2)
+        top.addWidget(QLabel("Meter"))
+        self.meter_num_spin = QSpinBox()
+        self.meter_num_spin.setRange(METER_NUM_MIN, METER_NUM_MAX)
+        self.meter_num_spin.setValue(METER_NUM_DEFAULT)
+        self.meter_num_spin.setFixedWidth(46)
+        self.meter_num_spin.valueChanged.connect(self._on_meter_changed)
+        self.meter_den_combo = QComboBox()
+        self.meter_den_combo.addItems(
+            [str(value) for value in METER_DENOMINATORS]
+        )
+        self.meter_den_combo.setCurrentText(str(METER_DEN_DEFAULT))
+        self.meter_den_combo.setFixedWidth(52)
+        self.meter_den_combo.currentIndexChanged.connect(self._on_meter_changed)
+        top.addWidget(self.meter_num_spin)
+        top.addWidget(QLabel("/"))
+        top.addWidget(self.meter_den_combo)
+
+        top.addSpacing(4)
+        self.drum_enable_checkbox = QCheckBox("Drums on")
+        # Disabled until /ji/drums/state says the port is available; the state
+        # message also sets the checked value.
+        self.drum_enable_checkbox.setChecked(False)
+        self.drum_enable_checkbox.setEnabled(False)
+        self.drum_enable_checkbox.toggled.connect(self._on_drum_enabled_toggled)
+        self.drum_rate_combo = QComboBox()
+        self.drum_rate_combo.addItems(list(DRUM_RATE_LABELS))
+        self.drum_rate_combo.setCurrentIndex(DRUM_RATES.index(1.0))
+        self.drum_rate_combo.setFixedWidth(80)
+        self.drum_rate_combo.setEnabled(False)
+        self.drum_rate_combo.currentIndexChanged.connect(
+            self._on_drum_rate_changed
+        )
+        top.addWidget(self.drum_enable_checkbox)
+        top.addWidget(self.drum_rate_combo)
+
+        self.resync_button = QPushButton("Resync")
+        self.resync_button.setMinimumHeight(24)
+        self.resync_button.setMinimumWidth(60)
+        self.resync_button.clicked.connect(
+            lambda: self._guard(self.controller.request_rhythm_resync)
+        )
+        top.addWidget(self.resync_button)
+        top.addStretch(1)
+        layout.addLayout(top)
+
+        self.rhythm_label = QLabel("Rhythm: waiting for bridge")
+        self.drum_label = QLabel("Drums: waiting for bridge")
+        status_row = QHBoxLayout()
+        status_row.setSpacing(12)
+        for label in (self.rhythm_label, self.drum_label):
+            label.setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextSelectableByMouse
+            )
+            status_row.addWidget(label)
+        status_row.addStretch(1)
+        layout.addLayout(status_row)
+
+        lane_grid = QGridLayout()
+        lane_grid.setHorizontalSpacing(4)
+        lane_grid.setVerticalSpacing(0)
+        self.lane_checkboxes: dict[int, QCheckBox] = {}
+        for position, (note, _name, label) in enumerate(DRUM_LANE_DEFS):
+            checkbox = QCheckBox(label)
+            checkbox.setChecked(bool(DRUM_LANE_DEFAULT_MASK & (1 << position)))
+            checkbox.setEnabled(False)  # enabled by /ji/drums/state
+            checkbox.toggled.connect(
+                lambda checked, n=note: self._on_lane_toggled(n, checked)
+            )
+            self.lane_checkboxes[note] = checkbox
+            lane_grid.addWidget(checkbox, position // 8, position % 8)
+        layout.addLayout(lane_grid)
         return group
 
     def _build_status_group(self) -> QGroupBox:
         group = QGroupBox("Status")
         grid = QGridLayout(group)
-        grid.setHorizontalSpacing(12)
-        grid.setVerticalSpacing(2)
+        grid.setContentsMargins(4, 2, 4, 2)
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(1)
 
         fixed = QFont("Monospace")
         fixed.setStyleHint(QFont.StyleHint.TypeWriter)
-        fixed.setPointSize(9)
+        fixed.setPointSize(8)
 
         self.bridge_status_label = QLabel("BRIDGE: waiting for bridge")
         self.sc_status_label = QLabel("SCLANG: waiting for sclang")
@@ -505,13 +744,6 @@ class MainWindow(QMainWindow):
         self.fundamental_label = QLabel("Fundamental: waiting for bridge")
         self.control_label = QLabel("Controls: waiting for bridge")
         self.cpu_label = QLabel("CPU: waiting for sclang")
-        self.midi_label = QLabel("MIDI: waiting for bridge")
-        self.midi_drone_checkbox = QCheckBox("Drone on")
-        self.midi_arp_checkbox = QCheckBox("Arp on")
-        self.midi_drone_checkbox.setEnabled(False)
-        self.midi_arp_checkbox.setEnabled(False)
-        self.midi_drone_checkbox.toggled.connect(self._on_midi_toggle)
-        self.midi_arp_checkbox.toggled.connect(self._on_midi_toggle)
         self.loop_status_label = QLabel("Loop states: waiting for sclang")
         self.message_label = QLabel("")
         self.message_label.setWordWrap(True)
@@ -524,7 +756,6 @@ class MainWindow(QMainWindow):
             self.fundamental_label,
             self.control_label,
             self.cpu_label,
-            self.midi_label,
             self.loop_status_label,
             self.message_label,
         ):
@@ -538,20 +769,13 @@ class MainWindow(QMainWindow):
 
         grid.addWidget(self.bridge_status_label, 0, 0)
         grid.addWidget(self.sc_status_label, 0, 1)
-        grid.addWidget(self.freqset_label, 1, 0, 1, 2)
+        grid.addWidget(self.cpu_label, 0, 2)
+        grid.addWidget(self.loop_status_label, 0, 3)
+        grid.addWidget(self.freqset_label, 1, 0, 1, 4)
         grid.addWidget(self.anchor_label, 2, 0)
         grid.addWidget(self.fundamental_label, 2, 1)
-        grid.addWidget(self.control_label, 3, 0, 1, 2)
-        grid.addWidget(self.cpu_label, 4, 0)
-        grid.addWidget(self.midi_label, 4, 1)
-        midi_row = QHBoxLayout()
-        midi_row.addWidget(QLabel("MIDI outputs:"))
-        midi_row.addWidget(self.midi_drone_checkbox)
-        midi_row.addWidget(self.midi_arp_checkbox)
-        midi_row.addStretch(1)
-        grid.addLayout(midi_row, 5, 0, 1, 2)
-        grid.addWidget(self.loop_status_label, 6, 0, 1, 2)
-        grid.addWidget(self.message_label, 7, 0, 1, 2)
+        grid.addWidget(self.control_label, 2, 2, 1, 2)
+        grid.addWidget(self.message_label, 3, 0, 1, 4)
         return group
 
     # -- knob queueing ---------------------------------------------------
@@ -565,18 +789,148 @@ class MainWindow(QMainWindow):
             self._pending[("autotune", target, key)] = value
 
     def _displayed_length(self) -> float:
-        """The length shown by the knob (one decimal place, in seconds)."""
+        """The default free length shown by the spin box, in seconds."""
 
-        return round(self.length_knob.value(), 1)
+        return round(self.length_spin.value(), 1)
 
-    def _on_length_knob(self, value: float) -> None:
-        # The label shows one decimal; send exactly that value.
-        self._pending[("length",)] = round(value, 1)
+    def _on_length_changed(self, value: float) -> None:
+        # The spin box shows one decimal; send exactly that value.  Free-mode
+        # loops that the user has not customised follow this default, which
+        # keeps the Stage 7 global-length behavior.
+        seconds = round(value, 1)
+        self._pending[("length",)] = seconds
+        for index in range(1, 5):
+            if index in self._loop_custom:
+                continue
+            config = self.store.loop_configs.get(index)
+            if config is None:
+                continue
+            self.store.loop_configs[index] = osc_control.LoopConfig(
+                mode=config.mode, beats=config.beats, seconds=seconds
+            )
+            if config.mode == "free":
+                spin = self.loop_length_spins.get(index)
+                if spin is not None:
+                    was_sync = self._loop_sync
+                    self._loop_sync = True
+                    try:
+                        spin.setValue(seconds)
+                    finally:
+                        self._loop_sync = was_sync
+
+    # -- Stage 8.1 rhythm / drum / loop controls -----------------------
+
+    def _on_bpm_changed(self, value: int) -> None:
+        self._pending[("bpm",)] = float(round(value))
+
+    def _on_transport_toggled(self, checked: bool) -> None:
+        self.transport_button.setText("Stop" if checked else "Play")
+        if self._rhythm_sync:
+            return
+        self._guard(self.controller.set_transport, bool(checked))
+
+    def _on_meter_changed(self, _value: Any = None) -> None:
+        if self._rhythm_sync:
+            return
+        self._guard(
+            self.controller.set_meter,
+            int(self.meter_num_spin.value()),
+            int(self.meter_den_combo.currentText()),
+        )
+
+    def _on_drum_enabled_toggled(self, checked: bool) -> None:
+        if self._drum_sync:
+            return
+        self._guard(self.controller.set_drums_enabled, bool(checked))
+
+    def _on_drum_rate_changed(self, position: int) -> None:
+        if self._drum_sync:
+            return
+        if 0 <= position < len(DRUM_RATES):
+            self._guard(self.controller.set_drum_rate, DRUM_RATES[position])
+
+    def _on_lane_toggled(self, note: int, checked: bool) -> None:
+        if self._drum_sync:
+            return
+        self._guard(self.controller.set_drum_lane, int(note), bool(checked))
+
+    def _loop_mode(self, index: int) -> str:
+        combo = self.loop_mode_combos[index]
+        return "beat" if combo.currentIndex() == 1 else "free"
+
+    def _on_loop_mode_changed(self, index: int) -> None:
+        if self._loop_sync:
+            return
+        mode = self._loop_mode(index)
+        self._guard(self.controller.loop_set_mode, index, mode)
+        self._configure_loop_length(index, mode)
+        self._refresh_loop_label(index)
+
+    def _configure_loop_length(self, index: int, mode: str) -> None:
+        """Switch the per-loop length control between seconds and beats."""
+
+        spin = self.loop_length_spins[index]
+        config = self.store.loop_configs.get(
+            index, osc_control.LoopConfig()
+        )
+        was_sync = self._loop_sync
+        self._loop_sync = True
+        try:
+            if mode == "beat":
+                spin.setDecimals(0)
+                spin.setRange(LOOP_BEATS_MIN, LOOP_BEATS_MAX)
+                spin.setSingleStep(1.0)
+                spin.setSuffix(" b")
+                spin.setValue(float(round(config.beats)))
+            else:
+                spin.setDecimals(1)
+                spin.setRange(LOOP_LENGTH_MIN, LOOP_LENGTH_MAX)
+                spin.setSingleStep(0.5)
+                spin.setSuffix(" s")
+                spin.setValue(float(config.seconds))
+        finally:
+            self._loop_sync = was_sync
+
+    def _on_loop_length_changed(self, index: int, value: float) -> None:
+        if self._loop_sync:
+            return
+        if self._loop_mode(index) == "beat":
+            self._pending[("loop_beats", index)] = float(round(value))
+        else:
+            self._loop_custom.add(index)
+            self._pending[("loop_length", index)] = round(float(value), 1)
+
+    def _loop_transport_ready(self, index: int) -> bool:
+        """Reject beat-mode record/play while the transport is stopped."""
+
+        if self._loop_mode(index) != "beat":
+            return True
+        rhythm = self.store.rhythm
+        if rhythm is not None and not rhythm.running:
+            self._set_message(
+                f"Loop {index} is beat-locked; press Play (transport) first"
+            )
+            return False
+        return True
 
     def _record_loop(self, index: int) -> None:
-        # Always send record_length so the take uses the length shown here,
-        # even if the default-length message has not been applied yet.
-        self._guard(self.controller.loop_record, index, self._displayed_length())
+        if not self._loop_transport_ready(index):
+            return
+        if self._loop_mode(index) == "beat":
+            # sclang computes beats * 60 / bpm at record time.
+            self._guard(self.controller.loop_record, index)
+            return
+        # Free mode keeps the Stage 7 behavior but uses this loop's seconds.
+        config = self.store.loop_configs.get(index)
+        seconds = (
+            config.seconds if config is not None else self._displayed_length()
+        )
+        self._guard(self.controller.loop_record, index, seconds)
+
+    def _play_loop(self, index: int) -> None:
+        if not self._loop_transport_ready(index):
+            return
+        self._guard(self.controller.loop_play, index)
 
     def _on_midi_toggle(self, _checked: bool) -> None:
         if self._midi_sync:
@@ -618,6 +972,12 @@ class MainWindow(QMainWindow):
                 )
             elif key[0] == "length":
                 self._guard(self.controller.loop_set_default_length, value)
+            elif key[0] == "bpm":
+                self._guard(self.controller.set_tempo, value)
+            elif key[0] == "loop_beats":
+                self._guard(self.controller.loop_set_beats, key[1], value)
+            elif key[0] == "loop_length":
+                self._guard(self.controller.loop_set_length, key[1], value)
 
     def _guard(self, action: Callable[..., Any], *args: Any) -> None:
         try:
@@ -640,6 +1000,64 @@ class MainWindow(QMainWindow):
             if knob is not None and spec.key in values:
                 knob.set_value(values[spec.key], emit=False)
 
+    def _sync_rhythm_controls(self) -> None:
+        """Reflect the bridge tempo/meter/transport snapshot."""
+
+        rhythm = self.store.rhythm
+        if rhythm is None:
+            return
+        self._rhythm_sync = True
+        try:
+            self.bpm_spin.setValue(int(round(rhythm.bpm)))
+            self.meter_num_spin.setValue(int(rhythm.meter_num))
+            self.meter_den_combo.setCurrentText(str(rhythm.meter_den))
+            self.transport_button.setChecked(bool(rhythm.running))
+            self.transport_button.setText(
+                "Stop" if rhythm.running else "Play"
+            )
+        finally:
+            self._rhythm_sync = False
+
+    def _sync_drum_controls(self) -> None:
+        """Reflect drum enabled/port/rate/lane-mask state without echoing OSC."""
+
+        drums = self.store.drums
+        if drums is None:
+            return
+        available = bool(drums.port_ok)
+        self._drum_sync = True
+        try:
+            self.drum_enable_checkbox.setEnabled(available)
+            self.drum_enable_checkbox.setChecked(
+                bool(available and drums.enabled)
+            )
+            self.drum_rate_combo.setEnabled(available)
+            if drums.rate in DRUM_RATES:
+                self.drum_rate_combo.setCurrentIndex(
+                    DRUM_RATES.index(drums.rate)
+                )
+            states = drums.lane_states
+            for note, checkbox in self.lane_checkboxes.items():
+                checkbox.setEnabled(available)
+                checkbox.setChecked(bool(available and states.get(note, False)))
+        finally:
+            self._drum_sync = False
+
+    def _sync_loop_config(self, index: int) -> None:
+        """Apply one ``/ji/loop/config`` snapshot to that loop's controls."""
+
+        config = self.store.loop_configs.get(index)
+        combo = self.loop_mode_combos.get(index)
+        if config is None or combo is None:
+            return
+        self._loop_sync = True
+        try:
+            combo.setCurrentIndex(1 if config.mode == "beat" else 0)
+            self._configure_loop_length(index, config.mode)
+        finally:
+            self._loop_sync = False
+        self._refresh_loop_label(index)
+
     # -- status labels ---------------------------------------------------
 
     def _refresh_loop_label(self, index: int) -> None:
@@ -647,7 +1065,42 @@ class MainWindow(QMainWindow):
         if label is None:
             return
         state = self.store.loop_states.get(index, "waiting")
-        label.setText(f"State: {state}")
+        config = self.store.loop_configs.get(
+            index, osc_control.LoopConfig()
+        )
+        if config.mode == "beat":
+            length = f"beat {config.beats:g}"
+        else:
+            length = f"free {config.seconds:g}s"
+        label.setText(f"{state} | {length}")
+
+    def _refresh_rhythm_labels(self) -> None:
+        store = self.store
+        if store.rhythm is None:
+            self.rhythm_label.setText("Rhythm: waiting for bridge")
+        else:
+            rhythm = store.rhythm
+            transport = "playing" if rhythm.running else "stopped"
+            drums = "on" if rhythm.drums_enabled else "off"
+            self.rhythm_label.setText(
+                f"Rhythm: {rhythm.bpm:.1f} BPM | {rhythm.meter} | "
+                f"transport {transport} | drums {drums} | "
+                f"rate x{rhythm.drum_rate:g}"
+            )
+
+        if store.drums is None:
+            self.drum_label.setText("Drums: waiting for bridge")
+        elif not store.drums.port_ok:
+            self.drum_label.setText(
+                "Drums: disabled (drum port not available; see bridge log)"
+            )
+        elif not store.drums.enabled:
+            self.drum_label.setText("Drums: off (port available)")
+        else:
+            self.drum_label.setText(
+                f"Drums: on | rate x{store.drums.rate:g} | "
+                f"lanes 0x{store.drums.lane_mask:04x}"
+            )
 
     def _refresh_status_labels(self) -> None:
         store = self.store
@@ -726,6 +1179,8 @@ class MainWindow(QMainWindow):
             )
             self.loop_status_label.setText(f"Loop states: {states}")
 
+        self._refresh_rhythm_labels()
+
         for index in range(1, 5):
             self._refresh_loop_label(index)
 
@@ -756,7 +1211,7 @@ class MainWindow(QMainWindow):
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Stage 7 minimal performance GUI (PyQt6, one window)"
+        description="Stage 7/8.1 performance GUI (PyQt6, one window)"
     )
     parser.add_argument("--bridge-host", default="127.0.0.1")
     parser.add_argument("--bridge-port", type=int, default=9000)
@@ -780,7 +1235,7 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(f"{label} must be between 1 and 65535")
 
     app = QApplication(sys.argv[:1])
-    app.setApplicationName("JI Station Stage 7")
+    app.setApplicationName("JI Station Stage 8.1")
 
     controller = OSCController(
         bridge_host=args.bridge_host,
@@ -797,7 +1252,7 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         message = f"Could not start the UI OSC listener:\n{exc}"
         print(f"[UI] {message}", file=sys.stderr)
-        QMessageBox.critical(None, "JI Stage 7 UI", message)
+        QMessageBox.critical(None, "JI Stage 8.1 UI", message)
         window.close()
         return 1
 
