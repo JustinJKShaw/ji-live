@@ -35,6 +35,12 @@ Stage 8.2 adds a next-quarter-beat queue for major state changes (mutation/
 octave, MIDI/drum enables, drum rate/lanes, groove edits) and the groove status
 surface (``/ji/drums/groove``, ``/ji/drums/grid``, ``/ji/quantize/state``).
 With the transport stopped every queued action applies immediately.
+
+Stage 8.3a adds the optional monophonic bass voice (``--bass``, default
+``IAC Driver Bus 4``) and its ``/ji/bass/*`` request/status surface.  Bass
+enable/preset/grid/length/density/syncopation/swing/gate/accent/root/pitch/
+movement/octave/seed/base/sub changes use the same next-quarter-beat queue with
+``PHASE_BASS`` between drums and MIDI.
 """
 
 from __future__ import annotations
@@ -48,11 +54,13 @@ from typing import Any, Callable
 from pythonosc.udp_client import SimpleUDPClient
 
 try:  # Support both ``python -m control.ji_bridge`` and direct execution.
+    from . import bass as bass_module
     from .drums import DEFAULT_LANE_MASK, DRUM_RATE_DEFAULT
     from .groove import Groove, validate_preset
     from .mutation import MutationBatch, MutationEngine, MutationEvent, OctaveEvent
     from .osc_server import MutationOSCServer
     from .quantize import (
+        PHASE_BASS,
         PHASE_DRUMS,
         PHASE_GROOVE,
         PHASE_MIDI,
@@ -62,6 +70,7 @@ try:  # Support both ``python -m control.ji_bridge`` and direct execution.
     )
     from .rhythm import RhythmEngine, RhythmState
 except ImportError:  # pragma: no cover - exercised only by direct execution
+    import bass as bass_module  # type: ignore[no-redef]
     from drums import DEFAULT_LANE_MASK, DRUM_RATE_DEFAULT  # type: ignore[no-redef]
     from groove import Groove, validate_preset  # type: ignore[no-redef]
     from mutation import (  # type: ignore[no-redef]
@@ -72,6 +81,7 @@ except ImportError:  # pragma: no cover - exercised only by direct execution
     )
     from osc_server import MutationOSCServer  # type: ignore[no-redef]
     from quantize import (  # type: ignore[no-redef]
+        PHASE_BASS,
         PHASE_DRUMS,
         PHASE_GROOVE,
         PHASE_MIDI,
@@ -94,6 +104,8 @@ DRUMS_STATE_ADDRESS = "/ji/drums/state"
 DRUMS_GROOVE_ADDRESS = "/ji/drums/groove"
 DRUMS_GRID_ADDRESS = "/ji/drums/grid"
 QUANTIZE_STATE_ADDRESS = "/ji/quantize/state"
+BASS_STATE_ADDRESS = "/ji/bass/state"
+BASS_NOTE_ADDRESS = "/ji/bass/note"
 MAX_RATIOS = 12
 
 
@@ -152,6 +164,8 @@ class JIBridge:
         ui_port: int = 9001,
         drums: bool = False,
         rhythm_config: str | None = None,
+        bass: bool = False,
+        bass_config: str | None = None,
     ) -> None:
         self.sc_host = str(sc_host)
         self.sc_port = int(sc_port)
@@ -209,6 +223,7 @@ class JIBridge:
             on_drums_step=self._on_drums_step,
             on_drums_seed=self._on_drums_seed,
             on_drums_reset_grid=self._on_drums_reset_grid,
+            on_bass_change=self._on_bass_change,
         )
         # Stage 2 API: this is the glide carried by every subsequent event.
         self.server.set_glide_time(glide_time)
@@ -219,8 +234,9 @@ class JIBridge:
         # default.  Constructing either never imports mido; ports open in
         # MIDIRig.start().
         self.mpe_config = mpe_config
+        self.bass_config = bass_config
         self.midi = None
-        if midi or drums:
+        if midi or drums or bass:
             try:
                 from .midi_rig import MIDIRig
             except ImportError:  # pragma: no cover - direct execution
@@ -234,18 +250,24 @@ class JIBridge:
                     midi=midi,
                     drums=drums,
                     drum_config=rhythm_config,
+                    bass=bass,
+                    bass_config=bass_config,
                 )
             except Exception as exc:
                 if not drums:
                     raise
                 # A bad rhythm config must not take the audio/MIDI rig down.
                 print(
-                    f"[MIDI] drums disabled: {exc}; drone/arp continue",
+                    f"[MIDI] drums disabled: {exc}; drone/arp/bass continue",
                     file=sys.stderr,
                 )
-                self.midi = (
-                    MIDIRig(mpe_config, midi=midi, drums=False) if midi else None
-                )
+                self.midi = MIDIRig(
+                    mpe_config,
+                    midi=midi,
+                    drums=False,
+                    bass=bass,
+                    bass_config=bass_config,
+                ) if (midi or bass) else None
 
         # When drums are configured, their config supplies the initial rhythm
         # defaults (120 BPM, 4/4 by default).  Explicit changes arrive later
@@ -265,6 +287,11 @@ class JIBridge:
             self.groove = Groove(
                 meter_num=state.meter_num, meter_den=state.meter_den
             )
+        # A status payload for the no-bass case, so the GUI always receives a
+        # well-formed /ji/bass/state snapshot.
+        self._bass_default_state = bass_module.BassEngine(
+            bass_module.BassConfig()
+        ).state_args(False)
 
     # ------------------------------------------------------------------
     # Lifecycle / transport
@@ -286,6 +313,7 @@ class JIBridge:
         self.send_set(0.0)
         if self.midi is not None:
             self.midi.start()
+            self._midi_call("set_bass_note_callback", self._on_bass_note)
         self._sync_drums_context()
         # Broadcast the canonical tempo even if the UI was not running when
         # the bridge started.  A control surface installed later asks for a
@@ -296,6 +324,12 @@ class JIBridge:
         self._send_drums_state()
         self._send_groove_state()
         self._send_grid_state()
+        self._send_bass_state()
+        if self._bass_rig() is None:
+            print(
+                "[BASS] not configured; start the bridge with --bass "
+                "(default port IAC Driver Bus 4)"
+            )
         self.quantizer.start()
         self._send_quantize_state()
 
@@ -492,13 +526,14 @@ class JIBridge:
     # ------------------------------------------------------------------
 
     def _on_ui_hello(self) -> None:
-        """Reply to a UI handshake with the full Stage 7/8.2 snapshot."""
+        """Reply to a UI handshake with the full Stage 7/8.1/8.2/8.3a snapshot."""
 
         self._send_ui_state()
         self._send_rhythm_state()
         self._send_drums_state()
         self._send_groove_state()
         self._send_grid_state()
+        self._send_bass_state()
         self._send_quantize_state()
 
     def _drums_snapshot(self) -> tuple[bool, bool, float, int]:
@@ -524,6 +559,43 @@ class JIBridge:
             [int(enabled), int(port_ok), float(rate), int(lane_mask)],
         )
 
+    # -- Stage 8.3a bass status ------------------------------------------
+
+    def _bass_rig(self) -> Any:
+        return getattr(self.midi, "bass", None)
+
+    def _send_bass_state(self) -> None:
+        rig = self._bass_rig()
+        if rig is not None:
+            try:
+                args = rig.state_args()
+            except Exception as exc:  # keep the UI status alive
+                print(f"[BASS] state failed: {exc}", file=sys.stderr)
+                args = self._bass_default_state
+        else:
+            args = self._bass_default_state
+        self._send_ui_message(BASS_STATE_ADDRESS, list(args))
+
+    def _print_bass_state(self) -> None:
+        rig = self._bass_rig()
+        if rig is None:
+            print("[BASS] not configured")
+            return
+        settings = rig.engine.settings
+        print(
+            f"[BASS] enabled={int(settings.enabled)} "
+            f"port_ok={int(rig.port_ok)} preset={settings.preset} "
+            f"grid={settings.grid} pitch={settings.pitch_mode}"
+        )
+
+    def _on_bass_note(
+        self, hz: float, midi_note: int, velocity: int
+    ) -> None:
+        self._send_ui_message(
+            BASS_NOTE_ADDRESS,
+            [float(hz), int(midi_note), int(velocity)],
+        )
+
     def _broadcast_rhythm(self) -> None:
         """Send the canonical tempo/meter/transport to sclang."""
 
@@ -547,6 +619,10 @@ class JIBridge:
         self._midi_call("set_drums_bpm", state.bpm)
         self._midi_call("set_drums_meter", state.meter_num, state.meter_den)
         self._midi_call("set_drums_transport", state.running)
+        # Stage 8.3a: the bass follows the same canonical tempo/meter/transport.
+        self._midi_call("set_bass_bpm", state.bpm)
+        self._midi_call("set_bass_meter", state.meter_num, state.meter_den)
+        self._midi_call("set_bass_transport", state.running)
 
     def _midi_call(self, name: str, *args: Any) -> Any:
         """Call a MIDIRig drum method if the injected rig provides it."""
@@ -569,6 +645,7 @@ class JIBridge:
             print(f"[RHYTHM] invalid tempo: {exc}", file=sys.stderr)
             return
         self._midi_call("set_drums_bpm", state.bpm)
+        self._midi_call("set_bass_bpm", state.bpm)
         # Recompute the pending actions' next beat at the new tempo; never drop
         # them and never apply them immediately just because the tempo moved.
         self.quantizer.tempo_changed()
@@ -605,10 +682,12 @@ class JIBridge:
         else:
             # DrumRig logs the reload; this also replaces manual grid edits.
             self._midi_call("set_drums_meter", state.meter_num, state.meter_den)
+        self._midi_call("set_bass_meter", state.meter_num, state.meter_den)
         self._broadcast_rhythm()
         self._send_rhythm_state()
         self._send_groove_state()
         self._send_grid_state()
+        self._send_bass_state()
         self._print_rhythm()
 
     def _on_rhythm_transport(self, running: bool) -> None:
@@ -621,8 +700,10 @@ class JIBridge:
         # Stopping the scheduler sends note-offs + CC 123; starting it resets
         # to step 0.  Drums run only while the transport is running.
         self._midi_call("set_drums_transport", state.running)
+        self._midi_call("set_bass_transport", state.running)
         self._broadcast_rhythm()
         self._send_rhythm_state()
+        self._send_bass_state()
         self._send_quantize_state()
         self._print_rhythm()
 
@@ -723,6 +804,48 @@ class JIBridge:
             apply,
             phase=PHASE_DRUMS,
             label="drum rate",
+        )
+
+    # -- Stage 8.3a bass requests ----------------------------------------
+
+    def _on_bass_change(self, name: str, value: Any) -> None:
+        """Queue one validated bass setting for the next quarter beat."""
+
+        rig = self._bass_rig()
+        if rig is None or not rig.port_ok:
+            print(
+                "[MIDI] bass unavailable: start the bridge with --bass and a "
+                "configured IAC Driver Bus 4",
+                file=sys.stderr,
+            )
+            self._send_bass_state()
+            return
+        try:
+            # Validate before queueing so a bad value cannot poison the queue.
+            bass_module.BassSettings().with_change(name, value)
+        except (TypeError, ValueError) as exc:
+            print(f"[BASS] invalid {name}: {exc}", file=sys.stderr)
+            self._send_bass_state()
+            return
+
+        def apply() -> None:
+            try:
+                self._midi_call("set_bass_setting", name, value)
+            except (TypeError, ValueError, RuntimeError) as exc:
+                print(f"[BASS] {name} failed: {exc}", file=sys.stderr)
+            self._send_bass_state()
+            self._print_bass_state()
+            if self.rhythm.running:
+                print(
+                    f"[BASS] applied at beat "
+                    f"{int(round(self.rhythm.beat_at()))}"
+                )
+
+        self.quantizer.schedule(
+            ("bass", name),
+            apply,
+            phase=PHASE_BASS,
+            label=f"bass {name}",
         )
 
     # -- Stage 8.2 groove requests ---------------------------------------
@@ -1002,7 +1125,7 @@ def run_interactive(bridge: JIBridge) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Stage 3/6/7/8.1 bridge: mutation engine -> sclang /ji/freqset/update, "
+            "Stage 3/6/7/8.1/8.3a bridge: mutation engine -> sclang /ji/freqset/update, "
             "optional MPE MIDI rig, drum output, rhythm state, and UI status"
         )
     )
@@ -1081,6 +1204,23 @@ def build_parser() -> argparse.ArgumentParser:
             "(default: config/rhythm_config.json next to the project)"
         ),
     )
+    parser.add_argument(
+        "--bass",
+        action="store_true",
+        help=(
+            "enable the Stage 8.3a monophonic bass MIDI output on "
+            "IAC Driver Bus 4 (default: off; works with or without "
+            "--midi/--drums)"
+        ),
+    )
+    parser.add_argument(
+        "--bass-config",
+        default=None,
+        help=(
+            "bass config path "
+            "(default: config/bass_config.json next to the project)"
+        ),
+    )
     return parser
 
 
@@ -1123,6 +1263,8 @@ def main(argv: list[str] | None = None) -> int:
         mpe_config=args.mpe_config,
         drums=args.drums,
         rhythm_config=args.rhythm_config,
+        bass=args.bass,
+        bass_config=args.bass_config,
         ui_host=args.ui_host,
         ui_port=args.ui_port,
     )

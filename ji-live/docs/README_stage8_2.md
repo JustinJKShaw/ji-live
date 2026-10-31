@@ -35,8 +35,9 @@ found during this check and fixed in 8.2.2 (`action.value(index)`); the owner
 re-tested beat-mode Record/Play successfully. Human acceptance is the
 authority; no further agent audio/MIDI claims are made.
 
-**Next:** Stage 8.3a is the monophonic JI bass voice; the agent prompt is
-[PROMPT_stage8_3_bass.md](prompts/PROMPT_stage8_3_bass.md).
+**Next:** Stage 8.3a is the monophonic JI bass voice. It is implemented and
+awaiting human acceptance; see [README_stage8_3.md](README_stage8_3.md). The
+agent prompt is [PROMPT_stage8_3_bass.md](prompts/PROMPT_stage8_3_bass.md).
 
 ---
 
@@ -80,7 +81,6 @@ automation.
 | `ui/osc_control.py` | modified additively | builders, parsers, `GrooveStatus`, `QuantizeStatus`, store fields |
 | `ui/ji_ui.py` | modified additively | Groove group, lazy step grid, pending line |
 | `ui/control_surface.scd` | bug fix | beat-mode scheduled actions receive the loop index |
-| `ui/control_surface_8.2.2_patch.scd` | new (optional) | standalone live patch for `~ji_schedule_loop_action` |
 | `config/rhythm_config.json` | modified additively | nested `groove` defaults |
 | `tests/test_groove.py` | new | preset/grid/modifier/seeded generation tests |
 | `tests/test_quantize.py` | new | queue/coalescing/flush/order/thread tests |
@@ -250,9 +250,9 @@ delayed by `swing * 0.5 * step_seconds`; swing 0 = straight, swing 1 = half a
 step late. There is no triplet subdivision. The drum scheduler advances its
 nominal deadline by exactly one step, so swing does not drift and never fires a
 step early; if the thread falls behind it resumes from `now` instead of bursting
-through missed steps. At the extreme `swing = 1` an odd step lands on the next
-even step's grid position; that coincidence is the documented maximum, not a
-triplet feel.
+through missed steps. At the extreme `swing = 1` an odd step lands halfway
+between its nominal position and the following even step (a 32nd-note
+displacement); that is the documented maximum, not a triplet shuffle.
 
 ### 4.6 Seed and reproducibility
 
@@ -365,12 +365,9 @@ scheduled action as `action.value` with **no argument**. The beat-mode actions
 nothing. Free loops bypassed the scheduler and worked, which made the failure
 look like "synced Rec does nothing".
 
-A standalone live patch is included at
-`ui/control_surface_8.2.2_patch.scd`; evaluate it after the control surface and
-it redefines only `~ji_schedule_loop_action` (no mode/length/buffer reset). The
-fix itself is one line: `action.value(index)`. Re-evaluate `ui/control_surface.scd`
-in sclang after evaluating the live rig. The install line now includes a version
-marker:
+The fix itself is one line: `action.value(index)`. Re-evaluate
+`ui/control_surface.scd` in sclang after evaluating the live rig. The install
+line now includes a version marker:
 
 ```text
 [UI] control surface 8.2.2 installed -> 127.0.0.1:9001; autotune + loop + rhythm + status OSC ready

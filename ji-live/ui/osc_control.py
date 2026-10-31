@@ -79,6 +79,28 @@ DRUMS_GROOVE = "/ji/drums/groove"
 DRUMS_GRID = "/ji/drums/grid"
 QUANTIZE_STATE = "/ji/quantize/state"
 
+# Stage 8.3a bass controls and status.
+BASS_SET_ENABLED = "/ji/bass/set_enabled"
+BASS_SET_PRESET = "/ji/bass/set_preset"
+BASS_SET_GRID = "/ji/bass/set_grid"
+BASS_SET_LENGTH = "/ji/bass/set_length"
+BASS_SET_DENSITY = "/ji/bass/set_density"
+BASS_SET_SYNCOPATION = "/ji/bass/set_syncopation"
+BASS_SET_SWING = "/ji/bass/set_swing"
+BASS_SET_GATE = "/ji/bass/set_gate"
+BASS_SET_ACCENT = "/ji/bass/set_accent"
+BASS_SET_ROOT_DOWNBEAT = "/ji/bass/set_root_downbeat"
+BASS_SET_PITCH_MODE = "/ji/bass/set_pitch_mode"
+BASS_SET_MOVEMENT = "/ji/bass/set_movement"
+BASS_SET_OCTAVE_RANGE = "/ji/bass/set_octave_range"
+BASS_SET_OCTAVE_JUMP = "/ji/bass/set_octave_jump"
+BASS_SET_BASE_OCTAVE = "/ji/bass/set_base_octave"
+BASS_SET_SEED = "/ji/bass/set_seed"
+BASS_SET_SUB_ENABLED = "/ji/bass/set_sub_enabled"
+BASS_SET_SUB_OCTAVES = "/ji/bass/set_sub_octaves"
+BASS_STATE = "/ji/bass/state"
+BASS_NOTE = "/ji/bass/note"
+
 AUTOTUNE_SET = "/ji/autotune/set"
 AUTOTUNE_STATE = "/ji/autotune/state"
 
@@ -109,6 +131,8 @@ STATUS_ADDRESSES = (
     DRUMS_GROOVE,
     DRUMS_GRID,
     QUANTIZE_STATE,
+    BASS_STATE,
+    BASS_NOTE,
     CPU,
     LOOP_STATE,
     LOOP_CONFIG,
@@ -184,6 +208,46 @@ GROOVE_DEFAULT_PROBABILITY = 0.0
 GROOVE_DEFAULT_SEED = 1
 GROOVE_SEED_MAX = 2**31 - 1
 MAX_GRID_STEPS = 32
+
+# Stage 8.3a bass ranges/defaults.  Mirrors control/bass.py without importing
+# the control package (the pure UI layer stays standalone).
+BASS_PRESETS: tuple[str, ...] = ("pulse", "techno", "chaos")
+BASS_PRESET_CUSTOM = "custom"
+BASS_PRESET_DISPLAY: tuple[str, ...] = (*BASS_PRESETS, BASS_PRESET_CUSTOM)
+BASS_GRIDS: tuple[str, ...] = ("1/4", "1/8", "1/16")
+BASS_GRID_STEPS: dict[str, int] = {"1/4": 1, "1/8": 2, "1/16": 4}
+BASS_PITCH_MODES: tuple[str, ...] = (
+    "root",
+    "anchor",
+    "walk",
+    "random",
+    "cycle",
+)
+BASS_DEFAULT_ENABLED = False
+BASS_DEFAULT_PRESET = "pulse"
+BASS_DEFAULT_GRID = "1/4"
+BASS_DEFAULT_DENSITY = 0.0
+BASS_DEFAULT_SYNCOPATION = 0.0
+BASS_DEFAULT_SWING = 0.0
+BASS_DEFAULT_GATE_BEATS = 3.5
+BASS_DEFAULT_ACCENT = 0.0
+BASS_DEFAULT_ROOT_DOWNBEAT = True
+BASS_DEFAULT_PITCH_MODE = "root"
+BASS_DEFAULT_MOVEMENT = 0.0
+BASS_DEFAULT_OCTAVE_RANGE = 0
+BASS_DEFAULT_OCTAVE_JUMP = 0.0
+BASS_DEFAULT_BASE_OCTAVE = -2
+BASS_DEFAULT_SEED = 1
+BASS_LENGTH_MIN = 1
+BASS_LENGTH_MAX = 32
+BASS_GATE_MIN = 0.05
+BASS_GATE_MAX = 8.0
+BASS_OCTAVE_RANGE_MIN = 0
+BASS_OCTAVE_RANGE_MAX = 3
+BASS_BASE_OCTAVE_MIN = -3
+BASS_BASE_OCTAVE_MAX = 0
+BASS_SUB_OCTAVES: tuple[int, ...] = (1, 2)
+BASS_SEED_MAX = 2**31 - 1
 
 
 
@@ -295,6 +359,76 @@ GROOVE_PARAMS: tuple[ParamSpec, ...] = (
 )
 GROOVE_PARAM_MAP: dict[str, ParamSpec] = {
     spec.key: spec for spec in GROOVE_PARAMS
+}
+
+BASS_PARAMS: tuple[ParamSpec, ...] = (
+    ParamSpec(
+        "density", "Bass density", BASS_SET_DENSITY, 0.0, 1.0, BASS_DEFAULT_DENSITY
+    ),
+    ParamSpec(
+        "syncopation",
+        "Bass sync",
+        BASS_SET_SYNCOPATION,
+        0.0,
+        1.0,
+        BASS_DEFAULT_SYNCOPATION,
+    ),
+    ParamSpec(
+        "swing", "Bass swing", BASS_SET_SWING, 0.0, 1.0, BASS_DEFAULT_SWING
+    ),
+    ParamSpec(
+        "gate_beats",
+        "Gate",
+        BASS_SET_GATE,
+        BASS_GATE_MIN,
+        BASS_GATE_MAX,
+        BASS_DEFAULT_GATE_BEATS,
+        fmt="{:.2f}",
+        suffix=" b",
+    ),
+    ParamSpec(
+        "accent", "Accent", BASS_SET_ACCENT, 0.0, 1.0, BASS_DEFAULT_ACCENT
+    ),
+    ParamSpec(
+        "movement",
+        "Movement",
+        BASS_SET_MOVEMENT,
+        0.0,
+        1.0,
+        BASS_DEFAULT_MOVEMENT,
+    ),
+    ParamSpec(
+        "octave_jump",
+        "Oct jump",
+        BASS_SET_OCTAVE_JUMP,
+        0.0,
+        1.0,
+        BASS_DEFAULT_OCTAVE_JUMP,
+    ),
+)
+BASS_PARAM_MAP: dict[str, ParamSpec] = {
+    spec.key: spec for spec in BASS_PARAMS
+}
+
+BASS_SETTING_ADDRESSES: dict[str, str] = {
+    "enabled": BASS_SET_ENABLED,
+    "preset": BASS_SET_PRESET,
+    "grid": BASS_SET_GRID,
+    "length_steps": BASS_SET_LENGTH,
+    "density": BASS_SET_DENSITY,
+    "syncopation": BASS_SET_SYNCOPATION,
+    "swing": BASS_SET_SWING,
+    "gate_beats": BASS_SET_GATE,
+    "accent": BASS_SET_ACCENT,
+    "root_downbeat": BASS_SET_ROOT_DOWNBEAT,
+    "pitch_mode": BASS_SET_PITCH_MODE,
+    "movement": BASS_SET_MOVEMENT,
+    "octave_range": BASS_SET_OCTAVE_RANGE,
+    "octave_jump": BASS_SET_OCTAVE_JUMP,
+    "base_octave": BASS_SET_BASE_OCTAVE,
+    "seed": BASS_SET_SEED,
+    "sub_enabled": BASS_SET_SUB_ENABLED,
+    "sub_octaves": BASS_SET_SUB_OCTAVES,
 }
 
 AUTOTUNE_PARAMS: tuple[ParamSpec, ...] = (
@@ -450,6 +584,63 @@ def _validate_grid_step(value: Any) -> int:
 
 def _validate_seed(value: Any) -> int:
     return clamp_int(value, 0, GROOVE_SEED_MAX)
+
+
+def _validate_bass_preset(value: Any) -> str:
+    preset = str(value).strip().lower()
+    if preset not in BASS_PRESETS:
+        raise ValueError(
+            "bass preset must be one of " + ", ".join(BASS_PRESETS)
+        )
+    return preset
+
+
+def _validate_bass_grid(value: Any) -> str:
+    grid = str(value).strip()
+    if grid not in BASS_GRID_STEPS:
+        raise ValueError(
+            "bass grid must be one of " + ", ".join(BASS_GRIDS)
+        )
+    return grid
+
+
+def _validate_bass_pitch_mode(value: Any) -> str:
+    mode = str(value).strip().lower()
+    if mode not in BASS_PITCH_MODES:
+        raise ValueError(
+            "bass pitch mode must be one of " + ", ".join(BASS_PITCH_MODES)
+        )
+    return mode
+
+
+def _validate_bass_length(value: Any) -> int:
+    return clamp_int(value, BASS_LENGTH_MIN, BASS_LENGTH_MAX)
+
+
+def _validate_bass_gate(value: Any) -> float:
+    return clamp(
+        _as_finite_float(value, "bass gate"), BASS_GATE_MIN, BASS_GATE_MAX
+    )
+
+
+def _validate_bass_octave_range(value: Any) -> int:
+    return clamp_int(value, BASS_OCTAVE_RANGE_MIN, BASS_OCTAVE_RANGE_MAX)
+
+
+def _validate_bass_base_octave(value: Any) -> int:
+    return clamp_int(value, BASS_BASE_OCTAVE_MIN, BASS_BASE_OCTAVE_MAX)
+
+
+def _validate_bass_seed(value: Any) -> int:
+    return clamp_int(value, 0, BASS_SEED_MAX)
+
+
+def _validate_bass_sub_octaves(value: Any) -> int:
+    numeric = _as_finite_float(value, "sub octaves")
+    octaves = int(round(numeric))
+    if octaves not in BASS_SUB_OCTAVES:
+        raise ValueError("sub octaves must be 1 or 2")
+    return octaves
 
 
 def grid_steps_for_meter(numerator: Any, denominator: Any) -> int:
@@ -713,6 +904,89 @@ def build_reset_drum_grid() -> tuple[str, list[Any]]:
     return DRUMS_RESET_GRID, []
 
 
+# ---------------------------------------------------------------------------
+# Stage 8.3a bass builders
+# ---------------------------------------------------------------------------
+
+
+def build_set_bass_setting(name: Any, value: Any) -> tuple[str, list[Any]]:
+    """Build one ``/ji/bass/set_*`` message with a validated argument."""
+
+    key = str(name).strip().lower()
+    address = BASS_SETTING_ADDRESSES.get(key)
+    if address is None:
+        raise ValueError(f"unknown bass setting {name!r}")
+    if key in ("enabled", "root_downbeat", "sub_enabled"):
+        return address, [1 if bool(value) else 0]
+    if key == "preset":
+        return address, [_validate_bass_preset(value)]
+    if key == "grid":
+        return address, [_validate_bass_grid(value)]
+    if key == "pitch_mode":
+        return address, [_validate_bass_pitch_mode(value)]
+    if key == "length_steps":
+        return address, [int(_validate_bass_length(value))]
+    if key == "seed":
+        return address, [int(_validate_bass_seed(value))]
+    if key == "octave_range":
+        return address, [int(_validate_bass_octave_range(value))]
+    if key == "base_octave":
+        return address, [int(_validate_bass_base_octave(value))]
+    if key == "sub_octaves":
+        return address, [int(_validate_bass_sub_octaves(value))]
+    if key == "gate_beats":
+        return address, [float(_validate_bass_gate(value))]
+    return address, [float(_validate_unit(value, key))]
+
+
+def build_set_bass_enabled(enabled: Any) -> tuple[str, list[Any]]:
+    return build_set_bass_setting("enabled", enabled)
+
+
+def build_set_bass_preset(preset: Any) -> tuple[str, list[Any]]:
+    return build_set_bass_setting("preset", preset)
+
+
+def build_set_bass_grid(grid: Any) -> tuple[str, list[Any]]:
+    return build_set_bass_setting("grid", grid)
+
+
+def build_set_bass_length(steps: Any) -> tuple[str, list[Any]]:
+    return build_set_bass_setting("length_steps", steps)
+
+
+def build_set_bass_param(param: Any, value: Any) -> tuple[str, list[Any]]:
+    return build_set_bass_setting(param, value)
+
+
+def build_set_bass_pitch_mode(mode: Any) -> tuple[str, list[Any]]:
+    return build_set_bass_setting("pitch_mode", mode)
+
+
+def build_set_bass_root_downbeat(enabled: Any) -> tuple[str, list[Any]]:
+    return build_set_bass_setting("root_downbeat", enabled)
+
+
+def build_set_bass_octave_range(value: Any) -> tuple[str, list[Any]]:
+    return build_set_bass_setting("octave_range", value)
+
+
+def build_set_bass_base_octave(value: Any) -> tuple[str, list[Any]]:
+    return build_set_bass_setting("base_octave", value)
+
+
+def build_set_bass_seed(seed: Any) -> tuple[str, list[Any]]:
+    return build_set_bass_setting("seed", seed)
+
+
+def build_set_bass_sub_enabled(enabled: Any) -> tuple[str, list[Any]]:
+    return build_set_bass_setting("sub_enabled", enabled)
+
+
+def build_set_bass_sub_octaves(value: Any) -> tuple[str, list[Any]]:
+    return build_set_bass_setting("sub_octaves", value)
+
+
 def build_loop_set_mode(index: Any, mode: Any) -> tuple[str, list[Any]]:
     return LOOP_SET_MODE, [_validate_index(index), str(_validate_loop_mode(mode))]
 
@@ -849,6 +1123,55 @@ class QuantizeStatus:
         """True when the transport is stopped / the queue is offline."""
 
         return self.seconds < 0.0
+
+
+@dataclass(frozen=True)
+class BassStatus:
+    """``/ji/bass/state`` snapshot (20 fields, Stage 8.3a order)."""
+
+    enabled: bool
+    port_ok: bool
+    preset: str
+    grid: str
+    length_steps: int
+    density: float
+    syncopation: float
+    swing: float
+    gate_beats: float
+    accent: float
+    pitch_mode: str
+    movement: float
+    octave_range: int
+    octave_jump: float
+    seed: int
+    base_octave: int
+    sub_enabled: bool
+    sub_octaves: int
+    main_channel: int
+    sub_channel: int
+
+    @property
+    def available(self) -> bool:
+        return self.port_ok
+
+    @property
+    def steps_per_beat(self) -> int:
+        return BASS_GRID_STEPS.get(self.grid, 1)
+
+
+@dataclass(frozen=True)
+class BassNoteStatus:
+    """``/ji/bass/note`` snapshot: the last triggered bass note."""
+
+    hz: float
+    midi_note: int
+    velocity: int
+
+    @property
+    def note_name(self) -> str:
+        names = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
+        note = max(0, min(127, int(self.midi_note)))
+        return f"{names[note % 12]}{note // 12 - 1}"
 
 
 @dataclass(frozen=True)
@@ -1027,6 +1350,59 @@ def parse_quantize(args: Sequence[Any]) -> QuantizeStatus:
     return QuantizeStatus(pending=pending, seconds=max(0.0, seconds))
 
 
+def parse_bass_state(args: Sequence[Any]) -> BassStatus:
+    """Parse the 20-argument ``/ji/bass/state`` payload."""
+
+    if len(args) != 20:
+        raise ValueError(
+            "bass state needs 20 values: enabled, port_ok, preset, grid, "
+            "length_steps, density, syncopation, swing, gate_beats, accent, "
+            "pitch_mode, movement, octave_range, octave_jump, seed, "
+            "base_octave, sub_enabled, sub_octaves, main_channel, sub_channel"
+        )
+    return BassStatus(
+        enabled=_to_bool(args[0], "bass enabled"),
+        port_ok=_to_bool(args[1], "bass port_ok"),
+        preset=(
+            BASS_PRESET_CUSTOM
+            if str(args[2]).strip().lower() == BASS_PRESET_CUSTOM
+            else _validate_bass_preset(args[2])
+        ),
+        grid=_validate_bass_grid(args[3]),
+        length_steps=_validate_bass_length(args[4]),
+        density=_validate_unit(args[5], "bass density"),
+        syncopation=_validate_unit(args[6], "bass syncopation"),
+        swing=_validate_unit(args[7], "bass swing"),
+        gate_beats=_validate_bass_gate(args[8]),
+        accent=_validate_unit(args[9], "bass accent"),
+        pitch_mode=_validate_bass_pitch_mode(args[10]),
+        movement=_validate_unit(args[11], "bass movement"),
+        octave_range=_validate_bass_octave_range(args[12]),
+        octave_jump=_validate_unit(args[13], "bass octave_jump"),
+        seed=_validate_bass_seed(args[14]),
+        base_octave=_validate_bass_base_octave(args[15]),
+        sub_enabled=_to_bool(args[16], "bass sub_enabled"),
+        sub_octaves=_validate_bass_sub_octaves(args[17]),
+        main_channel=clamp_int(args[18], 1, 16),
+        sub_channel=clamp_int(args[19], 1, 16),
+    )
+
+
+def parse_bass_note(args: Sequence[Any]) -> BassNoteStatus:
+    """Parse ``[hz, midi_note, velocity]`` from ``/ji/bass/note``."""
+
+    if len(args) != 3:
+        raise ValueError("bass note needs hz, midi_note, velocity")
+    hz = _as_finite_float(args[0], "bass note hz")
+    if hz <= 0.0:
+        raise ValueError("bass note hz must be strictly positive")
+    return BassNoteStatus(
+        hz=hz,
+        midi_note=clamp_int(args[1], 0, 127),
+        velocity=clamp_int(args[2], 0, 127),
+    )
+
+
 def parse_loop_config(args: Sequence[Any]) -> tuple[int, LoopConfig]:
     """Parse ``[index, mode, beats, seconds]``."""
 
@@ -1087,6 +1463,8 @@ STATUS_PARSERS: dict[str, Callable[[Sequence[Any]], Any]] = {
     DRUMS_GROOVE: parse_groove,
     DRUMS_GRID: parse_grid,
     QUANTIZE_STATE: parse_quantize,
+    BASS_STATE: parse_bass_state,
+    BASS_NOTE: parse_bass_note,
     CPU: parse_cpu,
     LOOP_STATE: parse_loop_state,
     LOOP_CONFIG: parse_loop_config,
@@ -1111,6 +1489,8 @@ class StatusStore:
         self.groove: GrooveStatus | None = None
         self.grid: tuple[int, ...] | None = None
         self.quantize: QuantizeStatus | None = None
+        self.bass: BassStatus | None = None
+        self.bass_note: BassNoteStatus | None = None
         self.cpu: float | None = None
         self.loop_states: dict[int, str] = {
             index: "waiting" for index in range(LOOP_INDEX_MIN, LOOP_INDEX_MAX + 1)
@@ -1178,6 +1558,12 @@ class StatusStore:
             self.bridge_seen = True
         elif address == QUANTIZE_STATE:
             self.quantize = parsed
+            self.bridge_seen = True
+        elif address == BASS_STATE:
+            self.bass = parsed
+            self.bridge_seen = True
+        elif address == BASS_NOTE:
+            self.bass_note = parsed
             self.bridge_seen = True
         elif address == CPU:
             self.cpu = parsed
@@ -1523,6 +1909,77 @@ class OSCController:
         self._send_bridge(*message)
         return message
 
+    # -- Stage 8.3a bass ------------------------------------------------
+
+    def set_bass_setting(
+        self, name: Any, value: Any
+    ) -> tuple[str, list[Any]]:
+        message = build_set_bass_setting(name, value)
+        self._send_bridge(*message)
+        return message
+
+    def set_bass_enabled(self, enabled: Any) -> tuple[str, list[Any]]:
+        message = build_set_bass_enabled(enabled)
+        self._send_bridge(*message)
+        return message
+
+    def set_bass_preset(self, preset: Any) -> tuple[str, list[Any]]:
+        message = build_set_bass_preset(preset)
+        self._send_bridge(*message)
+        return message
+
+    def set_bass_grid(self, grid: Any) -> tuple[str, list[Any]]:
+        message = build_set_bass_grid(grid)
+        self._send_bridge(*message)
+        return message
+
+    def set_bass_length(self, steps: Any) -> tuple[str, list[Any]]:
+        message = build_set_bass_length(steps)
+        self._send_bridge(*message)
+        return message
+
+    def set_bass_param(
+        self, param: Any, value: Any
+    ) -> tuple[str, list[Any]]:
+        message = build_set_bass_param(param, value)
+        self._send_bridge(*message)
+        return message
+
+    def set_bass_pitch_mode(self, mode: Any) -> tuple[str, list[Any]]:
+        message = build_set_bass_pitch_mode(mode)
+        self._send_bridge(*message)
+        return message
+
+    def set_bass_root_downbeat(self, enabled: Any) -> tuple[str, list[Any]]:
+        message = build_set_bass_root_downbeat(enabled)
+        self._send_bridge(*message)
+        return message
+
+    def set_bass_octave_range(self, value: Any) -> tuple[str, list[Any]]:
+        message = build_set_bass_octave_range(value)
+        self._send_bridge(*message)
+        return message
+
+    def set_bass_base_octave(self, value: Any) -> tuple[str, list[Any]]:
+        message = build_set_bass_base_octave(value)
+        self._send_bridge(*message)
+        return message
+
+    def set_bass_seed(self, seed: Any) -> tuple[str, list[Any]]:
+        message = build_set_bass_seed(seed)
+        self._send_bridge(*message)
+        return message
+
+    def set_bass_sub_enabled(self, enabled: Any) -> tuple[str, list[Any]]:
+        message = build_set_bass_sub_enabled(enabled)
+        self._send_bridge(*message)
+        return message
+
+    def set_bass_sub_octaves(self, value: Any) -> tuple[str, list[Any]]:
+        message = build_set_bass_sub_octaves(value)
+        self._send_bridge(*message)
+        return message
+
     def loop_record(
         self, index: Any, seconds: float | None = None
     ) -> tuple[str, list[Any]]:
@@ -1682,4 +2139,55 @@ __all__ = ["AUTOTUNE_PARAMS",
     "parse_grid",
     "parse_groove",
     "parse_quantize",
+    "BASS_BASE_OCTAVE_MAX",
+    "BASS_BASE_OCTAVE_MIN",
+    "BASS_DEFAULT_ACCENT",
+    "BASS_DEFAULT_BASE_OCTAVE",
+    "BASS_DEFAULT_DENSITY",
+    "BASS_DEFAULT_ENABLED",
+    "BASS_DEFAULT_GATE_BEATS",
+    "BASS_DEFAULT_GRID",
+    "BASS_DEFAULT_MOVEMENT",
+    "BASS_DEFAULT_OCTAVE_JUMP",
+    "BASS_DEFAULT_OCTAVE_RANGE",
+    "BASS_DEFAULT_PITCH_MODE",
+    "BASS_DEFAULT_PRESET",
+    "BASS_DEFAULT_ROOT_DOWNBEAT",
+    "BASS_DEFAULT_SEED",
+    "BASS_DEFAULT_SYNCOPATION",
+    "BASS_DEFAULT_SWING",
+    "BASS_GATE_MAX",
+    "BASS_GATE_MIN",
+    "BASS_GRIDS",
+    "BASS_GRID_STEPS",
+    "BASS_LENGTH_MAX",
+    "BASS_LENGTH_MIN",
+    "BASS_OCTAVE_RANGE_MAX",
+    "BASS_OCTAVE_RANGE_MIN",
+    "BASS_PARAMS",
+    "BASS_PARAM_MAP",
+    "BASS_PITCH_MODES",
+    "BASS_PRESETS",
+    "BASS_PRESET_CUSTOM",
+    "BASS_PRESET_DISPLAY",
+    "BASS_SEED_MAX",
+    "BASS_SETTING_ADDRESSES",
+    "BASS_SUB_OCTAVES",
+    "BassNoteStatus",
+    "BassStatus",
+    "build_set_bass_base_octave",
+    "build_set_bass_enabled",
+    "build_set_bass_grid",
+    "build_set_bass_length",
+    "build_set_bass_octave_range",
+    "build_set_bass_param",
+    "build_set_bass_pitch_mode",
+    "build_set_bass_preset",
+    "build_set_bass_root_downbeat",
+    "build_set_bass_seed",
+    "build_set_bass_setting",
+    "build_set_bass_sub_enabled",
+    "build_set_bass_sub_octaves",
+    "parse_bass_note",
+    "parse_bass_state",
 ]

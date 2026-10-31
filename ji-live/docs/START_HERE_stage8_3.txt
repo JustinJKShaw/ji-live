@@ -1,0 +1,49 @@
+JI STATION - STAGE 8.3a - MONOPHONIC BASS - START TO FINISH
+Run all bash commands from the ji-live folder.
+
+ONE TIME
+1. Audio MIDI Setup > IAC Driver: add/rename a bus exactly
+   "IAC Driver Bus 4" (or edit config/bass_config.json to another bus).
+2. Ableton: MIDI track "Bass" from "IAC Driver Bus 4", channel 2.
+   Optional MIDI track "Sub" from the same bus, channel 3.
+3. Set both instruments' pitch-bend range to 2 semitones (plain MIDI,
+   not the 48-semitone MPE setting).
+4. Do NOT change config/bass_config.json unless you want different
+   defaults. The shipped block is pulse, 1/4 grid, density 0, gate 3.5
+   beats, root pitch, base octave -2, seed 1.
+
+EVERY RUN - in this order
+1. sclang: evaluate startup.scd
+2. sclang: evaluate tests/sc/test_live_rig.scd
+3. bash terminal 1 (leave running):
+   uv run --with python-osc --with mido --with python-rtmidi python control/ji_bridge.py --interactive --midi --drums --bass --glide-time 0.15
+   (bass only also works: add --bass and leave out --midi/--drums)
+4. sclang: evaluate ui/control_surface.scd
+5. bash terminal 2 (leave running):
+   uv run --with python-osc --with PyQt6 python ui/ji_ui.py
+6. In the GUI: Rhythm > Play, then Bass > Bass on, then pick a preset.
+   - pulse: downbeat fundamental pulses.
+   - techno: moving walk line; raise Density/Probability-like movement.
+   - chaos: wide seeded octave movement.
+   - Bass changes are queued to the next quarter-note beat while Play
+     is running; stop the transport to make them immediate.
+   - Show the last note/HZ in the Bass status line.
+
+QUICK CHECK
+- Bridge log should show:
+  [BASS] port=IAC Driver Bus 4 ch=2 sub_ch=3 bend=2
+  [BASS] preset=pulse grid=1/4 density=0.00 sync=0.00 swing=0.00 gate=3.500 beats pitch=root movement=0.00 octaves=0 seed=1
+- With Play running, changing a bass setting logs:
+  [QUANT] queued bass <setting> (1 pending) due beat N (...)
+  and applies at the beat.
+- The first note after a change logs:
+  [BASS] note ratio=... hz=... midi=... bend=...
+- If the bass is disabled, check Bus 4 and the bridge warning:
+  [MIDI] bass disabled: ...; drone/arp/drums continue
+- Sub plays one/two octaves below on channel 3; below MIDI note 0 it is
+  skipped rather than transposed up.
+
+STOP
+- Close the GUI (the rig keeps running).
+- Bridge terminal: Ctrl+C.
+- sclang: ~ji_stop_all.();

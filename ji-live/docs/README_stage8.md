@@ -12,7 +12,9 @@ the Stage 6 drone/arp, the Stage 7 GUI controls, or `/ji/freqset/update`.
 
 **Next:** Stage 8.2 (groove generation, per-step grid, swing, probability,
 and beat-quantized state changes) is human-accepted; see
-[README_stage8_2.md](README_stage8_2.md). Stage 8.3a is the bass voice.
+[README_stage8_2.md](README_stage8_2.md). Stage 8.3a is the bass voice,
+implemented and awaiting human acceptance; see
+[README_stage8_3.md](README_stage8_3.md).
 
 ---
 
@@ -508,7 +510,8 @@ Verified in the agent environment:
 
 Not verified by the agent: audio, MIDI, IAC Bus 3, Ableton, the drum rack,
 `TempoClock` quantization, loop phasing, GUI behavior on the human's machine,
-and the human listening test. **Stage 8.1 awaits human acceptance.**
+and the human listening test. Those were subsequently confirmed by the owner
+on 2026-10-31 (Stage 8.1 acceptance, re-checked during the Stage 8.2 run).
 
 ---
 

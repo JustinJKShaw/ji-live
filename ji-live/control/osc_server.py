@@ -38,9 +38,10 @@ from pythonosc.dispatcher import Dispatcher
 from pythonosc.osc_server import ThreadingOSCUDPServer
 
 try:  # Support both ``python -m control.osc_server`` and direct execution.
-    from . import groove, rhythm
+    from . import bass, groove, rhythm
     from .mutation import MutationBatch, MutationEngine, MutationEvent, OctaveEvent
 except ImportError:  # pragma: no cover - exercised only by direct execution
+    import bass  # type: ignore[no-redef]
     import groove  # type: ignore[no-redef]
     import rhythm  # type: ignore[no-redef]
     from mutation import (  # type: ignore[no-redef]
@@ -72,6 +73,26 @@ DRUMS_SET_PROBABILITY_ADDRESS = "/ji/drums/set_probability"
 DRUMS_SET_STEP_ADDRESS = "/ji/drums/set_step"
 DRUMS_SET_SEED_ADDRESS = "/ji/drums/set_seed"
 DRUMS_RESET_GRID_ADDRESS = "/ji/drums/reset_grid"
+# Stage 8.3a bass controls (UI -> Bridge).  Quantization is the bridge's job;
+# handlers validate and pass ``(setting_name, value)`` to the bridge.
+BASS_SET_ENABLED_ADDRESS = "/ji/bass/set_enabled"
+BASS_SET_PRESET_ADDRESS = "/ji/bass/set_preset"
+BASS_SET_GRID_ADDRESS = "/ji/bass/set_grid"
+BASS_SET_LENGTH_ADDRESS = "/ji/bass/set_length"
+BASS_SET_DENSITY_ADDRESS = "/ji/bass/set_density"
+BASS_SET_SYNCOPATION_ADDRESS = "/ji/bass/set_syncopation"
+BASS_SET_SWING_ADDRESS = "/ji/bass/set_swing"
+BASS_SET_GATE_ADDRESS = "/ji/bass/set_gate"
+BASS_SET_ACCENT_ADDRESS = "/ji/bass/set_accent"
+BASS_SET_ROOT_DOWNBEAT_ADDRESS = "/ji/bass/set_root_downbeat"
+BASS_SET_PITCH_MODE_ADDRESS = "/ji/bass/set_pitch_mode"
+BASS_SET_MOVEMENT_ADDRESS = "/ji/bass/set_movement"
+BASS_SET_OCTAVE_RANGE_ADDRESS = "/ji/bass/set_octave_range"
+BASS_SET_OCTAVE_JUMP_ADDRESS = "/ji/bass/set_octave_jump"
+BASS_SET_BASE_OCTAVE_ADDRESS = "/ji/bass/set_base_octave"
+BASS_SET_SEED_ADDRESS = "/ji/bass/set_seed"
+BASS_SET_SUB_ENABLED_ADDRESS = "/ji/bass/set_sub_enabled"
+BASS_SET_SUB_OCTAVES_ADDRESS = "/ji/bass/set_sub_octaves"
 
 
 class MutationOSCServer:
@@ -103,6 +124,24 @@ class MutationOSCServer:
     DRUMS_SET_STEP_ADDRESS = DRUMS_SET_STEP_ADDRESS
     DRUMS_SET_SEED_ADDRESS = DRUMS_SET_SEED_ADDRESS
     DRUMS_RESET_GRID_ADDRESS = DRUMS_RESET_GRID_ADDRESS
+    BASS_SET_ENABLED_ADDRESS = BASS_SET_ENABLED_ADDRESS
+    BASS_SET_PRESET_ADDRESS = BASS_SET_PRESET_ADDRESS
+    BASS_SET_GRID_ADDRESS = BASS_SET_GRID_ADDRESS
+    BASS_SET_LENGTH_ADDRESS = BASS_SET_LENGTH_ADDRESS
+    BASS_SET_DENSITY_ADDRESS = BASS_SET_DENSITY_ADDRESS
+    BASS_SET_SYNCOPATION_ADDRESS = BASS_SET_SYNCOPATION_ADDRESS
+    BASS_SET_SWING_ADDRESS = BASS_SET_SWING_ADDRESS
+    BASS_SET_GATE_ADDRESS = BASS_SET_GATE_ADDRESS
+    BASS_SET_ACCENT_ADDRESS = BASS_SET_ACCENT_ADDRESS
+    BASS_SET_ROOT_DOWNBEAT_ADDRESS = BASS_SET_ROOT_DOWNBEAT_ADDRESS
+    BASS_SET_PITCH_MODE_ADDRESS = BASS_SET_PITCH_MODE_ADDRESS
+    BASS_SET_MOVEMENT_ADDRESS = BASS_SET_MOVEMENT_ADDRESS
+    BASS_SET_OCTAVE_RANGE_ADDRESS = BASS_SET_OCTAVE_RANGE_ADDRESS
+    BASS_SET_OCTAVE_JUMP_ADDRESS = BASS_SET_OCTAVE_JUMP_ADDRESS
+    BASS_SET_BASE_OCTAVE_ADDRESS = BASS_SET_BASE_OCTAVE_ADDRESS
+    BASS_SET_SEED_ADDRESS = BASS_SET_SEED_ADDRESS
+    BASS_SET_SUB_ENABLED_ADDRESS = BASS_SET_SUB_ENABLED_ADDRESS
+    BASS_SET_SUB_OCTAVES_ADDRESS = BASS_SET_SUB_OCTAVES_ADDRESS
 
     def __init__(
         self,
@@ -130,6 +169,7 @@ class MutationOSCServer:
         on_drums_step: Callable[[int, int, bool], None] | None = None,
         on_drums_seed: Callable[[int], None] | None = None,
         on_drums_reset_grid: Callable[[], None] | None = None,
+        on_bass_change: Callable[[str, Any], None] | None = None,
     ) -> None:
         if not isinstance(engine, MutationEngine):
             raise TypeError("engine must be a MutationEngine")
@@ -159,6 +199,7 @@ class MutationOSCServer:
             ("on_drums_step", on_drums_step),
             ("on_drums_seed", on_drums_seed),
             ("on_drums_reset_grid", on_drums_reset_grid),
+            ("on_bass_change", on_bass_change),
         ):
             if callback is not None and not callable(callback):
                 raise TypeError(f"{label} must be callable or None")
@@ -187,6 +228,7 @@ class MutationOSCServer:
         self._on_drums_step = on_drums_step
         self._on_drums_seed = on_drums_seed
         self._on_drums_reset_grid = on_drums_reset_grid
+        self._on_bass_change = on_bass_change
 
         self._lock = threading.RLock()
         # Serializes apply -> print -> callback so a threaded OSC server cannot
@@ -244,6 +286,38 @@ class MutationOSCServer:
         dispatcher.map(
             self.DRUMS_RESET_GRID_ADDRESS, self._handle_drums_reset_grid
         )
+        # Stage 8.3a bass controls.
+        bass_map = (
+            (self.BASS_SET_ENABLED_ADDRESS, self._handle_bass_enabled),
+            (self.BASS_SET_PRESET_ADDRESS, self._handle_bass_preset),
+            (self.BASS_SET_GRID_ADDRESS, self._handle_bass_grid),
+            (self.BASS_SET_LENGTH_ADDRESS, self._handle_bass_length),
+            (self.BASS_SET_DENSITY_ADDRESS, self._handle_bass_density),
+            (self.BASS_SET_SYNCOPATION_ADDRESS, self._handle_bass_syncopation),
+            (self.BASS_SET_SWING_ADDRESS, self._handle_bass_swing),
+            (self.BASS_SET_GATE_ADDRESS, self._handle_bass_gate),
+            (self.BASS_SET_ACCENT_ADDRESS, self._handle_bass_accent),
+            (
+                self.BASS_SET_ROOT_DOWNBEAT_ADDRESS,
+                self._handle_bass_root_downbeat,
+            ),
+            (self.BASS_SET_PITCH_MODE_ADDRESS, self._handle_bass_pitch_mode),
+            (self.BASS_SET_MOVEMENT_ADDRESS, self._handle_bass_movement),
+            (
+                self.BASS_SET_OCTAVE_RANGE_ADDRESS,
+                self._handle_bass_octave_range,
+            ),
+            (
+                self.BASS_SET_OCTAVE_JUMP_ADDRESS,
+                self._handle_bass_octave_jump,
+            ),
+            (self.BASS_SET_BASE_OCTAVE_ADDRESS, self._handle_bass_base_octave),
+            (self.BASS_SET_SEED_ADDRESS, self._handle_bass_seed),
+            (self.BASS_SET_SUB_ENABLED_ADDRESS, self._handle_bass_sub_enabled),
+            (self.BASS_SET_SUB_OCTAVES_ADDRESS, self._handle_bass_sub_octaves),
+        )
+        for address, handler in bass_map:
+            dispatcher.map(address, handler)
         self._dispatcher = dispatcher
 
     # ------------------------------------------------------------------
@@ -805,6 +879,159 @@ class MutationOSCServer:
             )
         self._call_callback(self._on_drums_reset_grid, "drums reset grid")
 
+    # -- Stage 8.3a bass --------------------------------------------------
+
+    def _handle_bass_setting(
+        self,
+        args: tuple[Any, ...],
+        address: str,
+        key: str,
+        parser: Callable[[Any], Any],
+    ) -> None:
+        if len(args) != 1:
+            _warn(f"{address} expects one value; got {len(args)} arguments")
+            return
+        try:
+            value = parser(args[0])
+        except (TypeError, ValueError) as exc:
+            _warn(f"{address}: {exc}")
+            return
+        self._call_callback(self._on_bass_change, "bass change", key, value)
+
+    def _handle_bass_enabled(self, _address: str, *args: Any) -> None:
+        self._handle_bass_setting(
+            args, self.BASS_SET_ENABLED_ADDRESS, "enabled", bass.validate_bool
+        )
+
+    def _handle_bass_preset(self, _address: str, *args: Any) -> None:
+        self._handle_bass_setting(
+            args, self.BASS_SET_PRESET_ADDRESS, "preset", bass.validate_preset
+        )
+
+    def _handle_bass_grid(self, _address: str, *args: Any) -> None:
+        self._handle_bass_setting(
+            args, self.BASS_SET_GRID_ADDRESS, "grid", _bass_grid_value
+        )
+
+    def _handle_bass_length(self, _address: str, *args: Any) -> None:
+        self._handle_bass_setting(
+            args,
+            self.BASS_SET_LENGTH_ADDRESS,
+            "length_steps",
+            lambda value: bass.validate_length(_one_int(value, "length")),
+        )
+
+    def _handle_bass_density(self, _address: str, *args: Any) -> None:
+        self._handle_bass_setting(
+            args,
+            self.BASS_SET_DENSITY_ADDRESS,
+            "density",
+            lambda value: bass.clamp_unit(value, "density"),
+        )
+
+    def _handle_bass_syncopation(self, _address: str, *args: Any) -> None:
+        self._handle_bass_setting(
+            args,
+            self.BASS_SET_SYNCOPATION_ADDRESS,
+            "syncopation",
+            lambda value: bass.clamp_unit(value, "syncopation"),
+        )
+
+    def _handle_bass_swing(self, _address: str, *args: Any) -> None:
+        self._handle_bass_setting(
+            args,
+            self.BASS_SET_SWING_ADDRESS,
+            "swing",
+            lambda value: bass.clamp_unit(value, "swing"),
+        )
+
+    def _handle_bass_gate(self, _address: str, *args: Any) -> None:
+        self._handle_bass_setting(
+            args, self.BASS_SET_GATE_ADDRESS, "gate_beats", bass.validate_gate_beats
+        )
+
+    def _handle_bass_accent(self, _address: str, *args: Any) -> None:
+        self._handle_bass_setting(
+            args,
+            self.BASS_SET_ACCENT_ADDRESS,
+            "accent",
+            lambda value: bass.clamp_unit(value, "accent"),
+        )
+
+    def _handle_bass_root_downbeat(self, _address: str, *args: Any) -> None:
+        self._handle_bass_setting(
+            args,
+            self.BASS_SET_ROOT_DOWNBEAT_ADDRESS,
+            "root_downbeat",
+            lambda value: bass.validate_bool(value, "root_downbeat"),
+        )
+
+    def _handle_bass_pitch_mode(self, _address: str, *args: Any) -> None:
+        self._handle_bass_setting(
+            args,
+            self.BASS_SET_PITCH_MODE_ADDRESS,
+            "pitch_mode",
+            bass.validate_pitch_mode,
+        )
+
+    def _handle_bass_movement(self, _address: str, *args: Any) -> None:
+        self._handle_bass_setting(
+            args,
+            self.BASS_SET_MOVEMENT_ADDRESS,
+            "movement",
+            lambda value: bass.clamp_unit(value, "movement"),
+        )
+
+    def _handle_bass_octave_range(self, _address: str, *args: Any) -> None:
+        self._handle_bass_setting(
+            args,
+            self.BASS_SET_OCTAVE_RANGE_ADDRESS,
+            "octave_range",
+            bass.validate_octave_range,
+        )
+
+    def _handle_bass_octave_jump(self, _address: str, *args: Any) -> None:
+        self._handle_bass_setting(
+            args,
+            self.BASS_SET_OCTAVE_JUMP_ADDRESS,
+            "octave_jump",
+            lambda value: bass.clamp_unit(value, "octave_jump"),
+        )
+
+    def _handle_bass_base_octave(self, _address: str, *args: Any) -> None:
+        self._handle_bass_setting(
+            args,
+            self.BASS_SET_BASE_OCTAVE_ADDRESS,
+            "base_octave",
+            bass.validate_base_octave,
+        )
+
+    def _handle_bass_seed(self, _address: str, *args: Any) -> None:
+        self._handle_bass_setting(
+            args,
+            self.BASS_SET_SEED_ADDRESS,
+            "seed",
+            lambda value: bass.validate_seed(_one_int(value, "seed")),
+        )
+
+    def _handle_bass_sub_enabled(self, _address: str, *args: Any) -> None:
+        self._handle_bass_setting(
+            args,
+            self.BASS_SET_SUB_ENABLED_ADDRESS,
+            "sub_enabled",
+            lambda value: bass.validate_bool(value, "sub_enabled"),
+        )
+
+    def _handle_bass_sub_octaves(self, _address: str, *args: Any) -> None:
+        self._handle_bass_setting(
+            args,
+            self.BASS_SET_SUB_OCTAVES_ADDRESS,
+            "sub_octaves",
+            lambda value: bass.validate_sub_octaves(
+                _one_int(value, "sub_octaves")
+            ),
+        )
+
     @staticmethod
     def _call_callback(
         callback: Callable[..., None] | None, label: str, *args: Any
@@ -838,6 +1065,26 @@ def _one_bool(value: Any, label: str) -> bool:
     if rounded not in (0, 1):
         raise ValueError(f"{label} must be 0 or 1")
     return bool(rounded)
+
+
+def _bass_grid_value(value: Any) -> str:
+    """Accept ``"1/4"|"1/8"|"1/16"`` or the steps-per-beat ``1|2|4``."""
+
+    if isinstance(value, str):
+        return bass.validate_grid(value)
+    if isinstance(value, bool):
+        raise TypeError("grid must be a string or 1, 2, 4")
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        raise TypeError("grid must be a string or 1, 2, 4") from None
+    if not math.isfinite(numeric):
+        raise ValueError("grid must be finite")
+    mapping = {1: "1/4", 2: "1/8", 4: "1/16"}
+    steps = int(round(numeric))
+    if steps not in mapping:
+        raise ValueError("grid must be 1/4, 1/8, 1/16 or 1, 2, 4")
+    return mapping[steps]
 
 
 def _one_float(args: tuple[Any, ...], address: str) -> float | None:

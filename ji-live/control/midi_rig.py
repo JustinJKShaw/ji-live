@@ -1,11 +1,12 @@
-"""MIDI rig orchestrator for Stage 6 MPE and the Stage 8.1 drum output.
+"""MIDI rig orchestrator for Stage 6 MPE, Stage 8.1 drums, and 8.3a bass.
 
 The rig owns two independent monophonic MPE outputs and, optionally, one plain
-drum output::
+drum output and one plain bass output::
 
     AnchorDrone -> IAC Driver Bus 1 -> Ableton "Drone" MIDI track
     SetArp      -> IAC Driver Bus 2 -> Ableton "Arp"   MIDI track
     DrumRig     -> IAC Driver Bus 3 -> Ableton "Drums" MIDI track  (optional)
+    BassRig     -> IAC Driver Bus 4 -> Ableton "Bass"/"Sub" tracks (optional)
 
 Both buses use MIDI member channel 2 (mido index 1).  Ableton's MPE pitch-bend
 range is configured to 48 semitones; keep ``bend_range_semitones`` in
@@ -30,11 +31,13 @@ from typing import Any
 
 try:  # Support both ``python -m control.midi_rig`` and direct execution.
     from .arp import SetArp
+    from .bass import BassRig
     from .drone import AnchorDrone
     from .drums import DEFAULT_LANE_MASK, DRUM_RATE_DEFAULT, DrumRig
     from .mpe_output import MPEOutput
 except ImportError:  # pragma: no cover - exercised only by direct execution
     from arp import SetArp
+    from bass import BassRig
     from drone import AnchorDrone
     from drums import DEFAULT_LANE_MASK, DRUM_RATE_DEFAULT, DrumRig
     from mpe_output import MPEOutput
@@ -176,6 +179,11 @@ class MIDIRig:
         drum_config: A :class:`~control.drums.DrumConfig`, mapping, path, or
             ``None`` (default ``config/rhythm_config.json``).
         drum_output: Optional fake output for the drum tests.
+        bass: Build the Stage 8.3a bass output (default ``False``).  Works with
+            or without ``midi``/``drums``; a missing Bus 4 disables bass only.
+        bass_config: A :class:`~control.bass.BassConfig`, mapping, path, or
+            ``None`` (default ``config/bass_config.json``).
+        bass_output: Optional fake output for the bass tests.
     """
 
     def __init__(
@@ -189,6 +197,9 @@ class MIDIRig:
         drums: bool = False,
         drum_config: Any | None = None,
         drum_output: Any | None = None,
+        bass: bool = False,
+        bass_config: Any | None = None,
+        bass_output: Any | None = None,
     ) -> None:
         self._midi_enabled = bool(midi)
         cfg: MPEConfig | None = None
@@ -248,6 +259,19 @@ class MIDIRig:
             DrumRig(drum_config, output=drum_output) if drums else None
         )
 
+        # Stage 8.3a bass: independent of the MPE buses.  A bad bass config
+        # disables only the bass; the rest of the rig keeps running.
+        self.bass: BassRig | None = None
+        if bass:
+            try:
+                self.bass = BassRig(bass_config, output=bass_output)
+            except Exception as exc:
+                print(
+                    f"[MIDI] bass disabled: {exc}; drone/arp/drums continue",
+                    file=sys.stderr,
+                )
+                self.bass = None
+
         self._lock = threading.Lock()
         self._started = False
         self._snapshot: tuple[list[float], float | None, float] | None = None
@@ -301,6 +325,10 @@ class MIDIRig:
         if self.drums is not None:
             drum_ok = self.drums.start()
 
+        bass_ok = True
+        if self.bass is not None:
+            bass_ok = self.bass.start()
+
         try:
             if self._midi_enabled:
                 if snapshot is not None:
@@ -316,6 +344,8 @@ class MIDIRig:
                 self.arp_output.close()
             if self.drums is not None and drum_ok:
                 self.drums.stop()
+            if self.bass is not None and bass_ok:
+                self.bass.stop()
             raise
 
     def stop(self) -> None:
@@ -335,6 +365,12 @@ class MIDIRig:
                 self.drums.stop()
             except Exception as exc:  # drums are non-critical
                 print(f"[MIDI] drum stop failed: {exc}", file=sys.stderr)
+
+        if self.bass is not None:
+            try:
+                self.bass.stop()
+            except Exception as exc:  # bass is non-critical
+                print(f"[MIDI] bass stop failed: {exc}", file=sys.stderr)
 
         if not self._midi_enabled:
             return
@@ -497,6 +533,13 @@ class MIDIRig:
         with self._lock:
             self._snapshot = snapshot
             started = self._started
+        # Stage 8.3a: the bass is independent of the MPE buses and must receive
+        # snapshots even in bass-only mode (midi=False).
+        if self.bass is not None:
+            try:
+                self.bass.on_set(snapshot[0], anchor, snapshot[2])
+            except Exception as exc:  # bass is non-critical
+                print(f"[BASS] set update failed: {exc}", file=sys.stderr)
         if started and self._midi_enabled:
             self._apply(snapshot)
 
@@ -573,6 +616,54 @@ class MIDIRig:
         if self.drums is None:
             raise RuntimeError("drums are not configured")
         return self.drums.reset_grid()
+
+    # -- Stage 8.3a bass --------------------------------------------------
+
+    @property
+    def bass_port(self) -> str:
+        return "" if self.bass is None else self.bass.port
+
+    @property
+    def bass_enabled(self) -> bool:
+        return False if self.bass is None else self.bass.enabled
+
+    @property
+    def bass_port_ok(self) -> bool:
+        return False if self.bass is None else self.bass.port_ok
+
+    def bass_state(self) -> list[Any] | None:
+        """``/ji/bass/state`` payload, or ``None`` without a bass rig."""
+
+        if self.bass is None:
+            return None
+        return self.bass.state_args()
+
+    def set_bass_transport(self, running: bool) -> None:
+        if self.bass is not None:
+            self.bass.set_transport(running)
+
+    def set_bass_bpm(self, bpm: float) -> None:
+        if self.bass is not None:
+            self.bass.set_bpm(bpm)
+
+    def set_bass_meter(self, meter_num: int, meter_den: int) -> None:
+        if self.bass is not None:
+            self.bass.set_meter(meter_num, meter_den)
+
+    def set_bass_setting(self, name: str, value: object) -> object:
+        if self.bass is None:
+            raise RuntimeError("bass is not configured")
+        return self.bass.set_setting(name, value)
+
+    def set_bass_enabled(self, enabled: bool) -> bool:
+        if self.bass is None:
+            return False
+        self.bass.set_setting("enabled", enabled)
+        return self.bass.enabled
+
+    def set_bass_note_callback(self, callback: Any | None) -> None:
+        if self.bass is not None:
+            self.bass.set_note_callback(callback)
 
     # ------------------------------------------------------------------
     # Internals

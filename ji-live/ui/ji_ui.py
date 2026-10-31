@@ -42,10 +42,10 @@ try:
     )
 except ImportError as exc:  # pragma: no cover - depends on the human's env
     raise SystemExit(
-        "PyQt6 is required for the Stage 7/8.2 GUI.\n"
+        "PyQt6 is required for the Stage 7/8.3a GUI.\n"
         "Install/run it with: uv run --with python-osc --with PyQt6 "
         "python ui/ji_ui.py\n"
-        "See docs/README_stage8.md for details."
+        "See docs/README_stage8_3.md for details."
     ) from exc
 
 if __package__:  # ``python -m ui.ji_ui`` and normal package imports
@@ -56,6 +56,27 @@ if __package__:  # ``python -m ui.ji_ui`` and normal package imports
         BPM_DEFAULT,
         BPM_MAX,
         BPM_MIN,
+        BASS_BASE_OCTAVE_MAX,
+        BASS_BASE_OCTAVE_MIN,
+        BASS_DEFAULT_BASE_OCTAVE,
+        BASS_DEFAULT_ENABLED,
+        BASS_DEFAULT_GRID,
+        BASS_DEFAULT_OCTAVE_RANGE,
+        BASS_DEFAULT_PITCH_MODE,
+        BASS_DEFAULT_PRESET,
+        BASS_DEFAULT_SEED,
+        BASS_GRIDS,
+        BASS_LENGTH_MAX,
+        BASS_LENGTH_MIN,
+        BASS_OCTAVE_RANGE_MAX,
+        BASS_OCTAVE_RANGE_MIN,
+        BASS_PARAMS,
+        BASS_PITCH_MODES,
+        BASS_PRESETS,
+        BASS_PRESET_CUSTOM,
+        BASS_PRESET_DISPLAY,
+        BASS_SEED_MAX,
+        BASS_SUB_OCTAVES,
         DRUM_LANE_DEFAULT_MASK,
         DRUM_LANE_DEFS,
         DRUM_RATE_LABELS,
@@ -90,6 +111,27 @@ else:  # pragma: no cover - direct ``python ui/ji_ui.py``
         BPM_DEFAULT,
         BPM_MAX,
         BPM_MIN,
+        BASS_BASE_OCTAVE_MAX,
+        BASS_BASE_OCTAVE_MIN,
+        BASS_DEFAULT_BASE_OCTAVE,
+        BASS_DEFAULT_ENABLED,
+        BASS_DEFAULT_GRID,
+        BASS_DEFAULT_OCTAVE_RANGE,
+        BASS_DEFAULT_PITCH_MODE,
+        BASS_DEFAULT_PRESET,
+        BASS_DEFAULT_SEED,
+        BASS_GRIDS,
+        BASS_LENGTH_MAX,
+        BASS_LENGTH_MIN,
+        BASS_OCTAVE_RANGE_MAX,
+        BASS_OCTAVE_RANGE_MIN,
+        BASS_PARAMS,
+        BASS_PITCH_MODES,
+        BASS_PRESETS,
+        BASS_PRESET_CUSTOM,
+        BASS_PRESET_DISPLAY,
+        BASS_SEED_MAX,
+        BASS_SUB_OCTAVES,
         DRUM_LANE_DEFAULT_MASK,
         DRUM_LANE_DEFS,
         DRUM_RATE_LABELS,
@@ -256,7 +298,7 @@ class _StatusRelay(QObject):
 
 
 class MainWindow(QMainWindow):
-    """One-screen performance surface: Mutation, Live Autotune, Loops, Rhythm, Status."""
+    """One-screen performance surface: Mutation, Autotune, Loops, Rhythm, Groove, Bass, Status."""
 
     def __init__(
         self,
@@ -277,6 +319,7 @@ class MainWindow(QMainWindow):
         self._loop_sync = False
         self._loop_custom: set[int] = set()
         self._groove_sync = False
+        self._bass_sync = False
         self._grid_sync = False
         self._grid_built_steps = 0
         self.step_cells: dict[tuple[int, int], QPushButton] = {}
@@ -289,7 +332,7 @@ class MainWindow(QMainWindow):
         )
         self._wire_controller_callback()
 
-        self.setWindowTitle("JI Station - Stage 8.2 Performance")
+        self.setWindowTitle("JI Station - Stage 8.3a Performance")
         self.resize(1280, 720)
         self.setMinimumSize(1080, 600)
         compact = QFont()
@@ -311,6 +354,7 @@ class MainWindow(QMainWindow):
         outer.addWidget(self._build_loops_group())
         outer.addWidget(self._build_rhythm_group())
         outer.addWidget(self._build_groove_group())
+        outer.addWidget(self._build_bass_group())
         outer.addWidget(self._build_status_group())
         outer.addStretch(1)
 
@@ -385,6 +429,10 @@ class MainWindow(QMainWindow):
             self._sync_grid()
         if address == osc_control.QUANTIZE_STATE:
             self._sync_quantize()
+        if address == osc_control.BASS_STATE:
+            self._sync_bass_controls()
+        if address == osc_control.BASS_NOTE:
+            self._update_bass_label()
 
         self._refresh_status_labels()
 
@@ -839,6 +887,167 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.grid_scroll)
         return group
 
+    def _build_bass_group(self) -> QGroupBox:
+        """Stage 8.3a compact bass group (two rows + status line)."""
+
+        group = QGroupBox("Bass")
+        layout = QVBoxLayout(group)
+        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setSpacing(2)
+
+        row = QHBoxLayout()
+        row.setSpacing(3)
+        self.bass_enable_checkbox = QCheckBox("Bass on")
+        self.bass_enable_checkbox.setChecked(BASS_DEFAULT_ENABLED)
+        self.bass_enable_checkbox.toggled.connect(self._on_bass_enabled)
+        row.addWidget(self.bass_enable_checkbox)
+
+        row.addWidget(QLabel("Preset"))
+        self.bass_preset_combo = QComboBox()
+        self.bass_preset_combo.addItems(list(BASS_PRESET_DISPLAY))
+        self.bass_preset_combo.setCurrentIndex(
+            list(BASS_PRESET_DISPLAY).index(BASS_DEFAULT_PRESET)
+        )
+        self.bass_preset_combo.setToolTip(
+            "pulse = downbeat drone bass, techno = moving walk, chaos = wide "
+            "seeded line. Manual edits show custom."
+        )
+        self.bass_preset_combo.currentIndexChanged.connect(
+            self._on_bass_preset_changed
+        )
+        row.addWidget(self.bass_preset_combo)
+
+        row.addWidget(QLabel("Grid"))
+        self.bass_grid_combo = QComboBox()
+        self.bass_grid_combo.addItems(list(BASS_GRIDS))
+        self.bass_grid_combo.setCurrentText(BASS_DEFAULT_GRID)
+        self.bass_grid_combo.currentIndexChanged.connect(
+            self._on_bass_grid_changed
+        )
+        row.addWidget(self.bass_grid_combo)
+
+        row.addWidget(QLabel("Pitch"))
+        self.bass_pitch_combo = QComboBox()
+        self.bass_pitch_combo.addItems(list(BASS_PITCH_MODES))
+        self.bass_pitch_combo.setCurrentText(BASS_DEFAULT_PITCH_MODE)
+        self.bass_pitch_combo.currentIndexChanged.connect(
+            self._on_bass_pitch_changed
+        )
+        row.addWidget(self.bass_pitch_combo)
+
+        row.addWidget(QLabel("Len"))
+        self.bass_length_spin = QSpinBox()
+        self.bass_length_spin.setRange(BASS_LENGTH_MIN, BASS_LENGTH_MAX)
+        self.bass_length_spin.setValue(16)
+        self.bass_length_spin.setFixedWidth(48)
+        self.bass_length_spin.setToolTip(
+            "Pattern length in grid steps (1..32). The default is one bar."
+        )
+        self.bass_length_spin.valueChanged.connect(self._on_bass_length_changed)
+        row.addWidget(self.bass_length_spin)
+
+        self.bass_sub_checkbox = QCheckBox("Sub")
+        self.bass_sub_checkbox.toggled.connect(self._on_bass_sub_enabled)
+        row.addWidget(self.bass_sub_checkbox)
+        self.bass_sub_octaves_spin = QSpinBox()
+        self.bass_sub_octaves_spin.setRange(
+            int(BASS_SUB_OCTAVES[0]), int(BASS_SUB_OCTAVES[-1])
+        )
+        self.bass_sub_octaves_spin.setValue(1)
+        self.bass_sub_octaves_spin.setFixedWidth(40)
+        self.bass_sub_octaves_spin.valueChanged.connect(
+            self._on_bass_sub_octaves
+        )
+        row.addWidget(self.bass_sub_octaves_spin)
+        row.addStretch(1)
+        layout.addLayout(row)
+
+        row2 = QHBoxLayout()
+        row2.setSpacing(2)
+        self.bass_knobs: dict[str, Knob] = {}
+        for spec in BASS_PARAMS:
+            knob = Knob(
+                spec.label,
+                spec.low,
+                spec.high,
+                spec.default,
+                steps=1000,
+                fmt=spec.fmt,
+                suffix=spec.suffix,
+            )
+            knob.valueChanged.connect(
+                lambda value, key=spec.key: self._on_bass_knob(key, value)
+            )
+            self.bass_knobs[spec.key] = knob
+            row2.addWidget(knob)
+
+        row2.addWidget(QLabel("Oct"))
+        self.bass_octave_range_spin = QSpinBox()
+        self.bass_octave_range_spin.setRange(
+            BASS_OCTAVE_RANGE_MIN, BASS_OCTAVE_RANGE_MAX
+        )
+        self.bass_octave_range_spin.setValue(BASS_DEFAULT_OCTAVE_RANGE)
+        self.bass_octave_range_spin.setFixedWidth(42)
+        self.bass_octave_range_spin.setToolTip(
+            "Allowed +/- octave offsets around the base octave (0..3)."
+        )
+        self.bass_octave_range_spin.valueChanged.connect(
+            self._on_bass_octave_range
+        )
+        row2.addWidget(self.bass_octave_range_spin)
+
+        row2.addWidget(QLabel("Base"))
+        self.bass_base_octave_spin = QSpinBox()
+        self.bass_base_octave_spin.setRange(
+            BASS_BASE_OCTAVE_MIN, BASS_BASE_OCTAVE_MAX
+        )
+        self.bass_base_octave_spin.setValue(BASS_DEFAULT_BASE_OCTAVE)
+        self.bass_base_octave_spin.setFixedWidth(46)
+        self.bass_base_octave_spin.setToolTip(
+            "Whole octaves relative to the fundamental (default -2)."
+        )
+        self.bass_base_octave_spin.valueChanged.connect(
+            self._on_bass_base_octave
+        )
+        row2.addWidget(self.bass_base_octave_spin)
+
+        row2.addWidget(QLabel("Seed"))
+        self.bass_seed_spin = QSpinBox()
+        self.bass_seed_spin.setRange(0, int(BASS_SEED_MAX))
+        self.bass_seed_spin.setValue(int(BASS_DEFAULT_SEED))
+        self.bass_seed_spin.setFixedWidth(90)
+        self.bass_seed_spin.setToolTip(
+            "Same set + controls + seed + bar/step reproduce the same line."
+        )
+        self.bass_seed_spin.valueChanged.connect(self._on_bass_seed)
+        row2.addWidget(self.bass_seed_spin)
+        row2.addStretch(1)
+        layout.addLayout(row2)
+
+        self.bass_label = QLabel("Bass: waiting for bridge")
+        self.bass_note_label = QLabel("Last: --")
+        status_row = QHBoxLayout()
+        status_row.setSpacing(8)
+        status_row.addWidget(self.bass_label)
+        status_row.addWidget(self.bass_note_label)
+        status_row.addStretch(1)
+        layout.addLayout(status_row)
+
+        self.bass_controls: list[QWidget] = [
+            self.bass_enable_checkbox,
+            self.bass_preset_combo,
+            self.bass_grid_combo,
+            self.bass_pitch_combo,
+            self.bass_length_spin,
+            self.bass_sub_checkbox,
+            self.bass_sub_octaves_spin,
+            self.bass_octave_range_spin,
+            self.bass_base_octave_spin,
+            self.bass_seed_spin,
+            *self.bass_knobs.values(),
+        ]
+        return group
+
     # -- Stage 8.2 groove grid ------------------------------------------
 
     def _grid_steps(self) -> int:
@@ -926,9 +1135,16 @@ class MainWindow(QMainWindow):
         if self._grid_sync:
             return
         self._guard(self.controller.set_drum_step, int(lane), int(step), bool(checked))
-        self._set_message(
-            f"Grid cell {lane}:{step} {'on' if checked else 'off'} queued"
-        )
+        state = "on" if checked else "off"
+        if self._transport_running():
+            self._set_message(
+                f"Grid cell {lane}:{step} {state} queued for the next beat"
+            )
+        else:
+            self._set_message(
+                f"Grid cell {lane}:{step} {state} applied immediately "
+                "(transport stopped)"
+            )
 
     def _on_groove_preset_changed(self, position: int) -> None:
         if self._groove_sync:
@@ -978,6 +1194,147 @@ class MainWindow(QMainWindow):
                 self._ensure_grid(groove.grid_steps)
             else:
                 self._apply_grid_from_store()
+
+    # -- Stage 8.3a bass controls ---------------------------------------
+
+    def _bass_message(self, label: str) -> None:
+        self._set_message(
+            f"{label} queued for the next beat"
+            if self._transport_running()
+            else f"{label} applied immediately (transport stopped)"
+        )
+
+    def _on_bass_enabled(self, checked: bool) -> None:
+        if self._bass_sync:
+            return
+        self._guard(self.controller.set_bass_enabled, bool(checked))
+        self._bass_message(f"Bass {'on' if checked else 'off'}")
+
+    def _on_bass_preset_changed(self, position: int) -> None:
+        if self._bass_sync:
+            return
+        if not 0 <= position < len(BASS_PRESET_DISPLAY):
+            return
+        preset = BASS_PRESET_DISPLAY[position]
+        if preset == BASS_PRESET_CUSTOM:
+            return
+        self._guard(self.controller.set_bass_preset, preset)
+        self._bass_message(f"Bass preset {preset}")
+
+    def _on_bass_grid_changed(self, position: int) -> None:
+        if self._bass_sync:
+            return
+        if not 0 <= position < len(BASS_GRIDS):
+            return
+        self._guard(self.controller.set_bass_grid, BASS_GRIDS[position])
+        self._bass_message(f"Bass grid {BASS_GRIDS[position]}")
+
+    def _on_bass_pitch_changed(self, position: int) -> None:
+        if self._bass_sync:
+            return
+        if not 0 <= position < len(BASS_PITCH_MODES):
+            return
+        self._guard(
+            self.controller.set_bass_pitch_mode, BASS_PITCH_MODES[position]
+        )
+        self._bass_message(f"Bass pitch {BASS_PITCH_MODES[position]}")
+
+    def _on_bass_length_changed(self, value: int) -> None:
+        if self._bass_sync:
+            return
+        self._guard(self.controller.set_bass_length, int(value))
+        self._bass_message(f"Bass length {int(value)}")
+
+    def _on_bass_sub_enabled(self, checked: bool) -> None:
+        if self._bass_sync:
+            return
+        self._guard(self.controller.set_bass_sub_enabled, bool(checked))
+        self._bass_message(f"Bass sub {'on' if checked else 'off'}")
+
+    def _on_bass_sub_octaves(self, value: int) -> None:
+        if self._bass_sync:
+            return
+        self._guard(self.controller.set_bass_sub_octaves, int(value))
+        self._bass_message(f"Bass sub octaves {int(value)}")
+
+    def _on_bass_octave_range(self, value: int) -> None:
+        if self._bass_sync:
+            return
+        self._guard(self.controller.set_bass_octave_range, int(value))
+        self._bass_message(f"Bass octave range {int(value)}")
+
+    def _on_bass_base_octave(self, value: int) -> None:
+        if self._bass_sync:
+            return
+        self._guard(self.controller.set_bass_base_octave, int(value))
+        self._bass_message(f"Bass base octave {int(value)}")
+
+    def _on_bass_seed(self, value: int) -> None:
+        if self._bass_sync:
+            return
+        self._guard(self.controller.set_bass_seed, int(value))
+        self._bass_message(f"Bass seed {int(value)}")
+
+    def _on_bass_knob(self, key: str, value: float) -> None:
+        self._pending[("bass", key)] = value
+
+    def _sync_bass_controls(self) -> None:
+        bass = self.store.bass
+        if bass is None:
+            return
+        self._bass_sync = True
+        try:
+            self.bass_enable_checkbox.setChecked(bool(bass.enabled))
+            preset = (
+                bass.preset
+                if bass.preset in BASS_PRESET_DISPLAY
+                else BASS_PRESET_CUSTOM
+            )
+            self.bass_preset_combo.setCurrentIndex(
+                list(BASS_PRESET_DISPLAY).index(preset)
+            )
+            self.bass_grid_combo.setCurrentText(bass.grid)
+            self.bass_pitch_combo.setCurrentText(bass.pitch_mode)
+            self.bass_length_spin.setValue(int(bass.length_steps))
+            for spec in BASS_PARAMS:
+                knob = self.bass_knobs.get(spec.key)
+                if knob is not None:
+                    knob.set_value(getattr(bass, spec.key))
+            self.bass_octave_range_spin.setValue(int(bass.octave_range))
+            self.bass_base_octave_spin.setValue(int(bass.base_octave))
+            self.bass_seed_spin.setValue(int(bass.seed))
+            self.bass_sub_checkbox.setChecked(bool(bass.sub_enabled))
+            self.bass_sub_octaves_spin.setValue(int(bass.sub_octaves))
+        finally:
+            self._bass_sync = False
+        self._update_bass_label()
+
+    def _update_bass_label(self) -> None:
+        bass = self.store.bass
+        if bass is None:
+            self.bass_label.setText("Bass: waiting for bridge")
+            self.bass_note_label.setText("Last: --")
+            for widget in self.bass_controls:
+                widget.setEnabled(False)
+            return
+        for widget in self.bass_controls:
+            widget.setEnabled(bool(bass.port_ok))
+        if not bass.port_ok:
+            self.bass_label.setText(
+                "Bass: disabled (port not available; see bridge log)"
+            )
+        else:
+            self.bass_label.setText(
+                f"Bass: {'on' if bass.enabled else 'off'} | {bass.preset} | "
+                f"{bass.grid} | sub {'on' if bass.sub_enabled else 'off'}"
+            )
+        note = self.store.bass_note
+        if note is None:
+            self.bass_note_label.setText("Last: --")
+        else:
+            self.bass_note_label.setText(
+                f"Last: {note.note_name} {note.hz:.2f} Hz"
+            )
 
     def _sync_grid(self) -> None:
         if not self.grid_scroll.isVisible():
@@ -1299,6 +1656,8 @@ class MainWindow(QMainWindow):
                 self._guard(self.controller.loop_set_length, key[1], value)
             elif key[0] == "groove":
                 self._guard(self.controller.set_groove_modifier, key[1], value)
+            elif key[0] == "bass":
+                self._guard(self.controller.set_bass_param, key[1], value)
 
     def _guard(self, action: Callable[..., Any], *args: Any) -> None:
         try:
@@ -1501,6 +1860,7 @@ class MainWindow(QMainWindow):
             self.loop_status_label.setText(f"Loop states: {states}")
 
         self._refresh_rhythm_labels()
+        self._update_bass_label()
 
         for index in range(1, 5):
             self._refresh_loop_label(index)

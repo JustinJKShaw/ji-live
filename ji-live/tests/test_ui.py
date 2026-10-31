@@ -35,6 +35,11 @@ if str(_ROOT) not in sys.path:
 import control.ji_bridge as bridge_module
 from control.mutation import MutationEngine
 from control.osc_server import (
+    BASS_SET_DENSITY_ADDRESS,
+    BASS_SET_ENABLED_ADDRESS,
+    BASS_SET_PITCH_MODE_ADDRESS,
+    BASS_SET_PRESET_ADDRESS,
+    BASS_SET_SUB_OCTAVES_ADDRESS,
     DRUMS_RESET_GRID_ADDRESS,
     DRUMS_SET_DENSITY_ADDRESS,
     DRUMS_SET_ENABLED_ADDRESS,
@@ -57,6 +62,9 @@ from control.osc_server import (
 from ui import osc_control
 from ui.osc_control import (
     AUTOTUNE_PARAMS,
+    BASS_PRESET_DISPLAY,
+    BassNoteStatus,
+    BassStatus,
     BridgeControlState,
     DRUM_LANE_DEFAULT_MASK,
     DrumStatus,
@@ -83,6 +91,17 @@ from ui.osc_control import (
     build_reset_drum_grid,
     build_rhythm_request,
     build_set_autotune,
+    build_set_bass_base_octave,
+    build_set_bass_enabled,
+    build_set_bass_grid,
+    build_set_bass_length,
+    build_set_bass_octave_range,
+    build_set_bass_param,
+    build_set_bass_pitch_mode,
+    build_set_bass_preset,
+    build_set_bass_seed,
+    build_set_bass_sub_enabled,
+    build_set_bass_sub_octaves,
     build_set_drum_density,
     build_set_drum_lane,
     build_set_drum_probability,
@@ -106,6 +125,8 @@ from ui.osc_control import (
     drum_lane_states,
     grid_steps_for_meter,
     parse_autotune_state,
+    parse_bass_note,
+    parse_bass_state,
     parse_cpu,
     parse_drums_state,
     parse_freqset,
@@ -511,6 +532,82 @@ def test_rhythm_drum_builders() -> None:
 # ---------------------------------------------------------------------------
 # Status parsers
 # ---------------------------------------------------------------------------
+
+
+def test_bass_builders() -> None:
+    print("\n=== Test 5b: Stage 8.3a bass builders/parsers ===")
+    assert build_set_bass_enabled(True) == (BASS_SET_ENABLED_ADDRESS, [1])
+    assert build_set_bass_enabled(0) == (BASS_SET_ENABLED_ADDRESS, [0])
+    assert build_set_bass_preset("techno") == (BASS_SET_PRESET_ADDRESS, ["techno"])
+    assert build_set_bass_grid("1/8") == (osc_control.BASS_SET_GRID, ["1/8"])
+    assert build_set_bass_length(12) == (osc_control.BASS_SET_LENGTH, [12])
+    assert build_set_bass_length(0) == (osc_control.BASS_SET_LENGTH, [1])
+    assert build_set_bass_length(99) == (osc_control.BASS_SET_LENGTH, [32])
+    assert build_set_bass_param("density", 0.4) == (BASS_SET_DENSITY_ADDRESS, [0.4])
+    assert build_set_bass_param("gate_beats", 99) == (
+        osc_control.BASS_SET_GATE,
+        [8.0],
+    )
+    assert build_set_bass_pitch_mode("walk") == (
+        BASS_SET_PITCH_MODE_ADDRESS,
+        ["walk"],
+    )
+    assert build_set_bass_octave_range(2) == (
+        osc_control.BASS_SET_OCTAVE_RANGE,
+        [2],
+    )
+    assert build_set_bass_base_octave(-2) == (
+        osc_control.BASS_SET_BASE_OCTAVE,
+        [-2],
+    )
+    assert build_set_bass_seed(7) == (osc_control.BASS_SET_SEED, [7])
+    assert build_set_bass_sub_enabled(True) == (
+        osc_control.BASS_SET_SUB_ENABLED,
+        [1],
+    )
+    assert build_set_bass_sub_octaves(2) == (BASS_SET_SUB_OCTAVES_ADDRESS, [2])
+    for bad in (
+        lambda: build_set_bass_preset("nope"),
+        lambda: build_set_bass_grid("1/3"),
+        lambda: build_set_bass_pitch_mode("arp"),
+        lambda: build_set_bass_sub_octaves(3),
+        lambda: build_set_bass_param("unknown", 1),
+    ):
+        try:
+            bad()
+        except (TypeError, ValueError):
+            pass
+        else:
+            raise AssertionError(f"invalid bass builder accepted: {bad}")
+
+    state = parse_bass_state(
+        [1, 1, "techno", "1/16", 16, 0.55, 0.15, 0.1, 0.12, 0.25,
+         "walk", 0.45, 1, 0.05, 4, -2, 0, 1, 2, 3]
+    )
+    assert isinstance(state, BassStatus)
+    assert state.enabled and state.port_ok
+    assert state.preset == "techno" and state.grid == "1/16"
+    assert state.steps_per_beat == 4
+    custom = parse_bass_state(
+        [0, 1, "custom", "1/8", 8, 0.2, 0.0, 0.0, 0.5, 0.0,
+         "root", 0.0, 0, 0.0, 1, -2, 1, 2, 2, 3]
+    )
+    assert custom.preset == "custom"
+    assert custom.sub_enabled and custom.sub_octaves == 2
+    assert parse_bass_state.__name__ == "parse_bass_state"
+
+    note = parse_bass_note([55.0, 33, 98])
+    assert isinstance(note, BassNoteStatus)
+    assert note.note_name == "A1"
+    assert note.hz == 55.0 and note.velocity == 98
+    for bad_state in ([0] * 19, [0] * 21):
+        try:
+            parse_bass_state(bad_state)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("bad bass state length accepted")
+    print("  bass setters/validators, 20-field state, note/name")
 
 
 def test_status_parsers() -> None:
@@ -1003,6 +1100,7 @@ def test_bridge_ui_status() -> None:
             "/ji/drums/state",
             "/ji/drums/groove",
             "/ji/drums/grid",
+            "/ji/bass/state",
             "/ji/quantize/state",
         ]
         assert len(client.sent) == 1
@@ -1013,7 +1111,12 @@ def test_bridge_ui_status() -> None:
         assert groove_args[:2] == ["four", 0.0]
         assert groove_args[5] == 1 and groove_args[6] == 16
         assert len(ui_client.sent[7][1]) == 32
-        assert ui_client.sent[8][1] == [0, -1.0]
+        bass_args = ui_client.sent[8][1]
+        assert len(bass_args) == 20
+        assert bass_args[0] == 0 and bass_args[1] == 0
+        assert bass_args[2] == "pulse" and bass_args[3] == "1/4"
+        assert bass_args[18] == 2 and bass_args[19] == 3
+        assert ui_client.sent[9][1] == [0, -1.0]
 
         # Rhythm commands: state changes go to sclang and the UI.
         client.sent.clear()
@@ -1444,6 +1547,47 @@ class FakeController:
     def reset_drum_grid(self) -> None:
         self.calls.append(("reset_drum_grid",))
 
+    # -- Stage 8.3a bass ------------------------------------------------
+
+    def set_bass_setting(self, name, value) -> None:
+        self.calls.append(("set_bass_setting", name, value))
+
+    def set_bass_enabled(self, enabled) -> None:
+        self.calls.append(("set_bass_enabled", enabled))
+
+    def set_bass_preset(self, preset) -> None:
+        self.calls.append(("set_bass_preset", preset))
+
+    def set_bass_grid(self, grid) -> None:
+        self.calls.append(("set_bass_grid", grid))
+
+    def set_bass_length(self, steps) -> None:
+        self.calls.append(("set_bass_length", steps))
+
+    def set_bass_param(self, param, value) -> None:
+        self.calls.append(("set_bass_param", param, value))
+
+    def set_bass_pitch_mode(self, mode) -> None:
+        self.calls.append(("set_bass_pitch_mode", mode))
+
+    def set_bass_root_downbeat(self, enabled) -> None:
+        self.calls.append(("set_bass_root_downbeat", enabled))
+
+    def set_bass_octave_range(self, value) -> None:
+        self.calls.append(("set_bass_octave_range", value))
+
+    def set_bass_base_octave(self, value) -> None:
+        self.calls.append(("set_bass_base_octave", value))
+
+    def set_bass_seed(self, seed) -> None:
+        self.calls.append(("set_bass_seed", seed))
+
+    def set_bass_sub_enabled(self, enabled) -> None:
+        self.calls.append(("set_bass_sub_enabled", enabled))
+
+    def set_bass_sub_octaves(self, value) -> None:
+        self.calls.append(("set_bass_sub_octaves", value))
+
 
 def run_qt_tests() -> int:
     print("\n=== Qt smoke test: one window, widgets, signals, close ===")
@@ -1473,6 +1617,7 @@ def run_qt_tests() -> int:
         "Loops",
         "Rhythm",
         "Groove",
+        "Bass",
         "MIDI",
         "Status",
     ):
@@ -1485,6 +1630,67 @@ def run_qt_tests() -> int:
         window.width(),
         window.height(),
     )
+    # Stage 8.3a bass defaults; controls wait disabled until the bridge says
+    # the bass port is available.
+    assert window.bass_preset_combo.currentText() == "pulse"
+    assert window.bass_grid_combo.currentText() == "1/4"
+    assert window.bass_pitch_combo.currentText() == "root"
+    assert window.bass_length_spin.value() == 16
+    assert window.bass_sub_checkbox.isChecked() is False
+    assert window.bass_base_octave_spin.value() == -2
+    assert window.bass_seed_spin.value() == 1
+    assert not window.bass_enable_checkbox.isEnabled()
+
+    # Incoming bass state syncs every widget and never echoes OSC.
+    fake.calls.clear()
+    window._on_status_message(
+        "/ji/bass/state",
+        [1, 1, "techno", "1/16", 16, 0.55, 0.15, 0.1, 0.12, 0.25,
+         "walk", 0.45, 1, 0.05, 4, -2, 0, 1, 2, 3],
+    )
+    assert window.bass_preset_combo.currentText() == "techno"
+    assert window.bass_grid_combo.currentText() == "1/16"
+    assert window.bass_pitch_combo.currentText() == "walk"
+    assert window.bass_enable_checkbox.isChecked() is True
+    assert abs(window.bass_knobs["density"].value() - 0.55) < 1e-6
+    assert window.bass_octave_range_spin.value() == 1
+    assert window.bass_seed_spin.value() == 4
+    assert window.bass_enable_checkbox.isEnabled()
+    assert "techno" in window.bass_label.text()
+    assert not [call for call in fake.calls if call[0].startswith("set_bass_")]
+
+    window._on_status_message("/ji/bass/note", [55.0, 33, 98])
+    assert "A1" in window.bass_note_label.text()
+    assert "55.00" in window.bass_note_label.text()
+
+    # Preset/knob/spin sends.
+    fake.calls.clear()
+    window.bass_preset_combo.setCurrentText("chaos")
+    assert ("set_bass_preset", "chaos") in fake.calls
+    window.bass_grid_combo.setCurrentText("1/8")
+    assert ("set_bass_grid", "1/8") in fake.calls
+    window.bass_pitch_combo.setCurrentText("cycle")
+    assert ("set_bass_pitch_mode", "cycle") in fake.calls
+    window.bass_length_spin.setValue(12)
+    assert ("set_bass_length", 12) in fake.calls
+    window.bass_sub_checkbox.setChecked(True)
+    assert ("set_bass_sub_enabled", True) in fake.calls
+    window.bass_sub_octaves_spin.setValue(2)
+    assert ("set_bass_sub_octaves", 2) in fake.calls
+    window.bass_octave_range_spin.setValue(2)
+    assert ("set_bass_octave_range", 2) in fake.calls
+    window.bass_base_octave_spin.setValue(-1)
+    assert ("set_bass_base_octave", -1) in fake.calls
+    window.bass_seed_spin.setValue(9)
+    assert ("set_bass_seed", 9) in fake.calls
+    window.bass_knobs["density"].set_value(0.4, emit=True)
+    window._flush_pending()
+    assert ("set_bass_param", "density", 0.4) in fake.calls
+
+    window._on_status_message("/ji/bass/state", [0, 0, "pulse", "1/4", 4,
+        0.0, 0.0, 0.0, 3.5, 0.0, "root", 0.0, 0, 0.0, 1, -2, 0, 1, 2, 3])
+    assert not window.bass_enable_checkbox.isEnabled()
+    assert "disabled" in window.bass_label.text()
     assert len(window.loop_state_labels) == 4
     assert len(window.autotune_knobs) == 2 * len(AUTOTUNE_PARAMS)
     assert len(window.lane_checkboxes) == 16
@@ -1734,6 +1940,20 @@ def run_qt_tests() -> int:
     assert ("trigger_mutation",) in fake.calls
     assert "immediately" in window.message_label.text().lower()
 
+    # Bass feedback also follows the transport state.
+    window._on_status_message("/ji/bass/state", [1, 1, "pulse", "1/4", 4,
+        0.0, 0.0, 0.0, 3.5, 0.0, "root", 0.0, 0, 0.0, 1, -2, 0, 1, 2, 3])
+    window._on_status_message("/ji/rhythm/state", [120, 4, 4, 1, 1, 1.0])
+    fake.calls.clear()
+    window.bass_preset_combo.setCurrentText("techno")
+    assert ("set_bass_preset", "techno") in fake.calls
+    assert "queued" in window.message_label.text().lower()
+    window._on_status_message("/ji/rhythm/state", [120, 4, 4, 0, 1, 1.0])
+    fake.calls.clear()
+    window.bass_preset_combo.setCurrentText("pulse")
+    assert ("set_bass_preset", "pulse") in fake.calls
+    assert "immediately" in window.message_label.text().lower()
+
     # Missing drum port: show disabled state, disable the controls, no crash.
     window._on_status_message("/ji/drums/state", [0, 0, 1.0, 0x0045])
     assert not window.drum_enable_checkbox.isEnabled()
@@ -1761,6 +1981,7 @@ def run_pure_tests() -> None:
     test_autotune_builders()
     test_loop_builders()
     test_rhythm_drum_builders()
+    test_bass_builders()
     test_status_parsers()
     test_status_store()
     test_osc_server_hello()
