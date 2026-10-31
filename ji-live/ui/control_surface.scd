@@ -47,6 +47,11 @@
 ~ji_loop_sched !? { |scheds| scheds.do { |sched| sched !? { |item| if (item.respondsTo(\stop)) { item.stop } } } };
 ~ji_tempo_clock !? { |clock| clock.stop };
 
+// --- Version marker ---------------------------------------------------
+//  Printed on install so a stale editor buffer is obvious in the post
+//  window.  8.2.2 fixes beat-mode Record/Play (action.value(index)).
+~ji_ui_control_surface_version = "8.2.2";
+
 // --- Require the accepted live rig ----------------------------------------
 ~ji_ui_rig_ready = ~ji_autotune_synth_ch0.notNil
     and: { ~ji_autotune_synth_ch1.notNil }
@@ -248,7 +253,11 @@ if (~ji_ui_rig_ready.not) {
                 ~ji_loop_sched[index - 1] = nil;
                 if (~ji_rhythm_running
                     and: { ~ji_loop_modes[index - 1] == \beat }) {
-                    action.value;
+                    // The record/play actions take the loop index.  Calling
+                    // action.value with no argument made beat-mode record/play
+                    // fire with index = nil and do nothing (Stage 8.1 bug fixed
+                    // in 8.2.2).
+                    action.value(index);
                     ("[RHYTHM] loop % % fired on beat %").format(
                         index, label, target
                     ).postln;
@@ -636,8 +645,8 @@ if (~ji_ui_rig_ready.not) {
     ~ji_ui_send_all_loop_configs.value;
     ~ji_ui_refresh_autotune.(0);
     ~ji_ui_refresh_autotune.(1);
-    ("[UI] control surface installed -> %:%; autotune + loop + rhythm + status OSC ready").format(
-        ~ji_ui_host, ~ji_ui_port
+    ("[UI] control surface % installed -> %:%; autotune + loop + rhythm + status OSC ready").format(
+        ~ji_ui_control_surface_version, ~ji_ui_host, ~ji_ui_port
     ).postln;
 };
 )

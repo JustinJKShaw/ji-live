@@ -1,17 +1,18 @@
 # JI Station — Stage 8.1 Rhythm Foundation + Drum Engine v1
 
-**Status:** implemented in the agent workspace, **awaiting human audio/MIDI/GUI
-acceptance**. The agent ran only the pure Python harnesses; it did not test
-SuperCollider audio, IAC MIDI, Ableton, the drum rack, loop quantization on a
-live clock, or the live GUI. The human is the authority.
+**Status:** **human-tested and accepted as part of the Stage 8.2 acceptance
+run on 2026-10-31.** The owner confirmed the live audio/MIDI/GUI rig, including
+transport, drums, free/beat loops, and the beat-mode loop fix. The agent's own
+verification remains limited to the pure Python harnesses.
 
 Stage 8.1 adds a shared tempo/meter/transport foundation, beat-locked (or free)
 loops, and the first new MIDI voice: a drum engine on an optional third IAC bus.
 It adds **no new audio DSP** and does not change the Stage 5.5 four-channel map,
 the Stage 6 drone/arp, the Stage 7 GUI controls, or `/ji/freqset/update`.
 
-**Next:** Stage 8.2 (groove generation, per-step grid, swing, probability) —
-not part of 8.1.
+**Next:** Stage 8.2 (groove generation, per-step grid, swing, probability,
+and beat-quantized state changes) is human-accepted; see
+[README_stage8_2.md](README_stage8_2.md). Stage 8.3a is the bass voice.
 
 ---
 
@@ -271,6 +272,10 @@ Each loop 1–4 now has:
 - **Beat mode** schedules Record/Play at the next beat on sclang's
   `TempoClock`. The take is `beats * 60 / bpm` seconds at record time.
   Stop/Clear/Stop Rec cancel a pending action and act immediately.
+  **Fixed in 8.2.2:** beat-mode scheduling previously called `action.value`
+  without the loop index, so synced Record/Play fired with `index = nil` and
+  did nothing. Re-evaluate `ui/control_surface.scd` after the live rig to pick
+  up the one-line fix (`action.value(index)`).
 - A beat-mode Record/Play with the transport stopped is rejected by the GUI
   (`Loop N is beat-locked; press Play (transport) first`) and by sclang.
 - The beat-scheduled action calls the existing `~ji_record_loop` /
@@ -484,8 +489,8 @@ instructions; audio and MIDI acceptance are human-only.
    disabled, and the GUI does not crash.
 9. Existing mutation, autotune, loop, drone/arp, and GUI behavior is unchanged.
 10. Closing the GUI leaves the rig running.
-11. Record the result. **Stage 8.1 is not complete until the human confirms the
-    rhythm/drum controls and no audio/MIDI regressions.**
+11. Record the result. **Done: the owner confirmed the rhythm/drum controls
+    and no audio/MIDI regressions on 2026-10-31.**
 
 ---
 

@@ -1,0 +1,67 @@
+JI STATION - STAGE 8.2 - START TO FINISH
+Run all bash commands from the ji-live folder.
+
+ONE TIME (skip if already done for Stage 8.1)
+1. Audio MIDI Setup > IAC Driver: online, with buses named exactly
+   "IAC Driver Bus 1", "IAC Driver Bus 2", "IAC Driver Bus 3".
+2. Ableton: enable Track for all three IAC buses.
+3. Ableton: keep the 4 audio tracks (BlackHole 16ch inputs 1-4);
+   Drone = Bus 1, Arp = Bus 2, Monitor In, 48 st MPE.
+   Drums track: MIDI From "IAC Driver Bus 3", channel 10,
+   Monitor In, Drum Rack with pads 36-51 loaded.
+4. Do NOT change config/rhythm_config.json unless you want different
+   groove defaults. The shipped groove block is:
+   preset "four", density 0, syncopation 0, swing 0, probability 0, seed 1.
+   That is exactly the Stage 8.1 four-on-the-floor groove.
+
+EVERY RUN - in this order
+1. sclang: evaluate startup.scd
+2. sclang: evaluate tests/sc/test_live_rig.scd
+3. bash terminal 1 (leave running):
+   uv run --with python-osc --with mido --with python-rtmidi python control/ji_bridge.py --interactive --midi --drums --glide-time 0.15
+4. sclang: evaluate ui/control_surface.scd
+5. bash terminal 2 (leave running):
+   uv run --with python-osc --with PyQt6 python ui/ji_ui.py
+6. In the GUI: Rhythm group > Play. Check the drum groove, then Groove.
+   - Groove preset/density/syncopation/swing/probability/seed changes are
+     queued to the next quarter-note beat while Play is running.
+   - Probability gates generated ghosts. At probability 0 (the default)
+     only the preset/grid plays. Raise Probability to hear Density ghosts.
+   - "Show grid" builds the 16-lane step grid lazily; hidden by default.
+   - The pending line shows "Next beat: ... | N pending" while running.
+   - Stop the transport to make all changes immediate again.
+
+IF YOU RE-EVALUATE tests/sc/test_live_rig.scd
+   re-evaluate ui/control_surface.scd afterwards.
+
+IF BEAT-MODE REC/PLAY DOES NOTHING
+   Re-evaluate ui/control_surface.scd. Stage 8.2.2 fixes a Stage 8.1 bug where
+   the beat-scheduled action was called without the loop index, so synced
+   Record/Play fired with index=nil. Free loops were unaffected. After the fix
+   the log shows:
+   [RHYTHM] loop N record fired on beat ...
+   [LOOP N] recording ... s from input ...
+   Beat-mode Play is fixed by the same change.
+   The install line must say:
+   [UI] control surface 8.2.2 installed -> ...
+   If it does not, sclang evaluated an old buffer/file; revert/reopen
+   ui/control_surface.scd and evaluate it again.
+
+STOP
+- Close the GUI (the rig keeps running).
+- Bridge terminal: Ctrl+C.
+- sclang: ~ji_stop_all.();
+
+QUICK CHECK
+- Bridge log should show:
+  [DRUMS] port=IAC Driver Bus 3 channel=10 rate=1.0
+  [GROOVE] preset=four density=0.00 sync=0.00 swing=0.00 probability=0.00 seed=1
+- With Play running, a Mutate press logs:
+  [QUANT] queued mutation (1 pending) due beat N (...)
+  and the set changes only at the beat.
+- Pressing Mutate twice before the beat logs:
+  [QUANT] coalesced 2 mutation requests before beat N
+- If drums show disabled: fix Bus 3, then restart the bridge.
+- Beat-mode loops need transport Play; free loops do not.
+- If the groove sounds unchanged with Density/Syncopation up, check
+  Probability > 0 (it gates generated ghosts).

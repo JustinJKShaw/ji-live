@@ -1,4 +1,4 @@
-"""Stage 8.1 drum engine: note map, pattern, lane state, and MIDI scheduler.
+"""Stage 8.1/8.2 drum engine: note map, generated groove, lanes, scheduler.
 
 The drum voice is a new slow-tempo-independent MIDI output, not an MPE voice.
 It sends plain note-on/note-off messages on one MIDI channel (default 10, mido
@@ -10,13 +10,13 @@ Semantics (design doc §6.14):
 * 16 lanes, default MIDI notes 36-51 (C1 = 36 in the standard numbering; some
   DAWs display that as C3).  The note map and labels live in
   ``config/rhythm_config.json``.
-* The pattern grid is 16th notes.  The default groove is four-on-the-floor:
-  ``kick1`` on every quarter-note beat (steps where ``step % 4 == 0``),
-  ``snare1`` on quarter beats 2 and 4 when the current meter has them, and
-  ``perc3`` (closed hat) on offbeat 8ths (``step % 4 == 2``).  All other lanes
-  are silent in the 8.1 default pattern.  For non-4/4 meters the pattern is
-  truncated/extended against ``steps_per_bar`` (numerator * 16 / denominator);
-  no polyrhythm logic is attempted.
+* The pattern grid is 16th notes.  Stage 8.2 generates it from a pure
+  :class:`control.groove.Groove`: the ``four`` preset reproduces the Stage 8.1
+  four-on-the-floor default exactly, and ``break``/``half``/``techno``,
+  density/syncopation ghosts, probability, and seeded reproducibility are
+  additive.  Swing delays odd 16th steps in the scheduler; it never changes the
+  pattern.  For non-4/4 meters the preset is truncated/tiled against
+  ``steps_per_bar``; no polyrhythm logic is attempted.
 * A 16-bit ``lane_mask`` gates the pattern (bit 0 = lane 1, default note 36;
   bit 15 = lane 16, default note 51).  A lane toggle takes effect on the next
   pattern step.
@@ -28,7 +28,8 @@ Semantics (design doc §6.14):
   stuck notes.
 
 The scheduler runs in a daemon thread with drift-corrected
-``time.monotonic()`` deadlines (the same pattern as :class:`control.arp.SetArp`).
+``time.monotonic()`` deadlines (the same pattern as :class:`control.arp.SetArp`),
+including a per-step swing offset.
 It never busy-waits and never blocks the Qt event loop.
 """
 
@@ -45,10 +46,13 @@ from pathlib import Path
 from typing import Any, Callable
 
 try:  # Support both ``python -m control.drums`` and direct execution.
-    from . import rhythm
+    from . import groove, rhythm
+    from .groove import Groove, GrooveSpec
     from .rhythm import BPM_DEFAULT, DRUM_RATE_DEFAULT
 except ImportError:  # pragma: no cover - exercised only by direct execution
+    import groove  # type: ignore[no-redef]
     import rhythm  # type: ignore[no-redef]
+    from groove import Groove, GrooveSpec  # type: ignore[no-redef]
     from rhythm import BPM_DEFAULT, DRUM_RATE_DEFAULT  # type: ignore[no-redef]
 
 # ``rhythm`` is used with its module prefix everywhere below.
@@ -123,6 +127,12 @@ class DrumConfig:
     bpm: float = BPM_DEFAULT
     meter_num: int = 4
     meter_den: int = 4
+    preset: str = groove.DEFAULT_PRESET
+    density: float = groove.DENSITY_DEFAULT
+    syncopation: float = groove.SYNCOPATION_DEFAULT
+    swing: float = groove.SWING_DEFAULT
+    probability: float = groove.PROBABILITY_DEFAULT
+    seed: int = groove.DEFAULT_SEED
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> "DrumConfig":
@@ -162,6 +172,28 @@ class DrumConfig:
         meter_num = rhythm.clamp_meter_numerator(meter_num)
         meter_den = rhythm.validate_meter_denominator(meter_den)
 
+        # Stage 8.2 groove defaults are additive.  A nested ``"groove"`` map
+        # wins over the flat keys so an older config keeps working unchanged.
+        groove_data = data.get("groove", {})
+        if groove_data is None:
+            groove_data = {}
+        if not isinstance(groove_data, Mapping):
+            raise TypeError("groove config must be a mapping")
+
+        def groove_value(key: str, default: Any) -> Any:
+            if key in groove_data:
+                return groove_data[key]
+            return data.get(key, default)
+
+        spec = GrooveSpec.create(
+            groove_value("preset", groove.DEFAULT_PRESET),
+            groove_value("density", groove.DENSITY_DEFAULT),
+            groove_value("syncopation", groove.SYNCOPATION_DEFAULT),
+            groove_value("swing", groove.SWING_DEFAULT),
+            groove_value("probability", groove.PROBABILITY_DEFAULT),
+            groove_value("seed", groove.DEFAULT_SEED),
+        )
+
         return cls(
             port=port,
             channel=channel,
@@ -174,6 +206,12 @@ class DrumConfig:
             bpm=bpm,
             meter_num=meter_num,
             meter_den=meter_den,
+            preset=spec.preset,
+            density=spec.density,
+            syncopation=spec.syncopation,
+            swing=spec.swing,
+            probability=spec.probability,
+            seed=spec.seed,
         )
 
     @classmethod
@@ -291,7 +329,7 @@ def build_default_pattern(
 class DrumEngine:
     """Thread-safe drum state: pattern, enabled lanes, rate, and meter."""
 
-    def __init__(self, config: DrumConfig) -> None:
+    def __init__(self, config: DrumConfig, groove_state: Groove | None = None) -> None:
         if not isinstance(config, DrumConfig):
             raise TypeError("config must be a DrumConfig")
         self.config = config
@@ -301,7 +339,24 @@ class DrumEngine:
         self._enabled = bool(config.enabled)
         self._rate = rhythm.validate_drum_rate(config.rate)
         self._lane_mask = config.lane_mask & LANE_MASK_ALL
-        self._pattern = self._make_pattern(config.meter_num, config.meter_den)
+        if groove_state is None:
+            groove_state = Groove(
+                GrooveSpec.create(
+                    config.preset,
+                    config.density,
+                    config.syncopation,
+                    config.swing,
+                    config.probability,
+                    config.seed,
+                ),
+                meter_num=config.meter_num,
+                meter_den=config.meter_den,
+                lane_names=[lane.name for lane in config.lanes],
+            )
+        elif not isinstance(groove_state, Groove):
+            raise TypeError("groove_state must be a Groove or None")
+        self._groove = groove_state
+        self._pattern = self._pattern_from_groove()
 
     # -- queries --------------------------------------------------------
 
@@ -338,6 +393,20 @@ class DrumEngine:
             return self._pattern
 
     @property
+    def groove(self) -> Groove:
+        """The Stage 8.2 preset/grid/modifier state."""
+
+        return self._groove
+
+    @property
+    def groove_spec(self) -> GrooveSpec:
+        return self._groove.spec
+
+    @property
+    def grid(self) -> groove.GrooveGrid:
+        return self._groove.grid
+
+    @property
     def meter(self) -> str:
         pattern = self.pattern
         return f"{pattern.meter_num}/{pattern.meter_den}"
@@ -363,18 +432,30 @@ class DrumEngine:
         }
 
     def notes_for_step(self, step_index: int) -> tuple[int, ...]:
-        """MIDI notes to trigger at ``step_index`` (empty when disabled)."""
+        """MIDI notes to trigger at ``step_index`` (empty when disabled).
+
+        The step is interpreted against the generated Stage 8.2 groove: the bar
+        index is ``step_index // steps_per_bar`` and the bar is regenerated
+        deterministically, so ghost hits are stable for a given bar/seed.
+        """
 
         with self._lock:
             if not self._enabled:
                 return ()
-            indices = self._pattern.lanes_at(step_index)
+            total = self._groove.steps_per_bar
+            bar_index, step = divmod(int(step_index), total)
+            indices = self._groove.lanes_at(step, bar_index)
             notes = [
                 self._lanes[index].note
                 for index in indices
                 if self._lane_mask & (1 << index)
             ]
         return tuple(notes)
+
+    def swing_offset(self, step_index: int, step_seconds_value: object) -> float:
+        """Swing delay (seconds) for a scheduler step."""
+
+        return self._groove.swing_offset(step_index, step_seconds_value)
 
     def pattern_description(self) -> str:
         """Human-readable summary used in the ``[DRUMS] pattern ...`` log."""
@@ -384,6 +465,10 @@ class DrumEngine:
             mask = self._lane_mask
         if (
             (pattern.meter_num, pattern.meter_den) == (4, 4)
+            and self._groove.spec.preset == "four"
+            and self._groove.spec.density == 0.0
+            and self._groove.spec.syncopation == 0.0
+            and self._groove.spec.probability == 0.0
             and len(self._lanes) == LANE_COUNT
             and [lane.name for lane in self._lanes[:7]]
             == [lane.name for lane in DEFAULT_LANES[:7]]
@@ -435,6 +520,56 @@ class DrumEngine:
                 return self.set_lane(lane.note, enabled)
         raise ValueError(f"unknown drum lane {name!r}")
 
+    # -- Stage 8.2 groove (immediate at the engine level) ----------------
+
+    def set_preset(self, preset: object) -> GrooveSpec:
+        with self._lock:
+            spec = self._groove.set_preset(preset)
+            self._refresh_pattern()
+            return spec
+
+    def set_groove_modifier(self, name: str, value: object) -> GrooveSpec:
+        with self._lock:
+            spec = self._groove.set_modifier(name, value)
+            self._refresh_pattern()
+            return spec
+
+    def set_density(self, value: object) -> GrooveSpec:
+        return self.set_groove_modifier("density", value)
+
+    def set_syncopation(self, value: object) -> GrooveSpec:
+        return self.set_groove_modifier("syncopation", value)
+
+    def set_swing(self, value: object) -> GrooveSpec:
+        return self.set_groove_modifier("swing", value)
+
+    def set_probability(self, value: object) -> GrooveSpec:
+        return self.set_groove_modifier("probability", value)
+
+    def set_seed(self, seed: object) -> GrooveSpec:
+        with self._lock:
+            spec = self._groove.set_seed(seed)
+            self._refresh_pattern()
+            return spec
+
+    def set_step(self, lane: object, step: object, on: object = True) -> bool:
+        with self._lock:
+            value = self._groove.set_cell(lane, step, on)
+            self._refresh_pattern()
+            return value
+
+    def toggle_step(self, lane: object, step: object) -> bool:
+        with self._lock:
+            value = self._groove.toggle_cell(lane, step)
+            self._refresh_pattern()
+            return value
+
+    def reset_grid(self) -> groove.GrooveGrid:
+        with self._lock:
+            grid = self._groove.reset_grid()
+            self._refresh_pattern()
+            return grid
+
     def set_meter(self, meter_num: object, meter_den: object) -> DrumPattern:
         numerator = rhythm.clamp_meter_numerator(meter_num)
         denominator = rhythm.validate_meter_denominator(meter_den)
@@ -445,11 +580,24 @@ class DrumEngine:
                 current.meter_den,
             ):
                 return current
-            pattern = self._make_pattern(numerator, denominator)
-            self._pattern = pattern
-            return pattern
+            self._groove.set_meter(numerator, denominator)
+            self._refresh_pattern()
+            return self._pattern
+
+    def _pattern_from_groove(self) -> DrumPattern:
+        bar = self._groove.bar(0)
+        return DrumPattern(
+            steps=bar.steps,
+            meter_num=bar.meter_num,
+            meter_den=bar.meter_den,
+        )
+
+    def _refresh_pattern(self) -> None:
+        self._pattern = self._pattern_from_groove()
 
     def _make_pattern(self, meter_num: int, meter_den: int) -> DrumPattern:
+        """Legacy Stage 8.1 four-on-the-floor pattern (kept for compatibility)."""
+
         names = [lane.name for lane in self._lanes]
 
         def index_of(name: str, fallback: int) -> int:
@@ -686,6 +834,7 @@ class DrumScheduler:
         self._thread: threading.Thread | None = None
         self._step_index = 0
         self._held: set[int] = set()
+        self._swing_logged = False
 
     @property
     def bpm(self) -> float:
@@ -719,6 +868,7 @@ class DrumScheduler:
             self._stop.clear()
             self._step_index = 0
             self._held = set()
+            self._swing_logged = False
             thread = threading.Thread(
                 target=self._run,
                 name="ji-drums",
@@ -756,7 +906,32 @@ class DrumScheduler:
                     bpm = self._bpm
                 rate = self.engine.rate
                 step_length = rhythm.step_seconds(bpm, rate)
-                gate = min(self.gate_seconds, max(0.001, step_length * 0.8))
+
+                # Stage 8.2 swing: delay odd 16ths by up to 50% of a step.  The
+                # nominal deadline still advances by exactly one step, so swing
+                # never accumulates drift and never fires a step early.
+                offset = self.engine.swing_offset(step, step_length)
+                # Cap the gate at the time left before the next nominal step as
+                # well as the 8.1 80%-of-a-step ceiling, so a swung note-off can
+                # never run into the following step at fast tempos.
+                gate_limit = max(
+                    0.001,
+                    min(step_length * 0.8, max(0.001, step_length - offset)),
+                )
+                gate = min(self.gate_seconds, gate_limit)
+                if offset > 0.0:
+                    target = deadline + offset
+                    now = self._now()
+                    if target > now:
+                        if self._stop.wait(target - now):
+                            break
+                    if not self._swing_logged:
+                        print(
+                            f"[DRUMS] swing={self.engine.groove_spec.swing:.2f} "
+                            f"step={step} offset={offset:.3f} s"
+                        )
+                        self._swing_logged = True
+
                 notes = self.engine.notes_for_step(step)
 
                 if notes:
@@ -872,6 +1047,12 @@ class DrumRig:
             f"[DRUMS] enabled={int(self.engine.enabled)} "
             f"lanes=0x{self.engine.lane_mask:04x}"
         )
+        spec = self.engine.groove_spec
+        print(
+            f"[GROOVE] preset={spec.preset} density={spec.density:.2f} "
+            f"sync={spec.syncopation:.2f} swing={spec.swing:.2f} "
+            f"probability={spec.probability:.2f} seed={spec.seed}"
+        )
         if self._transport_running and self.engine.enabled:
             self.scheduler.start()
         return True
@@ -906,6 +1087,27 @@ class DrumRig:
     @property
     def port(self) -> str:
         return self.config.port
+
+    @property
+    def groove(self) -> Groove:
+        return self.engine.groove
+
+    def groove_state(self) -> tuple[str, float, float, float, float, int, int]:
+        """``(preset, density, sync, swing, probability, seed, grid_steps)``."""
+
+        spec = self.engine.groove_spec
+        return (
+            spec.preset,
+            float(spec.density),
+            float(spec.syncopation),
+            float(spec.swing),
+            float(spec.probability),
+            int(spec.seed),
+            int(self.engine.groove.grid_steps),
+        )
+
+    def grid_payload(self) -> list[int]:
+        return self.engine.grid.payload()
 
     # -- mutations ------------------------------------------------------
 
@@ -942,9 +1144,42 @@ class DrumRig:
     def set_meter(self, meter_num: object, meter_den: object) -> DrumPattern:
         before = self.engine.pattern
         pattern = self.engine.set_meter(meter_num, meter_den)
-        if self._port_ok and pattern is not before:
-            print(f"[DRUMS] {self.engine.pattern_description()}")
+        if pattern is not before:
+            if self._port_ok:
+                print(f"[DRUMS] {self.engine.pattern_description()}")
+            spec = self.engine.groove_spec
+            print(
+                f"[GROOVE] grid reloaded for meter={pattern.meter_num}/"
+                f"{pattern.meter_den} steps={self.engine.groove.grid_steps} "
+                f"(preset={spec.preset})"
+            )
+            if self.engine.groove.steps_per_bar > self.engine.groove.grid_steps:
+                print(
+                    f"[GROOVE] grid capped at {self.engine.groove.grid_steps} "
+                    f"editable columns (bar has "
+                    f"{self.engine.groove.steps_per_bar} steps)"
+                )
         return pattern
+
+    # -- Stage 8.2 groove -------------------------------------------------
+
+    def set_preset(self, preset: object) -> GrooveSpec:
+        return self.engine.set_preset(preset)
+
+    def set_groove_modifier(self, name: str, value: object) -> GrooveSpec:
+        return self.engine.set_groove_modifier(name, value)
+
+    def set_swing(self, value: object) -> GrooveSpec:
+        return self.engine.set_swing(value)
+
+    def set_seed(self, seed: object) -> GrooveSpec:
+        return self.engine.set_seed(seed)
+
+    def set_step(self, lane: object, step: object, on: object = True) -> bool:
+        return self.engine.set_step(lane, step, on)
+
+    def reset_grid(self) -> groove.GrooveGrid:
+        return self.engine.reset_grid()
 
 
 # ---------------------------------------------------------------------------

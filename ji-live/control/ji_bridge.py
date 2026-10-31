@@ -30,6 +30,11 @@ transport.  ``--drums`` adds the optional drum output on IAC Bus 3 and the
 ``/ji/rhythm/*`` + ``/ji/drums/*`` control/status surface; ``/ji/rhythm/tempo``
 is broadcast to sclang for loop quantization.  A missing Bus 3 disables drums
 but leaves the drone/arp/audio rig running.
+
+Stage 8.2 adds a next-quarter-beat queue for major state changes (mutation/
+octave, MIDI/drum enables, drum rate/lanes, groove edits) and the groove status
+surface (``/ji/drums/groove``, ``/ji/drums/grid``, ``/ji/quantize/state``).
+With the transport stopped every queued action applies immediately.
 """
 
 from __future__ import annotations
@@ -38,20 +43,43 @@ import argparse
 import math
 import sys
 import threading
-from typing import Any
+from typing import Any, Callable
 
 from pythonosc.udp_client import SimpleUDPClient
 
 try:  # Support both ``python -m control.ji_bridge`` and direct execution.
     from .drums import DEFAULT_LANE_MASK, DRUM_RATE_DEFAULT
+    from .groove import Groove, validate_preset
     from .mutation import MutationBatch, MutationEngine, MutationEvent, OctaveEvent
     from .osc_server import MutationOSCServer
+    from .quantize import (
+        PHASE_DRUMS,
+        PHASE_GROOVE,
+        PHASE_MIDI,
+        PHASE_MUTATION,
+        PHASE_OCTAVE,
+        BeatQuantizer,
+    )
     from .rhythm import RhythmEngine, RhythmState
 except ImportError:  # pragma: no cover - exercised only by direct execution
-    from drums import DEFAULT_LANE_MASK, DRUM_RATE_DEFAULT
-    from mutation import MutationBatch, MutationEngine, MutationEvent, OctaveEvent
-    from osc_server import MutationOSCServer
-    from rhythm import RhythmEngine, RhythmState
+    from drums import DEFAULT_LANE_MASK, DRUM_RATE_DEFAULT  # type: ignore[no-redef]
+    from groove import Groove, validate_preset  # type: ignore[no-redef]
+    from mutation import (  # type: ignore[no-redef]
+        MutationBatch,
+        MutationEngine,
+        MutationEvent,
+        OctaveEvent,
+    )
+    from osc_server import MutationOSCServer  # type: ignore[no-redef]
+    from quantize import (  # type: ignore[no-redef]
+        PHASE_DRUMS,
+        PHASE_GROOVE,
+        PHASE_MIDI,
+        PHASE_MUTATION,
+        PHASE_OCTAVE,
+        BeatQuantizer,
+    )
+    from rhythm import RhythmEngine, RhythmState  # type: ignore[no-redef]
 
 FUNDAMENTAL = 220.0
 INITIAL_RATIOS = [1.0, 9.0 / 8.0, 5.0 / 4.0, 4.0 / 3.0, 3.0 / 2.0, 5.0 / 3.0, 15.0 / 8.0]
@@ -63,6 +91,9 @@ MIDI_STATE_ADDRESS = "/ji/midi/state"
 RHYTHM_STATE_ADDRESS = "/ji/rhythm/state"
 RHYTHM_TEMPO_ADDRESS = "/ji/rhythm/tempo"
 DRUMS_STATE_ADDRESS = "/ji/drums/state"
+DRUMS_GROOVE_ADDRESS = "/ji/drums/groove"
+DRUMS_GRID_ADDRESS = "/ji/drums/grid"
+QUANTIZE_STATE_ADDRESS = "/ji/quantize/state"
 MAX_RATIOS = 12
 
 
@@ -147,6 +178,12 @@ class JIBridge:
         # is 120 BPM, 4/4, transport stopped.  A rhythm config's bpm/meter are
         # applied below when drums are configured.
         self.rhythm = RhythmEngine()
+        # Stage 8.2: major state changes are queued to the next quarter beat
+        # while the transport runs.  The worker thread starts in start(), never
+        # here, so constructing a bridge in a pure test creates no threads.
+        self.quantizer = BeatQuantizer(
+            self.rhythm, on_change=self._on_quantize_change
+        )
         self.server = MutationOSCServer(
             self.engine,
             listen_host=self.listen_host,
@@ -162,6 +199,16 @@ class JIBridge:
             on_drums_lane=self._on_drums_lane,
             on_drums_rate=self._on_drums_rate,
             on_rhythm_request=self._on_rhythm_request,
+            on_mutation_request=self.request_mutation,
+            on_octave_request=self.request_octave,
+            on_drums_preset=self._on_drums_preset,
+            on_drums_density=self._on_drums_density,
+            on_drums_syncopation=self._on_drums_syncopation,
+            on_drums_swing=self._on_drums_swing,
+            on_drums_probability=self._on_drums_probability,
+            on_drums_step=self._on_drums_step,
+            on_drums_seed=self._on_drums_seed,
+            on_drums_reset_grid=self._on_drums_reset_grid,
         )
         # Stage 2 API: this is the glide carried by every subsequent event.
         self.server.set_glide_time(glide_time)
@@ -208,6 +255,16 @@ class JIBridge:
             config = drum_rig.config
             self.rhythm.set_bpm(config.bpm)
             self.rhythm.set_meter(config.meter_num, config.meter_den)
+            # The drum engine owns the canonical groove state, so the bridge's
+            # status/apply paths and the scheduler share one Grid.
+            self.groove = drum_rig.engine.groove
+        else:
+            # No drum output: keep a valid groove state so the GUI/status layer
+            # still works.  Edits are accepted and reported but make no sound.
+            state = self.rhythm.state
+            self.groove = Groove(
+                meter_num=state.meter_num, meter_den=state.meter_den
+            )
 
     # ------------------------------------------------------------------
     # Lifecycle / transport
@@ -237,8 +294,15 @@ class JIBridge:
         self._print_rhythm()
         self._send_rhythm_state()
         self._send_drums_state()
+        self._send_groove_state()
+        self._send_grid_state()
+        self.quantizer.start()
+        self._send_quantize_state()
 
     def stop(self) -> None:
+        # Stop the queue first so no action fires while the server/MIDI rig is
+        # shutting down.  (Pending actions are dropped and logged.)
+        self.quantizer.stop()
         try:
             self.server.stop()
         finally:
@@ -355,7 +419,7 @@ class JIBridge:
         self._send_ui_message(MIDI_STATE_ADDRESS, args)
 
     def _set_midi_enabled(self, drone: bool, arp: bool) -> None:
-        """Stage 7.1: apply independent Drone/Arp switches from the UI."""
+        """Stage 7.1/8.2: independent Drone/Arp switches, beat-quantized."""
 
         if self.midi is None or not bool(
             getattr(self.midi, "midi_enabled", True)
@@ -367,24 +431,75 @@ class JIBridge:
             )
             self._send_midi_state()
             return
-        try:
-            self.midi.set_drone_enabled(drone)
-            self.midi.set_arp_enabled(arp)
-        except Exception as exc:  # MIDI is non-critical; keep the bridge alive
-            print(f"[MIDI] UI toggle failed: {exc}", file=sys.stderr)
-        finally:
-            self._send_midi_state()
+
+        def apply() -> None:
+            try:
+                self.midi.set_drone_enabled(drone)
+                self.midi.set_arp_enabled(arp)
+            except Exception as exc:  # MIDI is non-critical; keep alive
+                print(f"[MIDI] UI toggle failed: {exc}", file=sys.stderr)
+            finally:
+                self._send_midi_state()
+
+        self.quantizer.schedule(
+            ("midi", "enabled"),
+            apply,
+            phase=PHASE_MIDI,
+            label="midi enables",
+        )
+
+    # ------------------------------------------------------------------
+    # Stage 8.2 quantize / groove status
+    # ------------------------------------------------------------------
+
+    def _on_quantize_change(self) -> None:
+        """Queue status callback: one ``/ji/quantize/state`` per change."""
+
+        self._send_quantize_state()
+
+    def _send_quantize_state(self) -> None:
+        pending = self.quantizer.pending_count
+        seconds = self.quantizer.seconds_to_next_beat()
+        if not self.rhythm.running:
+            seconds = -1.0
+        self._send_ui_message(
+            QUANTIZE_STATE_ADDRESS, [int(pending), float(seconds)]
+        )
+
+    def _send_groove_state(self) -> None:
+        self._send_ui_message(
+            DRUMS_GROOVE_ADDRESS, list(self.groove.as_status_args())
+        )
+
+    def _send_grid_state(self) -> None:
+        self._send_ui_message(DRUMS_GRID_ADDRESS, self.groove.grid.payload())
+
+    def _log_groove(self) -> None:
+        spec = self.groove.spec
+        print(
+            f"[GROOVE] preset={spec.preset} density={spec.density:.2f} "
+            f"sync={spec.syncopation:.2f} swing={spec.swing:.2f} "
+            f"probability={spec.probability:.2f} seed={spec.seed}"
+        )
+
+    def _applied_groove_log(self) -> None:
+        if self.rhythm.running:
+            beat = int(round(self.rhythm.beat_at()))
+            print(f"[DRUMS] applied groove at beat {beat}")
 
     # ------------------------------------------------------------------
     # Stage 8.1 rhythm / drum status
     # ------------------------------------------------------------------
 
     def _on_ui_hello(self) -> None:
-        """Reply to a UI handshake with the full Stage 7/8.1 snapshot."""
+        """Reply to a UI handshake with the full Stage 7/8.2 snapshot."""
 
         self._send_ui_state()
         self._send_rhythm_state()
         self._send_drums_state()
+        self._send_groove_state()
+        self._send_grid_state()
+        self._send_quantize_state()
 
     def _drums_snapshot(self) -> tuple[bool, bool, float, int]:
         getter = getattr(self.midi, "drums_state", None)
@@ -454,8 +569,16 @@ class JIBridge:
             print(f"[RHYTHM] invalid tempo: {exc}", file=sys.stderr)
             return
         self._midi_call("set_drums_bpm", state.bpm)
+        # Recompute the pending actions' next beat at the new tempo; never drop
+        # them and never apply them immediately just because the tempo moved.
+        self.quantizer.tempo_changed()
         self._broadcast_rhythm()
         self._send_rhythm_state()
+        # A tempo change moves the next-beat countdown even with no pending
+        # actions; send one fresh quantize state so the UI does not count down
+        # against a stale interval.  (tempo_changed already sent one if pending.)
+        if self.quantizer.pending_count == 0:
+            self._send_quantize_state()
         self._print_rhythm()
 
     def _on_rhythm_meter(self, meter_num: int, meter_den: int) -> None:
@@ -464,24 +587,73 @@ class JIBridge:
         except (TypeError, ValueError) as exc:
             print(f"[RHYTHM] invalid meter: {exc}", file=sys.stderr)
             return
-        self._midi_call("set_drums_meter", state.meter_num, state.meter_den)
+        if self._drum_engine() is None:
+            self.groove.set_meter(state.meter_num, state.meter_den)
+            # A test/fake rig may still expose the setter; real no-drums rigs
+            # simply return None from _midi_call.
+            self._midi_call("set_drums_meter", state.meter_num, state.meter_den)
+            print(
+                f"[GROOVE] grid reloaded for meter={state.meter} "
+                f"steps={self.groove.grid_steps} "
+                f"(preset={self.groove.spec.preset})"
+            )
+            if self.groove.steps_per_bar > self.groove.grid_steps:
+                print(
+                    f"[GROOVE] grid capped at {self.groove.grid_steps} "
+                    f"editable columns (bar has {self.groove.steps_per_bar} steps)"
+                )
+        else:
+            # DrumRig logs the reload; this also replaces manual grid edits.
+            self._midi_call("set_drums_meter", state.meter_num, state.meter_den)
         self._broadcast_rhythm()
         self._send_rhythm_state()
+        self._send_groove_state()
+        self._send_grid_state()
         self._print_rhythm()
 
     def _on_rhythm_transport(self, running: bool) -> None:
+        if not running:
+            # Flush before stopping: the last command is not lost, and the
+            # queue cannot carry stale state into the next start.
+            self.quantizer.flush("transport stop")
         state = self.rhythm.set_running(bool(running))
+        self.quantizer.transport_changed()
         # Stopping the scheduler sends note-offs + CC 123; starting it resets
         # to step 0.  Drums run only while the transport is running.
         self._midi_call("set_drums_transport", state.running)
         self._broadcast_rhythm()
         self._send_rhythm_state()
+        self._send_quantize_state()
         self._print_rhythm()
 
     def _on_rhythm_request(self) -> None:
         """Resync: re-broadcast the canonical tempo without changing state."""
 
         self._broadcast_rhythm()
+
+    # ------------------------------------------------------------------
+    # Stage 8.2 quantized mutation requests
+    # ------------------------------------------------------------------
+
+    def request_mutation(self) -> None:
+        """UI/OSC/console mutation request: next beat or immediate if stopped."""
+
+        self.quantizer.schedule(
+            ("mutation",),
+            self.server.trigger,
+            phase=PHASE_MUTATION,
+            label="mutation",
+        )
+
+    def request_octave(self) -> None:
+        """UI/OSC/console octave request: next beat or immediate if stopped."""
+
+        self.quantizer.schedule(
+            ("octave",),
+            self.server.octave,
+            phase=PHASE_OCTAVE,
+            label="octave",
+        )
 
     def _on_drums_enabled(self, enabled: bool) -> None:
         _current, port_ok, _rate, _mask = self._drums_snapshot()
@@ -494,10 +666,19 @@ class JIBridge:
             self._send_drums_state()
             self._send_rhythm_state()
             return
-        self._midi_call("set_drums_enabled", bool(enabled))
-        self._send_drums_state()
-        self._send_rhythm_state()
-        self._print_drums_state()
+
+        def apply() -> None:
+            self._midi_call("set_drums_enabled", bool(enabled))
+            self._send_drums_state()
+            self._send_rhythm_state()
+            self._print_drums_state()
+
+        self.quantizer.schedule(
+            ("drums", "enabled"),
+            apply,
+            phase=PHASE_DRUMS,
+            label="drums enabled",
+        )
 
     def _on_drums_lane(self, note: int, enabled: bool) -> None:
         _current, port_ok, _rate, _mask = self._drums_snapshot()
@@ -508,12 +689,21 @@ class JIBridge:
             )
             self._send_drums_state()
             return
-        try:
-            self._midi_call("set_drums_lane", int(note), bool(enabled))
-        except (TypeError, ValueError):
-            pass
-        self._send_drums_state()
-        self._print_drums_state()
+
+        def apply() -> None:
+            try:
+                self._midi_call("set_drums_lane", int(note), bool(enabled))
+            except (TypeError, ValueError):
+                pass
+            self._send_drums_state()
+            self._print_drums_state()
+
+        self.quantizer.schedule(
+            ("drums", "lane", int(note)),
+            apply,
+            phase=PHASE_DRUMS,
+            label=f"drum lane {int(note)}",
+        )
 
     def _on_drums_rate(self, rate: float) -> None:
         _current, port_ok, _rate, _mask = self._drums_snapshot()
@@ -521,10 +711,136 @@ class JIBridge:
             print("[DRUMS] rate ignored: drums are unavailable", file=sys.stderr)
             self._send_drums_state()
             return
-        self._midi_call("set_drums_rate", rate)
-        self._send_drums_state()
-        self._send_rhythm_state()
-        self._print_drums_state()
+
+        def apply() -> None:
+            self._midi_call("set_drums_rate", rate)
+            self._send_drums_state()
+            self._send_rhythm_state()
+            self._print_drums_state()
+
+        self.quantizer.schedule(
+            ("drums", "rate"),
+            apply,
+            phase=PHASE_DRUMS,
+            label="drum rate",
+        )
+
+    # -- Stage 8.2 groove requests ---------------------------------------
+
+    def _drum_engine(self) -> Any:
+        drum_rig = getattr(self.midi, "drums", None)
+        return getattr(drum_rig, "engine", None)
+
+    def _groove_apply(
+        self,
+        key: tuple[Any, ...],
+        action: Callable[[], None],
+        label: str,
+        *,
+        send_grid: bool = False,
+    ) -> None:
+        """Common groove request path: queue while running, else immediate."""
+
+        def apply() -> None:
+            action()
+            self._log_groove()
+            self._applied_groove_log()
+            self._send_groove_state()
+            if send_grid:
+                self._send_grid_state()
+
+        self.quantizer.schedule(
+            key, apply, phase=PHASE_GROOVE, label=label
+        )
+
+    def _on_drums_preset(self, preset: str) -> None:
+        engine = self._drum_engine()
+
+        def action() -> None:
+            if engine is not None:
+                engine.set_preset(preset)
+            else:
+                self.groove.set_preset(preset)
+
+        try:
+            # Validate before queueing so a bad name cannot poison the queue.
+            validate_preset(preset)
+        except (TypeError, ValueError) as exc:
+            print(f"[GROOVE] invalid preset: {exc}", file=sys.stderr)
+            self._send_groove_state()
+            return
+
+        self._groove_apply(
+            ("groove", "preset"),
+            action,
+            "groove preset",
+            send_grid=True,
+        )
+
+    def _on_drums_density(self, value: float) -> None:
+        self._on_groove_modifier("density", value)
+
+    def _on_drums_syncopation(self, value: float) -> None:
+        self._on_groove_modifier("syncopation", value)
+
+    def _on_drums_swing(self, value: float) -> None:
+        self._on_groove_modifier("swing", value)
+
+    def _on_drums_probability(self, value: float) -> None:
+        self._on_groove_modifier("probability", value)
+
+    def _on_groove_modifier(self, name: str, value: float) -> None:
+        engine = self._drum_engine()
+
+        def action() -> None:
+            if engine is not None:
+                engine.set_groove_modifier(name, value)
+            else:
+                self.groove.set_modifier(name, value)
+
+        self._groove_apply(
+            ("groove", name), action, f"groove {name}"
+        )
+
+    def _on_drums_seed(self, seed: int) -> None:
+        engine = self._drum_engine()
+
+        def action() -> None:
+            if engine is not None:
+                engine.set_seed(seed)
+            else:
+                self.groove.set_seed(seed)
+
+        self._groove_apply(("groove", "seed"), action, "groove seed")
+
+    def _on_drums_step(self, lane: int, step: int, enabled: bool) -> None:
+        engine = self._drum_engine()
+
+        def action() -> None:
+            if engine is not None:
+                engine.set_step(lane, step, enabled)
+            else:
+                self.groove.set_cell(lane, step, enabled)
+
+        self._groove_apply(
+            ("groove", "step", int(lane), int(step)),
+            action,
+            f"groove step {int(lane)}:{int(step)}",
+            send_grid=True,
+        )
+
+    def _on_drums_reset_grid(self) -> None:
+        engine = self._drum_engine()
+
+        def action() -> None:
+            if engine is not None:
+                engine.reset_grid()
+            else:
+                self.groove.reset_grid()
+
+        self._groove_apply(
+            ("groove", "reset"), action, "groove reset", send_grid=True
+        )
 
     def _print_drums_state(self) -> None:
         enabled, port_ok, rate, mask = self._drums_snapshot()
@@ -629,15 +945,15 @@ def run_interactive(bridge: JIBridge) -> None:
 
         line = raw.strip()
         if not line:
-            bridge.server.trigger()
+            bridge.request_mutation()
             continue
 
         parts = line.split()
         command = parts[0].lower()
         if command in ("m", "mutate"):
-            bridge.server.trigger()
+            bridge.request_mutation()
         elif command in ("o", "octave"):
-            bridge.server.octave()
+            bridge.request_octave()
         elif command in ("c", "changes", "change-count"):
             if len(parts) != 2:
                 print("[BRIDGE] usage: c <count>")

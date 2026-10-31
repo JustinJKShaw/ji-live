@@ -8,6 +8,14 @@
   "lane_mask": 69,
   "bpm": 120,
   "meter": [4, 4],
+  "groove": {
+    "preset": "four",
+    "density": 0.0,
+    "syncopation": 0.0,
+    "swing": 0.0,
+    "probability": 0.0,
+    "seed": 1
+  },
   "lanes": [
     {"note": 36, "name": "kick1", "label": "Kick 1", "role": "four-on-the-floor kick"},
     {"note": 37, "name": "kick2", "label": "Kick 2", "role": "second kick"},

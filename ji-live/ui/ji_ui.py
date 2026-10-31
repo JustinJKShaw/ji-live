@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stage 7/8.1 performance GUI: one PyQt6 window.
+"""Stage 7/8.2 performance GUI: one PyQt6 window.
 
 Run from ``ji-live/`` after ``tests/sc/test_live_rig.scd`` and
 ``ui/control_surface.scd`` are evaluated, and after the bridge is running::
@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from typing import Any, Callable
 
 try:
@@ -41,7 +42,7 @@ try:
     )
 except ImportError as exc:  # pragma: no cover - depends on the human's env
     raise SystemExit(
-        "PyQt6 is required for the Stage 7/8.1 GUI.\n"
+        "PyQt6 is required for the Stage 7/8.2 GUI.\n"
         "Install/run it with: uv run --with python-osc --with PyQt6 "
         "python ui/ji_ui.py\n"
         "See docs/README_stage8.md for details."
@@ -59,6 +60,11 @@ if __package__:  # ``python -m ui.ji_ui`` and normal package imports
         DRUM_LANE_DEFS,
         DRUM_RATE_LABELS,
         DRUM_RATES,
+        GROOVE_DEFAULT_PRESET,
+        GROOVE_DEFAULT_SEED,
+        GROOVE_PARAMS,
+        GROOVE_PRESETS,
+        GROOVE_SEED_MAX,
         LOOP_BEATS_DEFAULT,
         LOOP_BEATS_MAX,
         LOOP_BEATS_MIN,
@@ -70,9 +76,11 @@ if __package__:  # ``python -m ui.ji_ui`` and normal package imports
         METER_NUM_DEFAULT,
         METER_NUM_MAX,
         METER_NUM_MIN,
+        MAX_GRID_STEPS,
         MUTATION_PARAMS,
         OSCController,
         StatusStore,
+        grid_steps_for_meter,
     )
 else:  # pragma: no cover - direct ``python ui/ji_ui.py``
     import osc_control  # type: ignore[no-redef]
@@ -86,6 +94,11 @@ else:  # pragma: no cover - direct ``python ui/ji_ui.py``
         DRUM_LANE_DEFS,
         DRUM_RATE_LABELS,
         DRUM_RATES,
+        GROOVE_DEFAULT_PRESET,
+        GROOVE_DEFAULT_SEED,
+        GROOVE_PARAMS,
+        GROOVE_PRESETS,
+        GROOVE_SEED_MAX,
         LOOP_BEATS_DEFAULT,
         LOOP_BEATS_MAX,
         LOOP_BEATS_MIN,
@@ -97,9 +110,11 @@ else:  # pragma: no cover - direct ``python ui/ji_ui.py``
         METER_NUM_DEFAULT,
         METER_NUM_MAX,
         METER_NUM_MIN,
+        MAX_GRID_STEPS,
         MUTATION_PARAMS,
         OSCController,
         StatusStore,
+        grid_steps_for_meter,
     )
 
 
@@ -261,6 +276,12 @@ class MainWindow(QMainWindow):
         self._drum_sync = False
         self._loop_sync = False
         self._loop_custom: set[int] = set()
+        self._groove_sync = False
+        self._grid_sync = False
+        self._grid_built_steps = 0
+        self.step_cells: dict[tuple[int, int], QPushButton] = {}
+        self._quantize_deadline: float | None = None
+        self._quantize_pending = 0
 
         self._relay = _StatusRelay()
         self._relay.message.connect(
@@ -268,7 +289,7 @@ class MainWindow(QMainWindow):
         )
         self._wire_controller_callback()
 
-        self.setWindowTitle("JI Station - Stage 8.1 Performance")
+        self.setWindowTitle("JI Station - Stage 8.2 Performance")
         self.resize(1280, 720)
         self.setMinimumSize(1080, 600)
         compact = QFont()
@@ -289,6 +310,7 @@ class MainWindow(QMainWindow):
         outer.addWidget(self._build_autotune_group())
         outer.addWidget(self._build_loops_group())
         outer.addWidget(self._build_rhythm_group())
+        outer.addWidget(self._build_groove_group())
         outer.addWidget(self._build_status_group())
         outer.addStretch(1)
 
@@ -303,6 +325,13 @@ class MainWindow(QMainWindow):
         self._send_timer.setInterval(33)  # ~30 Hz coalesced knob sends
         self._send_timer.timeout.connect(self._flush_pending)
         self._send_timer.start()
+
+        # Local countdown for the pending/quantize status line.  The bridge
+        # sends one /ji/quantize/state per change, not per animation frame.
+        self._quantize_timer = QTimer(self)
+        self._quantize_timer.setInterval(100)
+        self._quantize_timer.timeout.connect(self._update_quantize_label)
+        self._quantize_timer.start()
 
         self._refresh_status_labels()
 
@@ -347,8 +376,15 @@ class MainWindow(QMainWindow):
             self._sync_midi_controls()
         if address == osc_control.RHYTHM_STATE:
             self._sync_rhythm_controls()
+            self._update_quantize_label()
         if address == osc_control.DRUMS_STATE:
             self._sync_drum_controls()
+        if address == osc_control.DRUMS_GROOVE:
+            self._sync_groove_controls()
+        if address == osc_control.DRUMS_GRID:
+            self._sync_grid()
+        if address == osc_control.QUANTIZE_STATE:
+            self._sync_quantize()
 
         self._refresh_status_labels()
 
@@ -389,12 +425,8 @@ class MainWindow(QMainWindow):
         for button in (self.mutate_button, self.octave_button):
             button.setMinimumHeight(26)
             button.setMinimumWidth(78)
-        self.mutate_button.clicked.connect(
-            lambda: self._guard(self.controller.trigger_mutation)
-        )
-        self.octave_button.clicked.connect(
-            lambda: self._guard(self.controller.trigger_octave)
-        )
+        self.mutate_button.clicked.connect(self._on_mutate_clicked)
+        self.octave_button.clicked.connect(self._on_octave_clicked)
         layout.addWidget(self.mutate_button)
         layout.addWidget(self.octave_button)
         layout.addStretch(1)
@@ -700,9 +732,10 @@ class MainWindow(QMainWindow):
 
         self.rhythm_label = QLabel("Rhythm: waiting for bridge")
         self.drum_label = QLabel("Drums: waiting for bridge")
+        self.quantize_label = QLabel("Next beat: waiting for bridge")
         status_row = QHBoxLayout()
         status_row.setSpacing(12)
-        for label in (self.rhythm_label, self.drum_label):
+        for label in (self.rhythm_label, self.drum_label, self.quantize_label):
             label.setTextInteractionFlags(
                 Qt.TextInteractionFlag.TextSelectableByMouse
             )
@@ -725,6 +758,263 @@ class MainWindow(QMainWindow):
             lane_grid.addWidget(checkbox, position // 8, position % 8)
         layout.addLayout(lane_grid)
         return group
+
+    def _build_groove_group(self) -> QGroupBox:
+        group = QGroupBox("Groove")
+        layout = QVBoxLayout(group)
+        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setSpacing(2)
+
+        row = QHBoxLayout()
+        row.setSpacing(3)
+        row.addWidget(QLabel("Preset"))
+        self.groove_preset_combo = QComboBox()
+        self.groove_preset_combo.addItems(list(GROOVE_PRESETS))
+        try:
+            self.groove_preset_combo.setCurrentIndex(
+                list(GROOVE_PRESETS).index(GROOVE_DEFAULT_PRESET)
+            )
+        except ValueError:  # pragma: no cover - constant lists stay aligned
+            self.groove_preset_combo.setCurrentIndex(0)
+        self.groove_preset_combo.setFixedWidth(82)
+        self.groove_preset_combo.currentIndexChanged.connect(
+            self._on_groove_preset_changed
+        )
+        row.addWidget(self.groove_preset_combo)
+
+        self.groove_knobs: dict[str, Knob] = {}
+        for spec in GROOVE_PARAMS:
+            knob = Knob(
+                spec.label,
+                spec.low,
+                spec.high,
+                spec.default,
+                steps=1000,
+                fmt="{:.2f}",
+            )
+            knob.valueChanged.connect(
+                lambda value, key=spec.key: self._on_groove_knob(key, value)
+            )
+            self.groove_knobs[spec.key] = knob
+            row.addWidget(knob)
+
+        row.addWidget(QLabel("Seed"))
+        self.groove_seed_spin = QSpinBox()
+        self.groove_seed_spin.setRange(0, int(GROOVE_SEED_MAX))
+        self.groove_seed_spin.setValue(int(GROOVE_DEFAULT_SEED))
+        self.groove_seed_spin.setFixedWidth(90)
+        self.groove_seed_spin.setToolTip(
+            "Groove seed. Same preset + modifiers + seed + bar reproduce the "
+            "same generated ghosts."
+        )
+        self.groove_seed_spin.valueChanged.connect(self._on_groove_seed_changed)
+        row.addWidget(self.groove_seed_spin)
+
+        self.show_grid_checkbox = QCheckBox("Show grid")
+        self.show_grid_checkbox.setChecked(False)
+        self.show_grid_checkbox.setToolTip(
+            "Hidden by default to keep the window compact. Builds the 16-lane "
+            "step grid lazily on first show."
+        )
+        self.show_grid_checkbox.toggled.connect(self._on_show_grid)
+        row.addWidget(self.show_grid_checkbox)
+        self.reset_grid_button = QPushButton("Reset grid")
+        self.reset_grid_button.setMinimumHeight(22)
+        self.reset_grid_button.clicked.connect(
+            lambda: self._guard(self.controller.reset_drum_grid)
+        )
+        row.addWidget(self.reset_grid_button)
+        row.addStretch(1)
+        layout.addLayout(row)
+
+        self.grid_scroll = QScrollArea()
+        self.grid_scroll.setWidgetResizable(True)
+        self.grid_scroll.setVisible(False)
+        self.grid_scroll.setMaximumHeight(190)
+        self.grid_container = QWidget()
+        self.grid_layout = QGridLayout(self.grid_container)
+        self.grid_layout.setContentsMargins(0, 0, 0, 0)
+        self.grid_layout.setSpacing(0)
+        self.grid_scroll.setWidget(self.grid_container)
+        layout.addWidget(self.grid_scroll)
+        return group
+
+    # -- Stage 8.2 groove grid ------------------------------------------
+
+    def _grid_steps(self) -> int:
+        groove = self.store.groove
+        if groove is not None:
+            return max(1, min(MAX_GRID_STEPS, int(groove.grid_steps)))
+        rhythm = self.store.rhythm
+        if rhythm is not None:
+            return grid_steps_for_meter(rhythm.meter_num, rhythm.meter_den)
+        return 16
+
+    def _ensure_grid(self, steps: int | None = None) -> None:
+        """Lazily build the 16 x N step grid; safe to call repeatedly."""
+
+        wanted = self._grid_steps() if steps is None else int(steps)
+        wanted = max(1, min(MAX_GRID_STEPS, wanted))
+        if self.step_cells and self._grid_built_steps == wanted:
+            self._apply_grid_from_store()
+            return
+
+        self._grid_sync = True
+        try:
+            while self.grid_layout.count():
+                item = self.grid_layout.takeAt(0)
+                widget = item.widget()
+                if widget is not None:
+                    widget.deleteLater()
+            self.step_cells.clear()
+
+            corner = QLabel("Lane")
+            corner.setFixedWidth(52)
+            self.grid_layout.addWidget(corner, 0, 0)
+            for step in range(wanted):
+                header = QLabel(str(step + 1))
+                header.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+                header.setFixedSize(14, 14)
+                self.grid_layout.addWidget(header, 0, step + 1)
+
+            for lane, (_note, _name, label) in enumerate(DRUM_LANE_DEFS):
+                lane_label = QLabel(label)
+                lane_label.setFixedWidth(52)
+                lane_label.setToolTip(label)
+                self.grid_layout.addWidget(lane_label, lane + 1, 0)
+                for step in range(wanted):
+                    cell = QPushButton()
+                    cell.setCheckable(True)
+                    cell.setFixedSize(14, 14)
+                    cell.setStyleSheet(
+                        "QPushButton{padding:0; margin:0; border:1px solid "
+                        "#888888;} QPushButton:checked{background:#4a90d9;}"
+                    )
+                    cell.setToolTip(f"{label} step {step + 1}")
+                    cell.toggled.connect(
+                        lambda checked, l=lane, s=step: self._on_grid_cell(
+                            l, s, checked
+                        )
+                    )
+                    self.step_cells[(lane, step)] = cell
+                    self.grid_layout.addWidget(cell, lane + 1, step + 1)
+            self._grid_built_steps = wanted
+        finally:
+            self._grid_sync = False
+        self._apply_grid_from_store()
+
+    def _apply_grid_from_store(self) -> None:
+        masks = self.store.grid
+        if masks is None or not self.step_cells:
+            return
+        self._grid_sync = True
+        try:
+            for (lane, step), cell in self.step_cells.items():
+                on = bool(masks[lane] & (1 << step))
+                blocker = QSignalBlocker(cell)
+                cell.setChecked(on)
+                del blocker
+        finally:
+            self._grid_sync = False
+
+    def _on_show_grid(self, checked: bool) -> None:
+        self.grid_scroll.setVisible(bool(checked))
+        if checked:
+            self._ensure_grid()
+
+    def _on_grid_cell(self, lane: int, step: int, checked: bool) -> None:
+        if self._grid_sync:
+            return
+        self._guard(self.controller.set_drum_step, int(lane), int(step), bool(checked))
+        self._set_message(
+            f"Grid cell {lane}:{step} {'on' if checked else 'off'} queued"
+        )
+
+    def _on_groove_preset_changed(self, position: int) -> None:
+        if self._groove_sync:
+            return
+        if not 0 <= position < len(GROOVE_PRESETS):
+            return
+        self._guard(
+            self.controller.set_drums_preset, GROOVE_PRESETS[position]
+        )
+        self._set_message(
+            f"Groove preset {GROOVE_PRESETS[position]} queued for the next beat"
+            if self._transport_running()
+            else f"Groove preset {GROOVE_PRESETS[position]} applied immediately"
+        )
+
+    def _on_groove_knob(self, key: str, value: float) -> None:
+        self._pending[("groove", key)] = value
+
+    def _on_groove_seed_changed(self, value: int) -> None:
+        if self._groove_sync:
+            return
+        self._guard(self.controller.set_drum_seed, int(value))
+
+    def _transport_running(self) -> bool:
+        rhythm = self.store.rhythm
+        return rhythm is not None and bool(rhythm.running)
+
+    def _sync_groove_controls(self) -> None:
+        groove = self.store.groove
+        if groove is None:
+            return
+        self._groove_sync = True
+        try:
+            if groove.preset in GROOVE_PRESETS:
+                self.groove_preset_combo.setCurrentIndex(
+                    list(GROOVE_PRESETS).index(groove.preset)
+                )
+            for spec in GROOVE_PARAMS:
+                knob = self.groove_knobs.get(spec.key)
+                if knob is not None:
+                    knob.set_value(groove.modifiers.get(spec.key, spec.default))
+            self.groove_seed_spin.setValue(int(groove.seed))
+        finally:
+            self._groove_sync = False
+        if self.grid_scroll.isVisible():
+            if self._grid_built_steps != groove.grid_steps:
+                self._ensure_grid(groove.grid_steps)
+            else:
+                self._apply_grid_from_store()
+
+    def _sync_grid(self) -> None:
+        if not self.grid_scroll.isVisible():
+            return
+        self._ensure_grid()
+        self._apply_grid_from_store()
+
+    def _sync_quantize(self) -> None:
+        quantize = self.store.quantize
+        if quantize is None:
+            self._quantize_deadline = None
+            self._quantize_pending = 0
+        elif quantize.seconds < 0.0:
+            self._quantize_deadline = None
+            self._quantize_pending = int(quantize.pending)
+        else:
+            self._quantize_deadline = time.monotonic() + float(quantize.seconds)
+            self._quantize_pending = int(quantize.pending)
+        self._update_quantize_label()
+
+    def _update_quantize_label(self) -> None:
+        rhythm = self.store.rhythm
+        if rhythm is not None and not rhythm.running:
+            self.quantize_label.setText("Next beat: - | quantized off (immediate)")
+            return
+        if self.store.quantize is None:
+            self.quantize_label.setText("Next beat: waiting for bridge")
+            return
+        if self._quantize_deadline is None:
+            self.quantize_label.setText(
+                f"Next beat: - | {self._quantize_pending} pending"
+            )
+            return
+        remaining = max(0.0, self._quantize_deadline - time.monotonic())
+        self.quantize_label.setText(
+            f"Next beat: {remaining:.2f} s | {self._quantize_pending} pending"
+        )
 
     def _build_status_group(self) -> QGroupBox:
         group = QGroupBox("Status")
@@ -842,17 +1132,23 @@ class MainWindow(QMainWindow):
         if self._drum_sync:
             return
         self._guard(self.controller.set_drums_enabled, bool(checked))
+        if self._transport_running():
+            self._set_message("Drums on/off queued for the next beat")
 
     def _on_drum_rate_changed(self, position: int) -> None:
         if self._drum_sync:
             return
         if 0 <= position < len(DRUM_RATES):
             self._guard(self.controller.set_drum_rate, DRUM_RATES[position])
+            if self._transport_running():
+                self._set_message("Drum rate queued for the next beat")
 
     def _on_lane_toggled(self, note: int, checked: bool) -> None:
         if self._drum_sync:
             return
         self._guard(self.controller.set_drum_lane, int(note), bool(checked))
+        if self._transport_running():
+            self._set_message("Drum lane queued for the next beat")
 
     def _loop_mode(self, index: int) -> str:
         combo = self.loop_mode_combos[index]
@@ -919,6 +1215,9 @@ class MainWindow(QMainWindow):
         if self._loop_mode(index) == "beat":
             # sclang computes beats * 60 / bpm at record time.
             self._guard(self.controller.loop_record, index)
+            self._set_message(
+                f"Loop {index} record queued for the next beat"
+            )
             return
         # Free mode keeps the Stage 7 behavior but uses this loop's seconds.
         config = self.store.loop_configs.get(index)
@@ -931,6 +1230,24 @@ class MainWindow(QMainWindow):
         if not self._loop_transport_ready(index):
             return
         self._guard(self.controller.loop_play, index)
+        if self._loop_mode(index) == "beat":
+            self._set_message(f"Loop {index} play queued for the next beat")
+
+    def _on_mutate_clicked(self) -> None:
+        self._guard(self.controller.trigger_mutation)
+        self._set_message(
+            "Mutation queued for the next beat"
+            if self._transport_running()
+            else "Mutation applied immediately (transport stopped)"
+        )
+
+    def _on_octave_clicked(self) -> None:
+        self._guard(self.controller.trigger_octave)
+        self._set_message(
+            "Octave queued for the next beat"
+            if self._transport_running()
+            else "Octave applied immediately (transport stopped)"
+        )
 
     def _on_midi_toggle(self, _checked: bool) -> None:
         if self._midi_sync:
@@ -940,6 +1257,8 @@ class MainWindow(QMainWindow):
             self.midi_drone_checkbox.isChecked(),
             self.midi_arp_checkbox.isChecked(),
         )
+        if self._transport_running():
+            self._set_message("Drone/Arp change queued for the next beat")
 
     def _sync_midi_controls(self) -> None:
         """Reflect bridge MIDI enabled/ports and per-bus switch state."""
@@ -978,6 +1297,8 @@ class MainWindow(QMainWindow):
                 self._guard(self.controller.loop_set_beats, key[1], value)
             elif key[0] == "loop_length":
                 self._guard(self.controller.loop_set_length, key[1], value)
+            elif key[0] == "groove":
+                self._guard(self.controller.set_groove_modifier, key[1], value)
 
     def _guard(self, action: Callable[..., Any], *args: Any) -> None:
         try:
@@ -1194,6 +1515,7 @@ class MainWindow(QMainWindow):
             self._flush_pending()
         finally:
             self._send_timer.stop()
+            self._quantize_timer.stop()
             stop = getattr(self.controller, "stop", None)
             if callable(stop):
                 try:
@@ -1211,7 +1533,7 @@ class MainWindow(QMainWindow):
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Stage 7/8.1 performance GUI (PyQt6, one window)"
+        description="Stage 7/8.2 performance GUI (PyQt6, one window)"
     )
     parser.add_argument("--bridge-host", default="127.0.0.1")
     parser.add_argument("--bridge-port", type=int, default=9000)
@@ -1235,7 +1557,7 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(f"{label} must be between 1 and 65535")
 
     app = QApplication(sys.argv[:1])
-    app.setApplicationName("JI Station Stage 8.1")
+    app.setApplicationName("JI Station Stage 8.2")
 
     controller = OSCController(
         bridge_host=args.bridge_host,
@@ -1252,7 +1574,7 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         message = f"Could not start the UI OSC listener:\n{exc}"
         print(f"[UI] {message}", file=sys.stderr)
-        QMessageBox.critical(None, "JI Stage 8.1 UI", message)
+        QMessageBox.critical(None, "JI Stage 8.2 UI", message)
         window.close()
         return 1
 

@@ -38,9 +38,10 @@ from pythonosc.dispatcher import Dispatcher
 from pythonosc.osc_server import ThreadingOSCUDPServer
 
 try:  # Support both ``python -m control.osc_server`` and direct execution.
-    from . import rhythm
+    from . import groove, rhythm
     from .mutation import MutationBatch, MutationEngine, MutationEvent, OctaveEvent
 except ImportError:  # pragma: no cover - exercised only by direct execution
+    import groove  # type: ignore[no-redef]
     import rhythm  # type: ignore[no-redef]
     from mutation import (  # type: ignore[no-redef]
         MutationBatch,
@@ -62,6 +63,15 @@ RHYTHM_REQUEST_ADDRESS = "/ji/rhythm/request"
 DRUMS_SET_ENABLED_ADDRESS = "/ji/drums/set_enabled"
 DRUMS_SET_LANE_ADDRESS = "/ji/drums/set_lane"
 DRUMS_SET_RATE_ADDRESS = "/ji/drums/set_rate"
+# Stage 8.2 groove controls (UI -> Bridge).  Quantization is the bridge's job.
+DRUMS_SET_PRESET_ADDRESS = "/ji/drums/set_preset"
+DRUMS_SET_DENSITY_ADDRESS = "/ji/drums/set_density"
+DRUMS_SET_SYNCOPATION_ADDRESS = "/ji/drums/set_syncopation"
+DRUMS_SET_SWING_ADDRESS = "/ji/drums/set_swing"
+DRUMS_SET_PROBABILITY_ADDRESS = "/ji/drums/set_probability"
+DRUMS_SET_STEP_ADDRESS = "/ji/drums/set_step"
+DRUMS_SET_SEED_ADDRESS = "/ji/drums/set_seed"
+DRUMS_RESET_GRID_ADDRESS = "/ji/drums/reset_grid"
 
 
 class MutationOSCServer:
@@ -85,6 +95,14 @@ class MutationOSCServer:
     DRUMS_SET_ENABLED_ADDRESS = DRUMS_SET_ENABLED_ADDRESS
     DRUMS_SET_LANE_ADDRESS = DRUMS_SET_LANE_ADDRESS
     DRUMS_SET_RATE_ADDRESS = DRUMS_SET_RATE_ADDRESS
+    DRUMS_SET_PRESET_ADDRESS = DRUMS_SET_PRESET_ADDRESS
+    DRUMS_SET_DENSITY_ADDRESS = DRUMS_SET_DENSITY_ADDRESS
+    DRUMS_SET_SYNCOPATION_ADDRESS = DRUMS_SET_SYNCOPATION_ADDRESS
+    DRUMS_SET_SWING_ADDRESS = DRUMS_SET_SWING_ADDRESS
+    DRUMS_SET_PROBABILITY_ADDRESS = DRUMS_SET_PROBABILITY_ADDRESS
+    DRUMS_SET_STEP_ADDRESS = DRUMS_SET_STEP_ADDRESS
+    DRUMS_SET_SEED_ADDRESS = DRUMS_SET_SEED_ADDRESS
+    DRUMS_RESET_GRID_ADDRESS = DRUMS_RESET_GRID_ADDRESS
 
     def __init__(
         self,
@@ -102,6 +120,16 @@ class MutationOSCServer:
         on_drums_lane: Callable[[int, bool], None] | None = None,
         on_drums_rate: Callable[[float], None] | None = None,
         on_rhythm_request: Callable[[], None] | None = None,
+        on_mutation_request: Callable[[], None] | None = None,
+        on_octave_request: Callable[[], None] | None = None,
+        on_drums_preset: Callable[[str], None] | None = None,
+        on_drums_density: Callable[[float], None] | None = None,
+        on_drums_syncopation: Callable[[float], None] | None = None,
+        on_drums_swing: Callable[[float], None] | None = None,
+        on_drums_probability: Callable[[float], None] | None = None,
+        on_drums_step: Callable[[int, int, bool], None] | None = None,
+        on_drums_seed: Callable[[int], None] | None = None,
+        on_drums_reset_grid: Callable[[], None] | None = None,
     ) -> None:
         if not isinstance(engine, MutationEngine):
             raise TypeError("engine must be a MutationEngine")
@@ -121,6 +149,16 @@ class MutationOSCServer:
             ("on_drums_lane", on_drums_lane),
             ("on_drums_rate", on_drums_rate),
             ("on_rhythm_request", on_rhythm_request),
+            ("on_mutation_request", on_mutation_request),
+            ("on_octave_request", on_octave_request),
+            ("on_drums_preset", on_drums_preset),
+            ("on_drums_density", on_drums_density),
+            ("on_drums_syncopation", on_drums_syncopation),
+            ("on_drums_swing", on_drums_swing),
+            ("on_drums_probability", on_drums_probability),
+            ("on_drums_step", on_drums_step),
+            ("on_drums_seed", on_drums_seed),
+            ("on_drums_reset_grid", on_drums_reset_grid),
         ):
             if callback is not None and not callable(callback):
                 raise TypeError(f"{label} must be callable or None")
@@ -139,6 +177,16 @@ class MutationOSCServer:
         self._on_drums_lane = on_drums_lane
         self._on_drums_rate = on_drums_rate
         self._on_rhythm_request = on_rhythm_request
+        self._on_mutation_request = on_mutation_request
+        self._on_octave_request = on_octave_request
+        self._on_drums_preset = on_drums_preset
+        self._on_drums_density = on_drums_density
+        self._on_drums_syncopation = on_drums_syncopation
+        self._on_drums_swing = on_drums_swing
+        self._on_drums_probability = on_drums_probability
+        self._on_drums_step = on_drums_step
+        self._on_drums_seed = on_drums_seed
+        self._on_drums_reset_grid = on_drums_reset_grid
 
         self._lock = threading.RLock()
         # Serializes apply -> print -> callback so a threaded OSC server cannot
@@ -178,6 +226,24 @@ class MutationOSCServer:
         dispatcher.map(self.DRUMS_SET_ENABLED_ADDRESS, self._handle_drums_enabled)
         dispatcher.map(self.DRUMS_SET_LANE_ADDRESS, self._handle_drums_lane)
         dispatcher.map(self.DRUMS_SET_RATE_ADDRESS, self._handle_drums_rate)
+        dispatcher.map(self.DRUMS_SET_PRESET_ADDRESS, self._handle_drums_preset)
+        dispatcher.map(
+            self.DRUMS_SET_DENSITY_ADDRESS, self._handle_drums_density
+        )
+        dispatcher.map(
+            self.DRUMS_SET_SYNCOPATION_ADDRESS,
+            self._handle_drums_syncopation,
+        )
+        dispatcher.map(self.DRUMS_SET_SWING_ADDRESS, self._handle_drums_swing)
+        dispatcher.map(
+            self.DRUMS_SET_PROBABILITY_ADDRESS,
+            self._handle_drums_probability,
+        )
+        dispatcher.map(self.DRUMS_SET_STEP_ADDRESS, self._handle_drums_step)
+        dispatcher.map(self.DRUMS_SET_SEED_ADDRESS, self._handle_drums_seed)
+        dispatcher.map(
+            self.DRUMS_RESET_GRID_ADDRESS, self._handle_drums_reset_grid
+        )
         self._dispatcher = dispatcher
 
     # ------------------------------------------------------------------
@@ -431,11 +497,19 @@ class MutationOSCServer:
     def _handle_trigger(self, _address: str, *args: Any) -> None:
         if args:
             _warn(f"{self.TRIGGER_ADDRESS} takes no arguments; ignoring extras")
+        callback = self._on_mutation_request
+        if callback is not None:
+            self._call_callback(callback, "mutation request")
+            return
         self.trigger()
 
     def _handle_octave(self, _address: str, *args: Any) -> None:
         if args:
             _warn(f"{self.OCTAVE_ADDRESS} takes no arguments; ignoring extras")
+        callback = self._on_octave_request
+        if callback is not None:
+            self._call_callback(callback, "octave request")
+            return
         self.octave()
 
     def _handle_set_randomness(self, _address: str, *args: Any) -> None:
@@ -627,6 +701,109 @@ class MutationOSCServer:
             _warn(f"{self.DRUMS_SET_RATE_ADDRESS}: {exc}")
             return
         self._call_callback(self._on_drums_rate, "drums rate", rate)
+
+    # -- Stage 8.2 groove controls ---------------------------------------
+
+    def _handle_drums_preset(self, _address: str, *args: Any) -> None:
+        if len(args) != 1:
+            _warn(
+                f"{self.DRUMS_SET_PRESET_ADDRESS} expects one preset name; "
+                f"got {len(args)} arguments"
+            )
+            return
+        try:
+            preset = groove.validate_preset(args[0])
+        except (TypeError, ValueError) as exc:
+            _warn(f"{self.DRUMS_SET_PRESET_ADDRESS}: {exc}")
+            return
+        self._call_callback(self._on_drums_preset, "drums preset", preset)
+
+    def _handle_groove_modifier(
+        self, args: tuple[Any, ...], address: str, label: str, callback: Any
+    ) -> None:
+        value = _one_float(args, address)
+        if value is None:
+            return
+        if not 0.0 <= value <= 1.0:
+            _warn(f"{address}: {value:.3f} clamped to 0..1")
+        try:
+            clamped = groove.clamp_unit(value, label)
+        except (TypeError, ValueError) as exc:
+            _warn(f"{address}: {exc}")
+            return
+        self._call_callback(callback, label, clamped)
+
+    def _handle_drums_density(self, _address: str, *args: Any) -> None:
+        self._handle_groove_modifier(
+            args,
+            self.DRUMS_SET_DENSITY_ADDRESS,
+            "density",
+            self._on_drums_density,
+        )
+
+    def _handle_drums_syncopation(self, _address: str, *args: Any) -> None:
+        self._handle_groove_modifier(
+            args,
+            self.DRUMS_SET_SYNCOPATION_ADDRESS,
+            "syncopation",
+            self._on_drums_syncopation,
+        )
+
+    def _handle_drums_swing(self, _address: str, *args: Any) -> None:
+        self._handle_groove_modifier(
+            args,
+            self.DRUMS_SET_SWING_ADDRESS,
+            "swing",
+            self._on_drums_swing,
+        )
+
+    def _handle_drums_probability(self, _address: str, *args: Any) -> None:
+        self._handle_groove_modifier(
+            args,
+            self.DRUMS_SET_PROBABILITY_ADDRESS,
+            "probability",
+            self._on_drums_probability,
+        )
+
+    def _handle_drums_step(self, _address: str, *args: Any) -> None:
+        if len(args) != 3:
+            _warn(
+                f"{self.DRUMS_SET_STEP_ADDRESS} expects lane, step and 0/1; "
+                f"got {len(args)} arguments"
+            )
+            return
+        try:
+            lane = groove.validate_lane(_one_int(args[0], "lane"))
+            step = groove.validate_step(_one_int(args[1], "step"))
+            enabled = _one_bool(args[2], "step enabled")
+        except (TypeError, ValueError) as exc:
+            _warn(f"{self.DRUMS_SET_STEP_ADDRESS}: {exc}")
+            return
+        self._call_callback(
+            self._on_drums_step, "drums step", lane, step, enabled
+        )
+
+    def _handle_drums_seed(self, _address: str, *args: Any) -> None:
+        if len(args) != 1:
+            _warn(
+                f"{self.DRUMS_SET_SEED_ADDRESS} expects one seed; "
+                f"got {len(args)} arguments"
+            )
+            return
+        try:
+            seed = groove.validate_seed(_one_int(args[0], "seed"))
+        except (TypeError, ValueError) as exc:
+            _warn(f"{self.DRUMS_SET_SEED_ADDRESS}: {exc}")
+            return
+        self._call_callback(self._on_drums_seed, "drums seed", seed)
+
+    def _handle_drums_reset_grid(self, _address: str, *args: Any) -> None:
+        if args:
+            _warn(
+                f"{self.DRUMS_RESET_GRID_ADDRESS} takes no arguments; "
+                f"ignoring extras"
+            )
+        self._call_callback(self._on_drums_reset_grid, "drums reset grid")
 
     @staticmethod
     def _call_callback(

@@ -533,6 +533,47 @@ class MIDIRig:
         if self.drums is not None:
             self.drums.set_meter(meter_num, meter_den)
 
+    # -- Stage 8.2 groove -------------------------------------------------
+
+    def drums_groove_state(
+        self,
+    ) -> tuple[str, float, float, float, float, int, int] | None:
+        """``(preset, density, sync, swing, probability, seed, grid_steps)``."""
+
+        if self.drums is None:
+            return None
+        return self.drums.groove_state()
+
+    def drums_grid(self) -> list[int] | None:
+        if self.drums is None:
+            return None
+        return self.drums.grid_payload()
+
+    def set_drums_preset(self, preset: str) -> object:
+        if self.drums is None:
+            raise RuntimeError("drums are not configured")
+        return self.drums.set_preset(preset)
+
+    def set_drums_groove(self, name: str, value: float) -> object:
+        if self.drums is None:
+            raise RuntimeError("drums are not configured")
+        return self.drums.set_groove_modifier(name, value)
+
+    def set_drums_seed(self, seed: int) -> object:
+        if self.drums is None:
+            raise RuntimeError("drums are not configured")
+        return self.drums.set_seed(seed)
+
+    def set_drums_step(self, lane: int, step: int, on: bool) -> bool:
+        if self.drums is None:
+            raise RuntimeError("drums are not configured")
+        return self.drums.set_step(lane, step, on)
+
+    def reset_drums_grid(self) -> object:
+        if self.drums is None:
+            raise RuntimeError("drums are not configured")
+        return self.drums.reset_grid()
+
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stage 7 pure OSC message/state layer for the performance GUI.
+"""Stage 7/8.2 pure OSC message/state layer for the performance GUI.
 
 This module is deliberately free of PyQt6 imports so ``tests/test_ui.py --pure`` can
 run without Qt.  It owns:
@@ -66,6 +66,19 @@ DRUMS_SET_LANE = "/ji/drums/set_lane"
 DRUMS_SET_RATE = "/ji/drums/set_rate"
 DRUMS_STATE = "/ji/drums/state"
 
+# Stage 8.2 groove controls and status.
+DRUMS_SET_PRESET = "/ji/drums/set_preset"
+DRUMS_SET_DENSITY = "/ji/drums/set_density"
+DRUMS_SET_SYNCOPATION = "/ji/drums/set_syncopation"
+DRUMS_SET_SWING = "/ji/drums/set_swing"
+DRUMS_SET_PROBABILITY = "/ji/drums/set_probability"
+DRUMS_SET_STEP = "/ji/drums/set_step"
+DRUMS_SET_SEED = "/ji/drums/set_seed"
+DRUMS_RESET_GRID = "/ji/drums/reset_grid"
+DRUMS_GROOVE = "/ji/drums/groove"
+DRUMS_GRID = "/ji/drums/grid"
+QUANTIZE_STATE = "/ji/quantize/state"
+
 AUTOTUNE_SET = "/ji/autotune/set"
 AUTOTUNE_STATE = "/ji/autotune/state"
 
@@ -93,6 +106,9 @@ STATUS_ADDRESSES = (
     MIDI_STATE,
     RHYTHM_STATE,
     DRUMS_STATE,
+    DRUMS_GROOVE,
+    DRUMS_GRID,
+    QUANTIZE_STATE,
     CPU,
     LOOP_STATE,
     LOOP_CONFIG,
@@ -156,6 +172,19 @@ DRUM_LANE_DEFS: tuple[tuple[int, str, str], ...] = (
     (51, "perc12", "Perc 12"),
 )
 DRUM_LANE_DEFAULT_MASK = 0x0045  # kick1 + snare1 + perc3
+
+# Stage 8.2 groove ranges/defaults.  Kept here (no control-package import) so
+# the pure UI layer and the Qt window share one source of truth.
+GROOVE_PRESETS: tuple[str, ...] = ("four", "break", "half", "techno")
+GROOVE_DEFAULT_PRESET = "four"
+GROOVE_DEFAULT_DENSITY = 0.0
+GROOVE_DEFAULT_SYNCOPATION = 0.0
+GROOVE_DEFAULT_SWING = 0.0
+GROOVE_DEFAULT_PROBABILITY = 0.0
+GROOVE_DEFAULT_SEED = 1
+GROOVE_SEED_MAX = 2**31 - 1
+MAX_GRID_STEPS = 32
+
 
 
 @dataclass(frozen=True)
@@ -238,6 +267,34 @@ MUTATION_PARAMS: tuple[ParamSpec, ...] = (
 )
 MUTATION_PARAM_MAP: dict[str, ParamSpec] = {
     spec.key: spec for spec in MUTATION_PARAMS
+}
+
+GROOVE_PARAMS: tuple[ParamSpec, ...] = (
+    ParamSpec(
+        "density", "Density", DRUMS_SET_DENSITY, 0.0, 1.0, GROOVE_DEFAULT_DENSITY
+    ),
+    ParamSpec(
+        "syncopation",
+        "Syncopation",
+        DRUMS_SET_SYNCOPATION,
+        0.0,
+        1.0,
+        GROOVE_DEFAULT_SYNCOPATION,
+    ),
+    ParamSpec(
+        "swing", "Swing", DRUMS_SET_SWING, 0.0, 1.0, GROOVE_DEFAULT_SWING
+    ),
+    ParamSpec(
+        "probability",
+        "Probability",
+        DRUMS_SET_PROBABILITY,
+        0.0,
+        1.0,
+        GROOVE_DEFAULT_PROBABILITY,
+    ),
+)
+GROOVE_PARAM_MAP: dict[str, ParamSpec] = {
+    spec.key: spec for spec in GROOVE_PARAMS
 }
 
 AUTOTUNE_PARAMS: tuple[ParamSpec, ...] = (
@@ -360,6 +417,48 @@ def _validate_drum_rate(value: Any) -> float:
 def _validate_drum_note(value: Any) -> int:
     note = clamp_int(value, 0, 127)
     return note
+
+
+def _validate_groove_preset(value: Any) -> str:
+    preset = str(value).strip().lower()
+    if preset not in GROOVE_PRESETS:
+        raise ValueError(
+            "preset must be one of " + ", ".join(GROOVE_PRESETS)
+        )
+    return preset
+
+
+def _validate_unit(value: Any, label: str = "value") -> float:
+    return clamp(_as_finite_float(value, label), 0.0, 1.0)
+
+
+def _validate_grid_lane(value: Any) -> int:
+    lane = clamp_int(value, 0, 15)
+    numeric = _as_finite_float(value, "lane")
+    if not math.isclose(float(lane), numeric, rel_tol=0.0, abs_tol=1e-9):
+        raise ValueError("lane must be a whole number in 0..15")
+    return lane
+
+
+def _validate_grid_step(value: Any) -> int:
+    step = clamp_int(value, 0, MAX_GRID_STEPS - 1)
+    numeric = _as_finite_float(value, "step")
+    if not math.isclose(float(step), numeric, rel_tol=0.0, abs_tol=1e-9):
+        raise ValueError(f"step must be a whole number in 0..{MAX_GRID_STEPS - 1}")
+    return step
+
+
+def _validate_seed(value: Any) -> int:
+    return clamp_int(value, 0, GROOVE_SEED_MAX)
+
+
+def grid_steps_for_meter(numerator: Any, denominator: Any) -> int:
+    """Editable 16th columns for a meter, capped at :data:`MAX_GRID_STEPS`."""
+
+    num = _validate_meter_num(numerator)
+    den = _validate_meter_den(denominator)
+    steps = num * (16 // den)
+    return max(1, min(MAX_GRID_STEPS, steps))
 
 
 def _validate_loop_mode(value: Any) -> str:
@@ -566,6 +665,54 @@ def build_set_drum_rate(rate: Any) -> tuple[str, list[Any]]:
     return DRUMS_SET_RATE, [float(_validate_drum_rate(rate))]
 
 
+def build_set_drums_preset(preset: Any) -> tuple[str, list[Any]]:
+    return DRUMS_SET_PRESET, [_validate_groove_preset(preset)]
+
+
+def build_set_groove_modifier(param: Any, value: Any) -> tuple[str, list[Any]]:
+    """Build one Stage 8.2 groove modifier message, clamped to 0..1."""
+
+    key = str(param).strip().lower()
+    spec = GROOVE_PARAM_MAP.get(key)
+    if spec is None:
+        raise ValueError(f"unknown groove modifier {param!r}")
+    return spec.address, [float(_validate_unit(value, key))]
+
+
+def build_set_drum_density(value: Any) -> tuple[str, list[Any]]:
+    return build_set_groove_modifier("density", value)
+
+
+def build_set_drum_syncopation(value: Any) -> tuple[str, list[Any]]:
+    return build_set_groove_modifier("syncopation", value)
+
+
+def build_set_drum_swing(value: Any) -> tuple[str, list[Any]]:
+    return build_set_groove_modifier("swing", value)
+
+
+def build_set_drum_probability(value: Any) -> tuple[str, list[Any]]:
+    return build_set_groove_modifier("probability", value)
+
+
+def build_set_drum_step(
+    lane: Any, step: Any, enabled: bool
+) -> tuple[str, list[Any]]:
+    return DRUMS_SET_STEP, [
+        int(_validate_grid_lane(lane)),
+        int(_validate_grid_step(step)),
+        1 if enabled else 0,
+    ]
+
+
+def build_set_drum_seed(seed: Any) -> tuple[str, list[Any]]:
+    return DRUMS_SET_SEED, [int(_validate_seed(seed))]
+
+
+def build_reset_drum_grid() -> tuple[str, list[Any]]:
+    return DRUMS_RESET_GRID, []
+
+
 def build_loop_set_mode(index: Any, mode: Any) -> tuple[str, list[Any]]:
     return LOOP_SET_MODE, [_validate_index(index), str(_validate_loop_mode(mode))]
 
@@ -666,6 +813,42 @@ class DrumStatus:
     @property
     def lane_states(self) -> dict[int, bool]:
         return drum_lane_states(self.lane_mask)
+
+
+@dataclass(frozen=True)
+class GrooveStatus:
+    """Bridge groove snapshot from ``/ji/drums/groove``."""
+
+    preset: str
+    density: float
+    syncopation: float
+    swing: float
+    probability: float
+    seed: int
+    grid_steps: int
+
+    @property
+    def modifiers(self) -> dict[str, float]:
+        return {
+            "density": self.density,
+            "syncopation": self.syncopation,
+            "swing": self.swing,
+            "probability": self.probability,
+        }
+
+
+@dataclass(frozen=True)
+class QuantizeStatus:
+    """``/ji/quantize/state`` snapshot: pending count and next-beat seconds."""
+
+    pending: int
+    seconds: float
+
+    @property
+    def immediate(self) -> bool:
+        """True when the transport is stopped / the queue is offline."""
+
+        return self.seconds < 0.0
 
 
 @dataclass(frozen=True)
@@ -797,6 +980,53 @@ def parse_drums_state(args: Sequence[Any]) -> DrumStatus:
     )
 
 
+def parse_groove(args: Sequence[Any]) -> GrooveStatus:
+    """Parse ``[preset, density, syncopation, swing, probability, seed, steps]``."""
+
+    if len(args) != 7:
+        raise ValueError(
+            "groove state needs preset, density, syncopation, swing, "
+            "probability, seed, grid_steps"
+        )
+    return GrooveStatus(
+        preset=_validate_groove_preset(args[0]),
+        density=_validate_unit(args[1], "density"),
+        syncopation=_validate_unit(args[2], "syncopation"),
+        swing=_validate_unit(args[3], "swing"),
+        probability=_validate_unit(args[4], "probability"),
+        seed=_validate_seed(args[5]),
+        grid_steps=max(1, min(MAX_GRID_STEPS, clamp_int(args[6], 1, MAX_GRID_STEPS))),
+    )
+
+
+def parse_grid(args: Sequence[Any]) -> tuple[int, ...]:
+    """Parse the 32-int ``/ji/drums/grid`` payload into 16 lane masks."""
+
+    if len(args) != 2 * len(DRUM_LANE_DEFS):
+        raise ValueError(
+            f"grid state needs {2 * len(DRUM_LANE_DEFS)} integers "
+            "(lo, hi per lane)"
+        )
+    masks: list[int] = []
+    for lane in range(len(DRUM_LANE_DEFS)):
+        low = clamp_int(args[2 * lane], 0, 0xFFFF)
+        high = clamp_int(args[2 * lane + 1], 0, 0xFFFF)
+        masks.append(low | (high << 16))
+    return tuple(masks)
+
+
+def parse_quantize(args: Sequence[Any]) -> QuantizeStatus:
+    """Parse ``[pending_count, seconds_to_next_beat]`` (seconds < 0 = off)."""
+
+    if len(args) != 2:
+        raise ValueError("quantize state needs pending_count and seconds")
+    pending = clamp_int(args[0], 0, 1_000_000)
+    seconds = _as_finite_float(args[1], "seconds_to_next_beat")
+    if seconds < 0.0:
+        return QuantizeStatus(pending=pending, seconds=-1.0)
+    return QuantizeStatus(pending=pending, seconds=max(0.0, seconds))
+
+
 def parse_loop_config(args: Sequence[Any]) -> tuple[int, LoopConfig]:
     """Parse ``[index, mode, beats, seconds]``."""
 
@@ -854,6 +1084,9 @@ STATUS_PARSERS: dict[str, Callable[[Sequence[Any]], Any]] = {
     MIDI_STATE: parse_midi_state,
     RHYTHM_STATE: parse_rhythm_state,
     DRUMS_STATE: parse_drums_state,
+    DRUMS_GROOVE: parse_groove,
+    DRUMS_GRID: parse_grid,
+    QUANTIZE_STATE: parse_quantize,
     CPU: parse_cpu,
     LOOP_STATE: parse_loop_state,
     LOOP_CONFIG: parse_loop_config,
@@ -875,6 +1108,9 @@ class StatusStore:
         self.midi_state: MidiToggleState | None = None
         self.rhythm: RhythmStatus | None = None
         self.drums: DrumStatus | None = None
+        self.groove: GrooveStatus | None = None
+        self.grid: tuple[int, ...] | None = None
+        self.quantize: QuantizeStatus | None = None
         self.cpu: float | None = None
         self.loop_states: dict[int, str] = {
             index: "waiting" for index in range(LOOP_INDEX_MIN, LOOP_INDEX_MAX + 1)
@@ -933,6 +1169,15 @@ class StatusStore:
             self.bridge_seen = True
         elif address == DRUMS_STATE:
             self.drums = parsed
+            self.bridge_seen = True
+        elif address == DRUMS_GROOVE:
+            self.groove = parsed
+            self.bridge_seen = True
+        elif address == DRUMS_GRID:
+            self.grid = parsed
+            self.bridge_seen = True
+        elif address == QUANTIZE_STATE:
+            self.quantize = parsed
             self.bridge_seen = True
         elif address == CPU:
             self.cpu = parsed
@@ -1249,6 +1494,35 @@ class OSCController:
         self._send_bridge(*message)
         return message
 
+    def set_drums_preset(self, preset: Any) -> tuple[str, list[Any]]:
+        message = build_set_drums_preset(preset)
+        self._send_bridge(*message)
+        return message
+
+    def set_groove_modifier(
+        self, param: Any, value: Any
+    ) -> tuple[str, list[Any]]:
+        message = build_set_groove_modifier(param, value)
+        self._send_bridge(*message)
+        return message
+
+    def set_drum_step(
+        self, lane: Any, step: Any, enabled: bool
+    ) -> tuple[str, list[Any]]:
+        message = build_set_drum_step(lane, step, enabled)
+        self._send_bridge(*message)
+        return message
+
+    def set_drum_seed(self, seed: Any) -> tuple[str, list[Any]]:
+        message = build_set_drum_seed(seed)
+        self._send_bridge(*message)
+        return message
+
+    def reset_drum_grid(self) -> tuple[str, list[Any]]:
+        message = build_reset_drum_grid()
+        self._send_bridge(*message)
+        return message
+
     def loop_record(
         self, index: Any, seconds: float | None = None
     ) -> tuple[str, list[Any]]:
@@ -1312,8 +1586,7 @@ class OSCController:
         return message
 
 
-__all__ = [
-    "AUTOTUNE_PARAMS",
+__all__ = ["AUTOTUNE_PARAMS",
     "AUTOTUNE_PARAM_MAP",
     "BPM_DEFAULT",
     "BPM_MAX",
@@ -1383,4 +1656,30 @@ __all__ = [
     "parse_midi_state",
     "parse_rhythm_state",
     "parse_ui_state",
+    "GROOVE_DEFAULT_DENSITY",
+    "GROOVE_DEFAULT_PRESET",
+    "GROOVE_DEFAULT_PROBABILITY",
+    "GROOVE_DEFAULT_SEED",
+    "GROOVE_DEFAULT_SWING",
+    "GROOVE_DEFAULT_SYNCOPATION",
+    "GROOVE_PARAMS",
+    "GROOVE_PARAM_MAP",
+    "GROOVE_PRESETS",
+    "GROOVE_SEED_MAX",
+    "GrooveStatus",
+    "MAX_GRID_STEPS",
+    "QuantizeStatus",
+    "build_reset_drum_grid",
+    "build_set_drum_density",
+    "build_set_drum_probability",
+    "build_set_drum_seed",
+    "build_set_drum_step",
+    "build_set_drum_swing",
+    "build_set_drum_syncopation",
+    "build_set_drums_preset",
+    "build_set_groove_modifier",
+    "grid_steps_for_meter",
+    "parse_grid",
+    "parse_groove",
+    "parse_quantize",
 ]

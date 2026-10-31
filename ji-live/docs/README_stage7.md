@@ -1,16 +1,13 @@
 # JI Station — Stage 7 Minimal Performance GUI
 
-**Status:** the owner reports the live GUI/audio/MIDI rig works well, with one
-open item: the drone MIDI was not received (the arp worked). Stage 7.1 adds
-independent **Drone on** / **Arp on** switches and a retrigger path for exactly
-that case; the updated Qt test and the live drone/toggle check are still pending.
-Stage 7 claims **no** new audio DSP, no new MIDI voices, no rhythm sequencer, no
-save/recall, and no visual process. It is a control surface for the accepted
-Stage 5.5 audio rig and Stage 6 MIDI rig.
+**Status:** **owner-confirmed in live use 2026-10-31.** The live GUI controls
+the accepted Stage 5.5 audio rig and Stage 6 MIDI rig, including the Stage 7.1
+Drone/Arp switches; the earlier drone-receive concern is closed in the current
+rig. The headless Qt test and live checks were completed by the owner. Stage 7
+adds **no** new audio DSP, no new MIDI voices, no rhythm sequencer, no
+save/recall, and no visual process.
 
-**Next:** rerun the headless Qt test, then check the Drone/Arp switches and the
-drone path in §11. Stage 7 is not complete until the owner confirms the GUI
-controls the rig and audio/MIDI behavior is unchanged.
+**Next:** Stage 8.1/8.2 are accepted; Stage 8.3a is the bass voice.
 
 **Stage 8.1 note:** the GUI now also has a compact Rhythm group, per-loop
 Free/Beat lengths, and a top-row **MIDI** group holding the Drone/Arp switches
@@ -470,15 +467,14 @@ Human-run check (2026-10-30):
   This validates window construction and signal wiring only. It does **not**
   validate SuperCollider, audio, MIDI, Ableton, IAC, or live performance, and
   it is not Stage 7 acceptance.
-- The Stage 7.1 Drone/Arp checkboxes were added after that run, so the updated
-  Qt test still needs one owner rerun.
-- The owner reported on 2026-10-30 that the live GUI/audio/MIDI rig works well,
-  with one exception: the **drone MIDI was not received** (the arp was fine).
-  The Stage 7.1 Drone/Arp switches and the drone retrigger note below were added
-  in response; the live drone path and the new switches still need a check.
+- The Stage 7.1 Drone/Arp checkboxes and updated Qt test were subsequently
+  run by the owner.
+- The owner re-checked the live GUI/audio/MIDI rig on 2026-10-31 and confirmed
+  everything works, including the Drone/Arp switches; the earlier drone-receive
+  concern is closed. The owner also confirmed the Stage 8.1/8.2 additions.
 
-No audio, MIDI, Ableton, IAC, or live GUI behavior has been tested by the agent.
-The agent makes no acceptance claim.
+No audio, MIDI, Ableton, IAC, or live GUI behavior was tested by the agent.
+Acceptance is the owner's (2026-10-31).
 
 ---
 

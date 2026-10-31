@@ -29,9 +29,9 @@
 
 **Who it is for:** An improvising musician (the project owner) who wants harmonic constraint without losing spontaneity, working in an electroacoustic idiom where digital timbre manipulation is part of the aesthetic.
 
-**What is done:** Stage 0 (server skeleton, 2-channel I/O, Tartini pitch tracking verification), Stage 1 (static autotune to a hardcoded JI set, single channel), Stage 2 (decentralised pure-Python mutation engine, no audio), Stage 3 (mutation → autotune bridge), Stage 4 (dual-channel autotune + raw looper), Stage 5 (BlackHole 16ch + Ableton routing), Stage 5.5 (four-channel live rig), and Stage 6 (MPE MIDI anchor drone + set arp) are implemented. The owner confirmed Stage 6 on **2026-10-30**: both IAC buses, calibration, drone/arp, and stuck-note behavior passed, with the existing four-channel audio rig unchanged. **Stage 7 (minimal performance GUI) and Stage 7.1 (Drone/Arp switches) are implemented and owner-checked except for the drone MIDI receive path. Stage 8.1 (rhythm foundation + drum engine v1) is built and awaiting human acceptance.**
+**What is done:** Stage 0 (server skeleton, 2-channel I/O, Tartini pitch tracking verification), Stage 1 (static autotune to a hardcoded JI set, single channel), Stage 2 (decentralised pure-Python mutation engine, no audio), Stage 3 (mutation → autotune bridge), Stage 4 (dual-channel autotune + raw looper), Stage 5 (BlackHole 16ch + Ableton routing), Stage 5.5 (four-channel live rig), and Stage 6 (MPE MIDI anchor drone + set arp) are implemented. The owner confirmed Stage 6 on **2026-10-30**: both IAC buses, calibration, drone/arp, and stuck-note behavior passed, with the existing four-channel audio rig unchanged. **Stage 7 (minimal performance GUI), Stage 7.1 (Drone/Arp switches), Stage 8.1 (rhythm foundation + drum engine v1), and Stage 8.2 (groove + beat-quantized state) are implemented and owner-confirmed (2026-10-31). Stage 8.3a (bass) is next.**
 
-**What is built:** Stage 5 uses MiniFuse 2 input / BlackHole 16ch output, 2 in / 16 out, `tests/sc/test_ableton_routing.scd`, and the 8-pair map. Stage 5.5 adds `tests/sc/test_live_rig.scd`: two autotuned live inputs plus two loop voices on SC 0/1/2/3, with the Python mutation bridge. Stage 6 adds the MIDI-only rig: `control/mpe_output.py`, `control/drone.py`, `control/arp.py`, `control/midi_rig.py`, `config/mpe_config.json`, `tests/test_mpe.py`, and `README_mpe.md`. Stage 6 is owner-confirmed. Stage 7 adds the minimal performance GUI: `ui/ji_ui.py`, `ui/osc_control.py`, `ui/control_surface.scd`, `tests/test_ui.py`, `README_stage7.md`, additive `/ji/ui/hello` + UI-status support in `control/osc_server.py` / `control/ji_bridge.py`, and the UI status addresses in §7.1. It exposes the existing mutation, live-autotune, loop-transport/length, and status controls; no new audio DSP or MIDI voices were added. The owner confirmed the live GUI/audio/MIDI rig works well except the drone receive path; the Drone/Arp switches and drone retrigger still need a live check. Stage 8.1 adds `control/rhythm.py`, `control/drums.py`, `config/rhythm_config.json`, `tests/test_rhythm.py`, and additive rhythm/drum support in the bridge, OSC server, UI, and sclang control surface: canonical quarter-note tempo/meter/transport, per-loop free/beat modes with beat quantization, and the optional four-on-the-floor drum voice on IAC Bus 3. It adds no audio DSP; Stage 8.1 awaits the human rhythm/drum/regression check.
+**What is built:** Stage 5 uses MiniFuse 2 input / BlackHole 16ch output, 2 in / 16 out, `tests/sc/test_ableton_routing.scd`, and the 8-pair map. Stage 5.5 adds `tests/sc/test_live_rig.scd`: two autotuned live inputs plus two loop voices on SC 0/1/2/3, with the Python mutation bridge. Stage 6 adds the MIDI-only rig: `control/mpe_output.py`, `control/drone.py`, `control/arp.py`, `control/midi_rig.py`, `config/mpe_config.json`, `tests/test_mpe.py`, and `README_mpe.md`. Stage 6 is owner-confirmed. Stage 7 adds the minimal performance GUI: `ui/ji_ui.py`, `ui/osc_control.py`, `ui/control_surface.scd`, `tests/test_ui.py`, `README_stage7.md`, additive `/ji/ui/hello` + UI-status support in `control/osc_server.py` / `control/ji_bridge.py`, and the UI status addresses in §7.1. It exposes the existing mutation, live-autotune, loop-transport/length, and status controls; no new audio DSP or MIDI voices were added. The owner confirmed the live GUI/audio/MIDI rig works, including the Drone/Arp switches. Stage 8.1 adds `control/rhythm.py`, `control/drums.py`, `config/rhythm_config.json`, `tests/test_rhythm.py`, and additive rhythm/drum support in the bridge, OSC server, UI, and sclang control surface: canonical quarter-note tempo/meter/transport, per-loop free/beat modes with beat quantization, and the optional four-on-the-floor drum voice on IAC Bus 3. It adds no audio DSP; Stage 8.1 is owner-confirmed. Stage 8.2 adds groove generation and the beat-quantized state queue; it is also owner-confirmed.
 
 **Core hypothesis:** SuperCollider's `scsynth` is the correct audio backend for pitch tracking, pitch shifting, looping, and granular processing. Ableton Live is the correct downstream host for VST/AU synths and effects, final mixing, and MPE target instruments. The two communicate via a virtual audio device (BlackHole) for audio and IAC Driver for MIDI.
 
@@ -39,8 +39,8 @@
 
 | Stage | Focus | Status |
 |---|---|---|
-| 7 | Minimal performance GUI | 🟡 Built; drone/toggle check pending |
-| 8 | Performance expansion & iteration | 🟡 8.1 built; awaits acceptance |
+| 7 | Minimal performance GUI | ✅ Owner-confirmed 2026-10-31 |
+| 8 | Performance expansion & iteration | 🟡 8.1/8.2 accepted; 8.3a bass next |
 | 9 | Granular & glitch FX | ⬜ Planned |
 | 10 | GUI UX & aesthetics | ⬜ Planned |
 | 11 | Visual half groundwork | ⬜ Deferred |
@@ -445,7 +445,8 @@ ji-live/
 │   └── prompts/
 │       ├── PROMPT_stage5.md
 │       ├── PROMPT_stage7_gui.md
-│       └── PROMPT_stage8_1_rhythm.md
+│       ├── PROMPT_stage8_1_rhythm.md
+│       └── PROMPT_stage8_2_groove.md
 └── (Stage 8.2+ files are not created yet)
 ```
 
@@ -875,7 +876,7 @@ snapshots via `on_set(ratios, anchor, fundamental)` and never reads the engine.
 `ArpNote`). The arp thread owns a `threading.Lock` around the current pattern and
 a `threading.Event` for stop.
 
-### 6.14 Rhythm, transport, and drum engine (Stage 8.1, implemented — awaiting acceptance)
+### 6.14 Rhythm, transport, and drum engine (Stage 8.1, owner-confirmed 2026-10-31)
 
 **Goal:** establish the shared tempo/meter/transport foundation, make loops
 beat-aware (or free), and add the first new MIDI voice: a drum engine.
@@ -980,6 +981,95 @@ seconds; tempo changes do not time-stretch them. The UI sends
 half/double time works; beat-mode loop recording/playback is quantized and
 different loop lengths phase; free mode is unchanged; no audio/MIDI regressions.
 
+### 6.15 Groove generation and beat-quantized state (Stage 8.2, owner-confirmed 2026-10-31)
+
+**Goal:** turn the 8.1 drum foundation into a performable groove generator
+(presets, density, syncopation, swing, probability, a per-step grid, seeded
+reproducibility) and make major state changes land on the next quarter-note beat
+while the transport runs.
+
+**Groove model (`control/groove.py`, pure):**
+- **Grid:** 16 lane masks over the current meter's 16th-note bar. Bit `s` of a
+  lane mask is step `s`. Editable columns are capped at 32; longer meters
+  repeat the 32-step grid and log the cap. A lane row is one 32-bit integer,
+  sent to the UI as 16 `(lo, hi)` pairs.
+- **Presets:** `four`, `break`, `half`, `techno`. `four` uses the exact 8.1
+  rule (kick every quarter, snare on beats 2/4 where present, closed hat on
+  offbeat 8ths) and therefore matches 8.1 for every meter. The other three use
+  documented 16-step templates, truncated for shorter bars and tiled for longer
+  bars; no polyrhythm logic. Selecting a preset replaces the grid; manual edits
+  are discarded on preset/meter/reset.
+- **Density 0..1:** a seeded sample of `round(density * steps_per_bar / 2)`
+  empty percussion-lane cells (8 ghosts on a full 16-step bar at density 1).
+  Kick1/snare1 are never ghosted.
+- **Syncopation 0..1:** adds same-lane anticipation 16ths one step before core
+  hits that are not on a quarter-note downbeat, with probability
+  `syncopation` per hit. Core hits remain.
+- **Probability 0..1:** gates only generated ghosts. Core preset/grid hits
+  always play. At the shipped default 0, ghosts are muted and the groove is
+  exactly 8.1; raise Probability to hear density/syncopation.
+- **Swing 0..1:** timing only. Even steps are straight; odd steps are delayed by
+  `swing * 0.5 * step_seconds`. No triplet subdivision; the scheduler advances
+  its nominal deadline by exactly one step and never bursts.
+- **Seed:** SplitMix64-derived per-bar RNG keys from
+  `(seed, bar_index, modifier)`; ambient `random` state is never used, so a
+  preset + modifiers + seed + bar reproduces the ghosts.
+- **Validation:** preset names, lane 0..15, step 0..31, modifiers clipped 0..1,
+  integer seed clipped to 0..2^31−1; unsafe values are rejected or clamped.
+
+**Drum engine/scheduler:** `DrumEngine` owns a `Groove` and derives
+`notes_for_step` from the generated bar (bar index = step // steps_per_bar);
+cell/preset/modifier/seed setters stay immediate at the engine level, as do
+`set_lane`/`set_rate`/`set_meter`/`set_enabled`. The scheduler reads the swing
+offset per step and keeps its drift correction; note-on/note-off and CC 123 on
+stop are unchanged. Turning drums on at a beat starts at step 0.
+
+**Beat quantizer (`control/quantize.py`, pure):**
+- `BeatQuantizer` schedules `(key, action)` at the next quarter-note beat of the
+  Python `RhythmEngine` (`next_beat_time(1.0)`). A request exactly on a boundary
+  waits for the following beat. The drum rate does not change the grid.
+- Thread-safe `schedule`/`cancel`/`flush`/`tick`; last-wins coalescing per key
+  with a logged request count (mutation/octave are one per beat); different
+  keys all run. Deterministic phase order: mutation, octave, groove, drums,
+  midi; within a phase, request order.
+- With the transport stopped every action applies immediately (mandatory
+  backward compatibility). Tempo changes recompute pending due times without
+  dropping or applying early. Transport stop flushes pending actions in order
+  before the normal stop path. The worker thread starts in `JIBridge.start()`
+  and stops in `JIBridge.stop()`; `JIBridge.__init__` creates no thread.
+  Callbacks run outside the queue lock.
+- Latency is intentional: up to one quarter beat (0.5 s at 120 BPM, 3 s at 20
+  BPM). Python and sclang clocks remain separate; Resync or stop→start
+  re-anchors them.
+
+**Bridge/OSC:** mutation/octave handlers call optional request callbacks so the
+bridge can queue; direct `trigger()`/`octave()` remain immediate. Drone/Arp,
+drums on/off, rate, lanes, groove preset/modifiers/seed/cells/reset are queued
+while running and immediate while stopped. New UI→bridge addresses
+`/ji/drums/set_preset`, `set_density`, `set_syncopation`, `set_swing`,
+`set_probability`, `set_step`, `set_seed`, `reset_grid`; new bridge→UI
+`/ji/drums/groove`, `/ji/drums/grid`, `/ji/quantize/state`. Tempo/meter/
+transport and continuous mutation/autotune/loop controls stay immediate;
+beat-mode loop Record/Play remain sclang-quantized and are not double-queued.
+
+**GUI:** a compact Groove group (preset combo, four knobs, seed spin, Show grid,
+Reset grid) and a lazily built 16-lane × N-step grid hidden by default. Cells
+send `set_step` and resync from `/ji/drums/grid` with signals blocked; the
+pending line shows `Next beat: … s | N pending` or `quantized off (immediate)`.
+The 8 pt / 32 px / scroll-area layout and the top-row MIDI group are preserved.
+
+**Constraints:** preserve `/ji/freqset/update`, the Stage 5.5 audio map, the
+Stage 6 drone/arp timing (still not tempo-synced), the Stage 7/7.1 GUI/OSC
+contracts, and the Stage 8.1 rhythm/drum behavior. `control/mutation.py`,
+SynthDefs, `startup.scd`, and the sclang audio tests are untouched.
+`ui/control_surface.scd` gets one Stage 8.1 bug fix: beat-mode scheduled
+Record/Play actions now receive the loop index.
+
+**Acceptance:** stopped transport stays immediate; running transport lands
+mutation, toggles, drum rate/lanes, and groove edits on the next beat with no
+double-trigger or stuck note; 0 modifiers reproduce 8.1; swing is audible and
+does not drift; the seeded groove is reproducible; free/beat loops and existing
+audio/MIDI behavior do not regress.
 
 ---
 
@@ -1032,6 +1122,17 @@ different loop lengths phase; free mode is unchanged; no audio/MIDI regressions.
 | `/ji/drums/set_lane` | [int midi_note, int enabled (0/1)] | UI → Bridge | 8.1 🟡 |
 | `/ji/drums/set_rate` | float rate (0.5/1/2) | UI → Bridge | 8.1 🟡 |
 | `/ji/drums/state` | [int enabled, int port_ok, float rate, int lane_mask] | Bridge → UI | 8.1 🟡 |
+| `/ji/drums/set_preset` | string preset (`four`\|`break`\|`half`\|`techno`) | UI → Bridge | 8.2 🟡 |
+| `/ji/drums/set_density` | float 0..1 | UI → Bridge | 8.2 🟡 |
+| `/ji/drums/set_syncopation` | float 0..1 | UI → Bridge | 8.2 🟡 |
+| `/ji/drums/set_swing` | float 0..1 | UI → Bridge | 8.2 🟡 |
+| `/ji/drums/set_probability` | float 0..1 | UI → Bridge | 8.2 🟡 |
+| `/ji/drums/set_step` | [int lane 0..15, int step 0..31, int on 0/1] | UI → Bridge | 8.2 🟡 |
+| `/ji/drums/set_seed` | int seed 0..2^31−1 | UI → Bridge | 8.2 🟡 |
+| `/ji/drums/reset_grid` | none (reload the current preset) | UI → Bridge | 8.2 🟡 |
+| `/ji/drums/groove` | [string preset, float density, float syncopation, float swing, float probability, int seed, int grid_steps] | Bridge → UI | 8.2 🟡 |
+| `/ji/drums/grid` | 32 ints: for lane 0..15, [mask_lo, mask_hi] | Bridge → UI | 8.2 🟡 |
+| `/ji/quantize/state` | [int pending_count, float seconds_to_next_beat (-1 = stopped/offline)] | Bridge → UI | 8.2 🟡 |
 | `/ji/midi/map` | [int, string] | Control → Bridge | 8 |
 | `/ji/granular/trigger` | [float, float] | Control → Server | 9 |
 | `/ji/event/mutation` | [float, float, float[]] | Bridge → Visual | 11 |
@@ -1040,7 +1141,7 @@ different loop lengths phase; free mode is unchanged; no audio/MIDI regressions.
 | `/ji/event/loop` | [int, string] | Bridge → Visual | 11 |
 | `/ji/event/drone` | float (Hz) | Bridge → Visual | 11 |
 
-Stage 3 does **not** send `/ji/mutation/apply` or any message directly to scsynth. The complete set is sent on `/ji/freqset/update`; sclang applies it to the verified nearest-class lookup. A multi-edit batch sends one `/ji/freqset/update` with the final set and one glide time, not intermediate sets. **Stage 7 adds the UI control/status addresses above**: the GUI sends mutation controls to the bridge (9000), autotune/loop controls directly to sclang (57120), and listens for status on 9001. The Stage 3 `/ji/freqset/update` contract and Stage 6 MIDI path are unchanged.
+Stage 3 does **not** send `/ji/mutation/apply` or any message directly to scsynth. The complete set is sent on `/ji/freqset/update`; sclang applies it to the verified nearest-class lookup. A multi-edit batch sends one `/ji/freqset/update` with the final set and one glide time, not intermediate sets. **Stage 7 adds the UI control/status addresses above**: the GUI sends mutation controls to the bridge (9000), autotune/loop controls directly to sclang (57120), and listens for status on 9001. The Stage 3 `/ji/freqset/update` contract and Stage 6 MIDI path are unchanged. **Stage 8.2 adds the groove and quantize rows above**: UI groove edits and the existing mutation/MIDI/drum-toggle requests are queued to the next Python quarter beat while the transport runs, and applied immediately while it is stopped.
 
 ### 7.2 FrequencySet (control-layer object)
 
@@ -1447,15 +1548,15 @@ subphases between increments.
 
 | Subphase | Focus | Status |
 |---|---|---|
-| 8.1 | Rhythm foundation + drum engine v1: transport, tempo, meter, free/beat loops, per-loop beat lengths/phasing, drum MIDI output, note map, four-on-the-floor, lane toggles, half/double time | 🟡 Built — awaiting human acceptance |
-| 8.2 | Groove generation: pattern presets, density, syncopation, swing, probability, per-step lane grid | ⬜ Planned |
-| 8.3 | More MIDI voices: bass, lead, additional buses/channels, per-voice enable/config, voice-generation parameters | ⬜ Planned |
+| 8.1 | Rhythm foundation + drum engine v1: transport, tempo, meter, free/beat loops, per-loop beat lengths/phasing, drum MIDI output, note map, four-on-the-floor, lane toggles, half/double time | ✅ Owner-confirmed 2026-10-31 |
+| 8.2 | Groove generation: pattern presets, density, syncopation, swing, probability, per-step lane grid — plus beat-quantized state changes (mutation, toggles, drum rate, groove edits land on the next quarter beat) | ✅ Owner-confirmed 2026-10-31 |
+| 8.3 | More MIDI voices: bass first (monophonic + optional sub channel), then lead, additional buses/channels, per-voice enable/config, voice-generation parameters | 🟡 8.3a prompt ready — bass |
 | 8.4 | Pattern/sequencing mutation: repeating frequency-set and MIDI patterns, pattern mutation, seed/recall of generated patterns | ⬜ Planned |
 | 8.5 | State save/recall + seeded reproduction: JSON snapshot of frequency set, mutation controls, rhythm, drums, MIDI voices, loop settings; restore without restart | ⬜ Planned |
 | 8.6 | Loop options: more loops, per-loop routing/gain/overdub, loop-player autotune controls, loop-file persistence | ⬜ Planned |
 | 8.7 | Optional: MIDI-triggered mutation mapping and SC-side VST hosting | ⬜ Optional |
 
-**8.1 — Rhythm foundation + drum engine v1 (first milestone, built — awaiting acceptance):**
+**8.1 — Rhythm foundation + drum engine v1 (owner-confirmed 2026-10-31):**
 
 *Goal:* establish a canonical tempo/meter/transport, make loop starts
 beat-aware (or explicitly free), and add the first new MIDI voice, a drum
@@ -1500,8 +1601,8 @@ engine with a four-on-the-floor default.
 `ui/control_surface.scd` loop quantization and tempo handling,
 `config/rhythm_config.json` (or documented additions to `config/mpe_config.json`),
 `tests/test_rhythm.py`, optional sclang rhythm test, `docs/README_stage8.md`,
-and this document. See `docs/prompts/PROMPT_stage8_1_rhythm.md` for the
-next-agent handoff.
+and this document. The next-agent handoff is
+`docs/prompts/PROMPT_stage8_2_groove.md`.
 
 *Tests:* pure Python tests for tempo/meter/transport clamping, beat/bar math,
 loop mode/length validation, drum note map, default pattern, lane toggles,
@@ -1512,6 +1613,97 @@ optional headless Qt test for the new Rhythm group.
 take effect; lane toggles and half/double work; beat-mode record/play is
 quantized and different loop lengths phase; free mode is unchanged; no
 audio/MIDI regressions. Stage 8.1 is not complete until the human confirms.
+
+**8.2 — Groove generation + beat-quantized state (owner-confirmed 2026-10-31):**
+
+*Goal:* expand the drum engine with deterministic presets, density,
+syncopation, swing, probability, and a per-step lane grid, and add a bridge-side
+beat queue so major state changes (mutation/octave, on/off switches, drum
+rate/lanes, groove edits) apply at the next quarter-note beat while the
+transport is running. With the transport stopped, those actions stay immediate
+for backward compatibility. Tempo, meter, transport, continuous knob
+parameters, and free-loop transport stay immediate.
+
+*Implementation:* `control/groove.py` (pure presets/grid/modifiers/seeded
+generation/swing), `control/quantize.py` (`BeatQuantizer` next-quarter-beat
+queue with coalescing, deterministic phase order, tempo-change rescheduling,
+transport-stop flush, lazy thread), additive `control/drums.py` groove/swing
+integration, additive `control/midi_rig.py` delegation, additive
+`control/ji_bridge.py` queue/groove state and `/ji/drums/groove` +
+`/ji/drums/grid` + `/ji/quantize/state`, additive `control/osc_server.py`
+groove handlers and mutation/octave request hooks, additive
+`ui/osc_control.py` builders/parsers/store fields, and a compact Groove group +
+lazy step grid + pending line in `ui/ji_ui.py`. Added
+`tests/test_groove.py`, `tests/test_quantize.py`, additive
+`tests/test_rhythm.py` / `tests/test_ui.py`, `docs/README_stage8_2.md`, and
+`config/rhythm_config.json` groove defaults. No sclang/audio change; beat-mode
+loops remain sclang-quantized.
+
+*Tests:* new pure groove/quantize harnesses plus all existing pure harnesses
+pass in the agent environment. The optional Qt test skipped (no
+`libEGL.so.1`); sclang/audio/MIDI were not testable by the agent. The owner ran
+the live checklist on 2026-10-31 and accepted Stage 8.2, including the 8.2.2
+beat-mode loop fix.
+
+**8.3 — More MIDI voices (8.3a bass first, next):**
+
+*Goal:* add the first new melodic MIDI voice since the Stage 6 drone/arp: a
+monophonic, transport-synced JI bass. The owner wants three usable archetypes:
+simple pulses of the fundamental on the downbeat (drone bass), a moving
+techno-style single-note bassline, and wilder lines that move through the set
+and across octaves with a groove. An optional sub on a second MIDI channel of
+the same bass bus is useful but not required for the first pass.
+
+*Required behavior:*
+- **Output:** optional `--bass` flag, default bass bus `IAC Driver Bus 4` with
+  main channel 2 and sub channel 3 (plain MIDI, standard pitch bend; no MPE
+  zone or polyphony). Missing Bus 4 disables only the bass and logs clearly.
+  `--bass` works with or without `--midi`/`--drums`.
+- **Sequencer:** transport-synced monophonic step voice. Grid `1/4`, `1/8`, or
+  `1/16`; one-bar pattern by default with a documented 1–32-step length cap;
+  density, syncopation, swing, gate in beats, velocity/accent; optional
+  guaranteed root on the downbeat.
+- **Pitch:** select from the current JI set (never invent pitches). Modes:
+  fixed fundamental/root, fixed anchor, seeded walk, seeded random, and a
+  deterministic cycle through the set in pitch order. Movement 0..1 controls
+  hold-vs-change and leap size; octave range 0..3 and octave-jump probability
+  control register movement. Same set + controls + seed + bar/step reproduces
+  the line.
+- **Set updates:** use immutable snapshots from the bridge; do not read the
+  mutation engine. A removed/added class affects the next trigger, not the held
+  note. No retrigger when the selected frequency is unchanged.
+- **Sub:** optional; one or two octaves below the main note, own channel,
+  same gate/velocity policy; note-offs and CC 123 on stop for both channels.
+- **Timing:** drift-corrected monotonic scheduler, transport start resets to
+  step 0/bar start, enabling at a beat starts at step 0, tempo changes alter
+  step duration without restarting, meter changes rebuild the bar length.
+- **Quantization:** enable/preset/parameter changes use the Stage 8.2
+  `BeatQuantizer` at the next quarter beat while running, immediate while
+  stopped. Never double-queue beat-mode loops.
+- **GUI/status:** compact Bass group (enable, preset, grid, density, gate,
+  movement, octaves, seed, sub) and `/ji/bass/state` at start/hello/change;
+  window stays compact.
+- Presets: at least `pulse` (root/drone pulses), `techno` (moving single-note
+  groove), `chaos` (wide octave movement), plus manual/custom values.
+
+*Out of scope for 8.3a:* lead voice, polyphonic MPE, per-note channel
+allocation, 8.4 pattern/sequencing mutation, save/recall (8.5), more loops
+(8.6), audio DSP, and changing the Stage 6 arp timing.
+
+*Deliverables:* `control/bass.py`, `config/bass_config.json`, additive
+`control/midi_rig.py` / `control/ji_bridge.py` / `control/osc_server.py` /
+`control/quantize.py` phase support, additive `ui/osc_control.py` /
+`ui/ji_ui.py`, `tests/test_bass.py`, additive `tests/test_ui.py` /
+`tests/test_mpe.py` as needed, `docs/README_stage8_3.md`, and this document.
+The handoff prompt is `docs/prompts/PROMPT_stage8_3_bass.md`.
+
+*Tests:* pure pitch-selection/pattern/seed/sub/validation tests with a fake
+MIDI output; no mido import; existing pure harnesses must pass; optional
+headless Qt test for the Bass group.
+
+*Acceptance:* the human can switch between a pulsing root/drone, a moving
+techno bassline, and octave-wandering lines; the sub works on its own channel;
+tempo/meter/enable changes behave; no stuck notes; no regressions.
 
 **8.2+ increments:** the remaining subphases extend the same state and GUI.
 Save/recall and seed-based reproduction must capture rhythm/drum state,
@@ -1579,9 +1771,11 @@ unchanged when no visual subscriber is present.
 | 5 | ✅ Complete | MiniFuse 2 input / BlackHole 16ch output via `inDevice_`/`outDevice_`, 2 in / 16 out; `tests/sc/test_ableton_routing.scd` exercised all 8 stereo pairs; `config/ableton_routing.json`; no Aggregate required. Owner reported all sound checks passed (2026-10-30). |
 | 5.5 | ✅ Complete | Live rig: two autotuned inputs + two loops on SC 0/1/2/3, Python mutation bridge; `tests/sc/test_live_rig.scd`, `config/live_rig_routing.json`, `README_live_rig.md`. Four mono tracks in Ableton. Owner reported all sound checks passed (2026-10-30), including the adjustable loop length (8 s default). |
 | 6 | ✅ Complete — owner-confirmed 2026-10-30 | Two monophonic MPE buses: anchor drone (Bus 1) + set arp (Bus 2). Owner confirmed ports, calibration, drone/arp, and no stuck notes; existing audio unchanged. Pure Python tests pass. |
-| 7 | 🟡 Built — drone path pending | Minimal Performance GUI: one PyQt6 window for mutation, live autotune, loop transport/length, and status. Stage 7.1 adds Drone/Arp switches. |
-| 8 | 🟡 In progress (iterative) | Performance expansion. 8.1 (rhythm foundation + drum engine) is built and awaits human acceptance; 8.2–8.7 are planned. |
-| 8.1 | 🟡 Built — awaiting human acceptance | Tempo/meter/transport, free/beat loops with per-loop lengths, drum MIDI on Bus 3, 16 lane toggles, half/normal/double time. Agent-verified pure Python tests only. |
+| 7 | ✅ Owner-confirmed 2026-10-31 | Minimal Performance GUI: one PyQt6 window for mutation, live autotune, loop transport/length, and status. Stage 7.1 adds Drone/Arp switches. |
+| 8 | 🟡 In progress (iterative) | Performance expansion. 8.1 (rhythm foundation + drum engine) and 8.2 (groove + beat-quantized state) are owner-confirmed; 8.3a (bass) is next; 8.3–8.7 remain. |
+| 8.1 | ✅ Owner-confirmed 2026-10-31 | Tempo/meter/transport, free/beat loops with per-loop lengths, drum MIDI on Bus 3, 16 lane toggles, half/normal/double time. |
+| 8.2 | ✅ Owner-confirmed 2026-10-31 | Groove presets/density/syncopation/swing/probability/seed, 16-lane step grid (32-column cap), and a next-quarter-beat state queue for mutation/octave/MIDI/drum enables, rate, lanes, and groove edits. Immediate while transport is stopped. Beat-mode loop scheduling fixed in 8.2.2. |
+| 8.3 | 🟡 Bass prompt ready | 8.3a: monophonic transport-synced JI bass, presets/pitch/rhythm controls, optional sub channel. |
 | 9 | ⬜ Planned | Granular & glitch FX in SC, pitch-quantized to the set, with GUI controls. |
 | 10 | ⬜ Planned | GUI UX & aesthetics after the feature set stabilizes. |
 | 11 | ⬜ Deferred | Visual-half groundwork: OSC event broadcast for an external visual process. |
@@ -1670,7 +1864,7 @@ unchanged when no visual subscriber is present.
 - Owner confirmed both IAC buses, calibration, drone/arp, and no stuck notes.
 - No SC SynthDef, audio bus, audio routing, or OSC address changed.
 
-**What Stage 7 delivered (built 2026-10-30, awaiting human acceptance):**
+**What Stage 7 delivered (owner-confirmed 2026-10-31):**
 - `ui/ji_ui.py` — one PyQt6 window with Mutation, Live Autotune, Loops, and
   Status sections; no tabs, menus, or theming pass. Stage 7.1 adds independent
   **Drone on** / **Arp on** checkboxes to the Status group.
@@ -1700,13 +1894,13 @@ unchanged when no visual subscriber is present.
   owner ran the offscreen Qt smoke test on 2026-10-30 and it passed (four
   groups, knob/button sends, loop indices, status sync, waiting labels, clean
   close); this validates the window and signal wiring only. The Stage 7.1 MIDI
-  switches were added after that run; the updated Qt test has not yet been run
-  by the owner. The owner reported on 2026-10-30 that the live GUI/audio/MIDI
-  rig works well, with one exception: the **drone MIDI was not received** (the
-  arp was fine). No audio, MIDI, Ableton, IAC, or live GUI behavior was tested
-  by the agent.
+  switches were added after that run and were included in the owner's later
+  live check. The owner reported on 2026-10-30 that the live GUI/audio/MIDI rig
+  works well; on 2026-10-31 the owner confirmed the full rig, including the
+  Drone/Arp switches, and accepted Stage 7. No audio, MIDI, Ableton, IAC, or
+  live GUI behavior was tested by the agent.
 
-**What Stage 8.1 delivered (built 2026-10-30, awaiting human acceptance):**
+**What Stage 8.1 delivered (owner-confirmed 2026-10-31):**
 - `control/rhythm.py` — canonical `RhythmState`/`RhythmEngine`, a monotonic
   `BeatClock` that survives tempo changes, bar/beat/16th-step math,
   loop-mode/beats/index validation, and next-beat quantization helpers.
@@ -1742,13 +1936,43 @@ unchanged when no visual subscriber is present.
   system libraries in the container); sclang was not available, so the
   control surface was not evaluated. No audio/MIDI acceptance is claimed.
 
+**What Stage 8.2 delivered (owner-confirmed 2026-10-31):**
+- `control/groove.py` — pure `GrooveSpec`/`GrooveGrid`/`Groove`/`GrooveBar`,
+  four documented presets, density/syncopation/probability ghosts, swing math,
+  SplitMix64-seeded per-bar reproducibility, 0..1/lane/step/seed validation, and
+  the 32-column editable cap.
+- `control/quantize.py` — pure `BeatQuantizer` next-quarter-beat queue:
+  immediate-when-stopped, last-wins coalescing with logged counts, documented
+  phase order, tempo-change rescheduling, transport-stop flush, lazy
+  thread, injectable clock, and no thread in `JIBridge.__init__`.
+- `control/drums.py` — `DrumConfig` groove defaults, engine-owned `Groove`,
+  generated `notes_for_step`, per-step swing in the drift-corrected scheduler,
+  grid/preset/modifier/seed setters, and meter-change grid reload.
+- `control/midi_rig.py` — additive drum groove/step/seed delegation.
+- `control/ji_bridge.py` — quantized mutation/octave/MIDI/drum/groove requests,
+  `/ji/drums/groove`, `/ji/drums/grid`, `/ji/quantize/state`, hello/start
+  snapshots, tempo-change wake, and transport-stop flush before drum stop.
+- `control/osc_server.py` — `/ji/drums/set_preset`, `set_density`,
+  `set_syncopation`, `set_swing`, `set_probability`, `set_step`, `set_seed`,
+  `reset_grid` handlers plus optional mutation/octave request hooks; direct
+  `trigger()`/`octave()` remain immediate.
+- `ui/osc_control.py` / `ui/ji_ui.py` — groove builders/parsers/state, a compact
+  Groove group, a lazily built 16-lane × N-step grid hidden by default, and a
+  pending/quantize line with a local countdown.
+- `config/rhythm_config.json` groove defaults, `tests/test_groove.py`,
+  `tests/test_quantize.py`, additive `tests/test_rhythm.py` / `tests/test_ui.py`,
+  and `docs/README_stage8_2.md`.
+- Agent verification: all pure Python harnesses pass; the Qt test skipped (no
+  `libEGL.so.1`); sclang/audio/MIDI were unavailable. No audio/MIDI acceptance
+  is claimed.
+
 **What is still unverified:**
-- **Stage 7 acceptance** — the owner confirmed the live GUI/audio/MIDI rig
-  works except for the drone receive path. The Stage 7.1 Drone/Arp switches and
-  the drone retrigger path still need a live check, and the updated Qt test
-  needs one owner rerun.
-- **Stage 8.1 acceptance** — rhythm foundation, beat/free loops, and the drum engine are implemented and pass the pure Python harnesses. Audio, IAC Bus 3, Ableton drum mapping, `TempoClock` quantization, loop phasing, and the live GUI were not testable by the agent; the human acceptance checklist in `docs/README_stage8.md` is pending.
-- **Stage 8.2+ performance features** — groove generation, extra MIDI voices, pattern/sequencing mutation, state save/recall, more loops, MIDI-generation controls, and loop-player autotune knobs are planned, not implemented.
+- **Stage 7 acceptance** — done: owner-confirmed 2026-10-31, including the
+  live GUI/audio/MIDI rig and the Stage 7.1 Drone/Arp switches.
+- **Stage 8.1 acceptance** — done: owner-confirmed 2026-10-31, including transport, drums, free/beat loops, and the beat-mode loop fix.
+- **Stage 8.2 acceptance** — done: owner-confirmed 2026-10-31, including groove controls, the step grid, quantized state, and beat-mode Record/Play.
+- **Stage 8.3a bass** — prompt ready; not implemented.
+- **Stage 8.3+ performance features** — extra MIDI voices, pattern/sequencing mutation, state save/recall, more loops, MIDI-generation controls, and loop-player autotune knobs are planned, not implemented.
 - Multi-channel audio stability over long sessions (Stage 5).
 - Per-loop dedicated pair routing beyond loops 1/2 (Stage 8).
 - Visual event broadcast and the separate visual process (Stage 11).
@@ -1969,11 +2193,12 @@ channels, more than 12 simultaneous frequency classes, Windows/Linux support,
 and more than 16 SC output channels.
 
 **Deferred but planned:** polyphonic MPE voices and extra MIDI voices (Stage 8),
-advanced rhythm/groove generation and sequencing (Stage 8.2+; the Stage 8.1
-tempo/meter/transport and drum foundation are built), state save/recall
-(Stage 8), more loops/options (Stage 8), loop-player autotune controls
-(Stage 8), granular/glitch FX (Stage 9), GUI UX/aesthetics (Stage 10), and the
-visual half (Stage 11).
+sequencing/pattern mutation beyond the 8.2 groove model (Stage 8.4), state
+save/recall and whole-session seed reproduction (Stage 8.5), more loops/options
+(Stage 8.6), loop-player autotune controls (Stage 8), granular/glitch FX
+(Stage 9), GUI UX/aesthetics (Stage 10), and the visual half (Stage 11). The
+Stage 8.1 rhythm/drum foundation and the Stage 8.2 groove + beat-quantized state
+layer are owner-confirmed (2026-10-31). Stage 8.3a (bass) is next.
 
 Auto-clocked or audio-reactive mutation remains out of scope: the musician still
 triggers mutation manually. Stage 8 rhythm controls apply to MIDI generation,
@@ -2010,6 +2235,11 @@ not to automatic mutation.
 | 7.2 | 2026-10-30 | **Project layout reorganized; no behavior change.** Python harnesses moved to `tests/`, sclang test scripts to `tests/sc/`, and documentation/prompts to `docs/` and `docs/prompts/`. Added a root `README.md` index and `tests/__init__.py`. Each Python harness now adds the project root to `sys.path`, so direct execution and `python -m tests...` both work; `tests/test_mpe.py` resolves `config/mpe_config.json` from the project root; `JIBridge --mpe-config` now defaults to `MIDIRig`'s package-relative config instead of a cwd-relative string; `tests/sc/test_tartini.scd` walks three parents up as its fallback; docs links and commands were updated. `startup.scd` stays at the project root so its `synthdefs/*.scd` glob remains valid. Pure UI/MPE/mutation tests pass at the new paths. No audio, MIDI, OSC, or control behavior changed. |
 | 8.0 | 2026-10-30 | **Stage 8 expanded into subphases; Stage 8.1 rhythm/drum prompt added.** Stage 8 is now divided into 8.1 rhythm foundation + drum engine v1, 8.2 groove generation, 8.3 more MIDI voices, 8.4 pattern/sequencing mutation, 8.5 save/recall + seeded reproduction, 8.6 loop options, and 8.7 optional MIDI-triggered mutation/VST hosting. Added §6.14 with tempo/meter/transport, free/beat loop modes, per-loop beat lengths/phasing, the 16-lane drum note map (C1=36), the four-on-the-floor default, half/double time, and the GUI/OSC plan; added the Stage 8.1 OSC rows to §7.1; expanded §8.9; updated the roadmap/status. Added `docs/prompts/PROMPT_stage8_1_rhythm.md` for the next agent. No code or behavior changed in this entry. |
 | 8.1 | 2026-10-30 | **Stage 8.1 rhythm foundation + drum engine v1 implemented — awaiting human acceptance.** Added `control/rhythm.py` (canonical rhythm state, tempo/meter/transport validation, bar/beat/16th math, `BeatClock`, quantization helpers), `control/drums.py` (validated drum config, 16-lane map 36–51, deterministic four-on-the-floor pattern, lane mask/rate, lazy-mido output with a fake seam, drift-corrected note-on/note-off scheduler, `DrumRig` with graceful missing-Bus-3 handling), and `config/rhythm_config.json`. Extended `control/midi_rig.py` with an optional third drum output and a drums-only mode; `control/ji_bridge.py` now owns the canonical rhythm state, accepts `--drums`/`--rhythm-config`, broadcasts `/ji/rhythm/tempo`, answers `/ji/rhythm/request`, and sends `/ji/rhythm/state` + `/ji/drums/state`; `control/osc_server.py` gained the seven rhythm/drum handlers. `ui/osc_control.py`/`ui/ji_ui.py` gained the Rhythm group, per-loop Free/Beat and seconds/beats controls, status and a Resync action; `ui/control_surface.scd` gained a `TempoClock`, transport beat origin, beat-quantized Record/Play, per-loop mode/beats/free length, `/ji/loop/config`, and immediate cancel on Stop/Clear. Added `tests/test_rhythm.py`, additive `tests/test_ui.py` coverage, optional `tests/sc/test_rhythm.scd`, and `docs/README_stage8.md`; updated the README and this document. `/ji/freqset/update`, SynthDefs, `startup.scd`, the Stage 5.5 audio map, `control/mutation.py`, and Stage 6 arp timing are unchanged. Agent verification: all pure Python harnesses pass; the Qt test skipped (no Qt system libs) and sclang was unavailable. No audio/MIDI/Ableton acceptance is claimed; Stage 8.1 awaits the human checklist. |
+| 8.2.0 | 2026-10-31 | **Stage 8.2 groove + beat-quantized-state prompt added.** Added `docs/prompts/PROMPT_stage8_2_groove.md` (groove presets, density, syncopation, swing, probability, per-step lane grid, seeded reproducibility, and a bridge-side next-quarter-beat state queue for mutation/octave, MIDI/drum enables, rate, lanes, groove edits). Documented the compatibility rule that quantized actions are immediate while the transport is stopped, and that tempo/meter/transport, continuous knobs, and free-loop transport stay immediate. Updated the README, §8.9, and the prompt index. No code or behavior changed in this entry. |
+| 8.2.1 | 2026-10-31 | **Stage 8.2 groove generation + beat-quantized state implemented — awaiting human acceptance.** Added `control/groove.py` (pure `GrooveSpec`/`GrooveGrid`/`Groove`/`GrooveBar`, `four`/`break`/`half`/`techno` presets, density/syncopation/probability ghosts, swing timing, SplitMix64-seeded per-bar reproducibility, validation, 32-column editable cap) and `control/quantize.py` (`BeatQuantizer` next-quarter-beat queue: immediate when stopped, last-wins coalescing with logged counts, deterministic mutation→octave→groove→drums→midi order, tempo-change reschedule, transport-stop flush, injectable clock, lazy thread, no thread in `JIBridge.__init__`). `control/drums.py` now owns a `Groove`, generates `notes_for_step` from the seeded bar, applies per-step swing in the drift-corrected scheduler, and exposes preset/grid/modifier/seed setters while keeping `set_lane`/`set_rate`/`set_meter`/`set_enabled` immediate; `control/midi_rig.py` delegates drum groove methods. `control/ji_bridge.py` queues mutation/octave, MIDI/drum enables, rate, lanes, and groove edits, flushes on transport stop, recomputes on tempo change, and sends `/ji/drums/groove`, `/ji/drums/grid`, `/ji/quantize/state` at start/hello/change. `control/osc_server.py` gained the eight groove handlers and optional mutation/octave request hooks. `ui/osc_control.py`/`ui/ji_ui.py` gained groove builders/parsers/state, a compact Groove group, a lazily built step grid hidden by default, and a pending/quantize line. Added `tests/test_groove.py`, `tests/test_quantize.py`, additive `tests/test_rhythm.py`/`tests/test_ui.py`, `config/rhythm_config.json` groove defaults, and `docs/README_stage8_2.md`; updated the README and this document. `/ji/freqset/update`, Stage 5.5 audio, Stage 6 arp timing, Stage 7/7.1 GUI contracts, `control/mutation.py`, and sclang files are unchanged. Agent verification: all pure Python harnesses pass; the Qt test skipped (no `libEGL.so.1`) and sclang/audio/MIDI were unavailable. No audio/MIDI acceptance is claimed; Stage 8.2 awaits the human checklist. |
+| 8.2.2 | 2026-10-31 | **Fixed Stage 8.1 beat-mode loop scheduling.** `ui/control_surface.scd` ran scheduled beat-mode actions as `action.value` with no argument, but `~ji_record_loop_action`/`~ji_play_loop_action` declare `|index|`; Record/Play therefore fired with `index = nil` and did nothing, while free loops bypassed the scheduler and worked. The scheduler now calls `action.value(index)`. Re-evaluate `ui/control_surface.scd` after the live rig to pick up the fix; the `[RHYTHM] loop N record fired on beat ...` line should now be followed by `[LOOP N] recording ...`. The control surface install line now prints its version (`8.2.2`) so a stale editor buffer is visible. No audio DSP, OSC contract, or other behavior changed. |
+| 8.2.3 | 2026-10-31 | **Stage 8.1 and 8.2 owner-confirmed.** The owner ran the live audio/MIDI/GUI rig, confirmed the rhythm/drum foundation, groove presets/modifiers, step grid, quantized state, and free/beat loops, and re-tested beat-mode Record/Play after the 8.2.2 fix. `README_stage8.md`, `README_stage8_2.md`, the root README, and the status tables now record human acceptance. No code changed in this entry. |
+| 8.3.0 | 2026-10-31 | **Stage 8.3a bass prompt added.** Added `docs/prompts/PROMPT_stage8_3_bass.md` for the first 8.3 increment: a monophonic, transport-synced JI bass voice with root/drone pulses, techno-style moving lines, octave-wandering basslines, rhythm/pitch movement controls, seeded reproducibility, and an optional sub on a second MIDI channel of the bass bus. Updated the roadmap/status and README; no code or behavior changed in this entry. |
 
 
 ---

@@ -549,6 +549,68 @@ def test_invalid_osc_like_values() -> None:
     print("  out-of-range tempo/beats clamp; invalid meter/rate raise")
 
 
+def test_groove_config_and_swing_scheduler() -> None:
+    print("\n=== Test 13: Stage 8.2 groove config and swing scheduler ===")
+    nested = DrumConfig.from_mapping(
+        {
+            "bpm": 120,
+            "meter": [4, 4],
+            "groove": {
+                "preset": "break",
+                "density": 0.3,
+                "syncopation": 0.2,
+                "swing": 0.15,
+                "probability": 0.7,
+                "seed": 4,
+            },
+        }
+    )
+    assert nested.preset == "break"
+    assert nested.density == 0.3
+    assert nested.syncopation == 0.2
+    assert nested.swing == 0.15
+    assert nested.probability == 0.7
+    assert nested.seed == 4
+    flat = DrumConfig.from_mapping({"preset": "half", "seed": 9})
+    assert flat.preset == "half" and flat.seed == 9
+    assert DrumConfig.from_mapping({}).preset == "four"
+
+    engine = DrumEngine(nested)
+    assert engine.groove_spec.preset == "break"
+    assert engine.notes_for_step(0) == (36, 42)
+    engine.set_swing(1.0)
+    assert engine.swing_offset(1, 0.125) == 0.0625
+    assert engine.swing_offset(0, 0.125) == 0.0
+
+    # The scheduler still emits deterministic note-on/note-off pairs and CC123
+    # with swing enabled; timing math itself is covered in tests/test_groove.py.
+    fake = FakePort()
+    swung = DrumConfig(
+        bpm=300,
+        meter_num=4,
+        meter_den=4,
+        gate_seconds=0.005,
+        swing=1.0,
+    )
+    rig = DrumRig(swung, output=fake)
+    rig.start()
+    rig.set_transport(True)
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline and len(fake.with_type("note_on")) < 6:
+        time.sleep(0.01)
+    rig.set_transport(False)
+    note_ons = fake.with_type("note_on")
+    assert len(note_ons) >= 6, fake.types()
+    off = [message.note for message in fake.with_type("note_off")]
+    on = [message.note for message in note_ons]
+    for note in set(on):
+        assert off.count(note) >= on.count(note), (note, on, off)
+    controls = fake.with_type("control_change")
+    assert controls and controls[-1].control == 123
+    rig.stop()
+    print("  nested/flat groove config; scheduler swing has no stuck notes")
+
+
 def run_pure() -> None:
     print("JI Stage 8.1 rhythm + drum engine pure tests")
     print(f"config: {CONFIG_PATH}")
@@ -564,6 +626,7 @@ def run_pure() -> None:
     test_midi_rig_drums_only()
     test_drum_output_validation()
     test_invalid_osc_like_values()
+    test_groove_config_and_swing_scheduler()
     print("\nALL RHYTHM TESTS PASSED")
 
 

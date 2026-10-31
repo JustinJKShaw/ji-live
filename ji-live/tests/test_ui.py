@@ -35,9 +35,17 @@ if str(_ROOT) not in sys.path:
 import control.ji_bridge as bridge_module
 from control.mutation import MutationEngine
 from control.osc_server import (
+    DRUMS_RESET_GRID_ADDRESS,
+    DRUMS_SET_DENSITY_ADDRESS,
     DRUMS_SET_ENABLED_ADDRESS,
     DRUMS_SET_LANE_ADDRESS,
+    DRUMS_SET_PRESET_ADDRESS,
+    DRUMS_SET_PROBABILITY_ADDRESS,
     DRUMS_SET_RATE_ADDRESS,
+    DRUMS_SET_SEED_ADDRESS,
+    DRUMS_SET_STEP_ADDRESS,
+    DRUMS_SET_SWING_ADDRESS,
+    DRUMS_SET_SYNCOPATION_ADDRESS,
     MIDI_SET_ENABLED_ADDRESS,
     MutationOSCServer,
     RHYTHM_REQUEST_ADDRESS,
@@ -53,10 +61,12 @@ from ui.osc_control import (
     DRUM_LANE_DEFAULT_MASK,
     DrumStatus,
     FrequencySet,
+    GrooveStatus,
     LoopConfig,
     MidiStatus,
     MidiToggleState,
     OSCController,
+    QuantizeStatus,
     RhythmStatus,
     StatusStore,
     build_loop_clear,
@@ -70,11 +80,20 @@ from ui.osc_control import (
     build_loop_stop_all,
     build_loop_stop_record,
     build_request_state,
+    build_reset_drum_grid,
     build_rhythm_request,
     build_set_autotune,
+    build_set_drum_density,
     build_set_drum_lane,
+    build_set_drum_probability,
     build_set_drum_rate,
+    build_set_drum_seed,
+    build_set_drum_step,
+    build_set_drum_swing,
+    build_set_drum_syncopation,
     build_set_drums_enabled,
+    build_set_drums_preset,
+    build_set_groove_modifier,
     build_set_meter,
     build_set_midi_enabled,
     build_set_mutation,
@@ -85,14 +104,18 @@ from ui.osc_control import (
     build_ui_hello,
     drum_lane_mask,
     drum_lane_states,
+    grid_steps_for_meter,
     parse_autotune_state,
     parse_cpu,
     parse_drums_state,
     parse_freqset,
+    parse_grid,
+    parse_groove,
     parse_loop_config,
     parse_loop_state,
     parse_midi_status,
     parse_midi_state,
+    parse_quantize,
     parse_rhythm_state,
     parse_ui_state,
 )
@@ -418,6 +441,45 @@ def test_rhythm_drum_builders() -> None:
     else:
         raise AssertionError("unsupported drum rate accepted")
 
+    assert build_set_drums_preset("Break") == ("/ji/drums/set_preset", ["break"])
+    assert build_set_groove_modifier("density", 0.5) == (
+        "/ji/drums/set_density",
+        [0.5],
+    )
+    assert build_set_drum_density(2) == ("/ji/drums/set_density", [1.0])
+    assert build_set_drum_syncopation(-1) == (
+        "/ji/drums/set_syncopation",
+        [0.0],
+    )
+    assert build_set_drum_swing(0.25) == ("/ji/drums/set_swing", [0.25])
+    assert build_set_drum_probability(0.75) == (
+        "/ji/drums/set_probability",
+        [0.75],
+    )
+    assert build_set_drum_step(2, 5, True) == ("/ji/drums/set_step", [2, 5, 1])
+    assert build_set_drum_step(15, 31, False) == (
+        "/ji/drums/set_step",
+        [15, 31, 0],
+    )
+    assert build_set_drum_seed(7) == ("/ji/drums/set_seed", [7])
+    assert build_reset_drum_grid() == ("/ji/drums/reset_grid", [])
+    assert grid_steps_for_meter(4, 4) == 16
+    assert grid_steps_for_meter(7, 8) == 14
+    assert grid_steps_for_meter(16, 2) == 32
+    for bad in (
+        lambda: build_set_drums_preset("nope"),
+        lambda: build_set_groove_modifier("seed", 1),
+        lambda: build_set_drum_step(16, 0, True),
+        lambda: build_set_drum_step(0, 32, True),
+        lambda: build_set_drum_seed(float("nan")),
+    ):
+        try:
+            bad()
+        except (TypeError, ValueError):
+            pass
+        else:
+            raise AssertionError("invalid groove builder value accepted")
+
     assert build_loop_set_mode(1, "Beat") == ("/ji/loop/set_mode", [1, "beat"])
     assert build_loop_set_beats(2, 99) == ("/ji/loop/set_beats", [2, 64.0])
     assert build_loop_set_beats(2, 0) == ("/ji/loop/set_beats", [2, 1.0])
@@ -554,6 +616,58 @@ def test_status_parsers() -> None:
         else:
             raise AssertionError("invalid drum state accepted")
 
+    groove_state = parse_groove(["break", 0.3, 0.2, 0.15, 0.7, 4, 16])
+    assert isinstance(groove_state, GrooveStatus)
+    assert groove_state.preset == "break"
+    assert groove_state.density == 0.3
+    assert groove_state.modifiers["probability"] == 0.7
+    assert groove_state.seed == 4 and groove_state.grid_steps == 16
+    clamped_groove = parse_groove(["four", 2, -1, 9, 1, 1, 99])
+    assert clamped_groove.density == 1.0
+    assert clamped_groove.syncopation == 0.0
+    assert clamped_groove.swing == 1.0
+    assert clamped_groove.grid_steps == 32
+    for bad in (
+        lambda: parse_groove(["nope", 0, 0, 0, 0, 1, 16]),
+        lambda: parse_groove(["four", 0, 0, 0, 0, 1]),
+    ):
+        try:
+            bad()
+        except (TypeError, ValueError):
+            pass
+        else:
+            raise AssertionError("invalid groove state accepted")
+
+    masks = parse_grid([0x1111, 0] + [0] * 30)
+    assert masks[0] == 0x1111
+    assert len(masks) == 16
+    assert parse_grid([0] * 30 + [0xFFFF, 0xFFFF])[15] == 0xFFFFFFFF
+    for bad in (lambda: parse_grid([0] * 31), lambda: parse_grid([0] * 33)):
+        try:
+            bad()
+        except (TypeError, ValueError):
+            pass
+        else:
+            raise AssertionError("invalid grid payload accepted")
+
+    quantize = parse_quantize([2, 0.32])
+    assert isinstance(quantize, QuantizeStatus)
+    assert quantize.pending == 2 and quantize.seconds == 0.32
+    assert quantize.immediate is False
+    stopped = parse_quantize([0, -1.0])
+    assert stopped.immediate is True and stopped.seconds == -1.0
+    assert parse_quantize([-3, 5.0]).pending == 0
+    for bad in (
+        lambda: parse_quantize([1]),
+        lambda: parse_quantize([1, float("nan")]),
+    ):
+        try:
+            bad()
+        except (TypeError, ValueError):
+            pass
+        else:
+            raise AssertionError("invalid quantize payload accepted")
+
     index, config = parse_loop_config([2, "beat", 7, 3.5])
     assert index == 2
     assert isinstance(config, LoopConfig)
@@ -646,6 +760,16 @@ def test_status_store() -> None:
     assert store.apply("/ji/drums/state", [1, 1, 2.0, 0x0045])
     assert store.drums is not None and store.drums.port_ok is True
     assert store.drums.lane_states[42] is True
+    assert store.groove is None and store.grid is None and store.quantize is None
+    assert store.apply("/ji/drums/groove", ["break", 0.4, 0.2, 0.1, 0.9, 7, 16])
+    assert store.groove is not None
+    assert store.groove.preset == "break" and store.groove.seed == 7
+    assert store.groove.modifiers["density"] == 0.4
+    assert store.apply("/ji/drums/grid", [1, 0] + [0] * 30)
+    assert store.grid is not None and store.grid[0] == 1
+    assert store.apply("/ji/quantize/state", [3, 0.25])
+    assert store.quantize is not None
+    assert store.quantize.pending == 3 and store.quantize.seconds == 0.25
     assert store.apply("/ji/loop/config", [3, "beat", 7, 3.5])
     assert store.loop_configs[3].mode == "beat"
     assert store.loop_configs[3].beats == 7.0
@@ -678,6 +802,14 @@ def test_osc_server_hello() -> None:
     drums_lane_called: list[tuple[int, bool]] = []
     drums_rate_called: list[float] = []
     rhythm_requested: list[int] = []
+    preset_called: list[str] = []
+    density_called: list[float] = []
+    sync_called: list[float] = []
+    swing_called: list[float] = []
+    probability_called: list[float] = []
+    step_called: list[tuple[int, int, bool]] = []
+    seed_called: list[int] = []
+    reset_called: list[int] = []
     server = MutationOSCServer(
         engine,
         listen_port=19311,
@@ -690,6 +822,16 @@ def test_osc_server_hello() -> None:
         on_drums_lane=lambda note, on: drums_lane_called.append((note, on)),
         on_drums_rate=drums_rate_called.append,
         on_rhythm_request=lambda: rhythm_requested.append(1),
+        on_drums_preset=preset_called.append,
+        on_drums_density=density_called.append,
+        on_drums_syncopation=sync_called.append,
+        on_drums_swing=swing_called.append,
+        on_drums_probability=probability_called.append,
+        on_drums_step=lambda lane, step, on: step_called.append(
+            (lane, step, on)
+        ),
+        on_drums_seed=seed_called.append,
+        on_drums_reset_grid=lambda: reset_called.append(1),
     )
     assert UI_HELLO_ADDRESS == "/ji/ui/hello"
     assert server.UI_HELLO_ADDRESS == "/ji/ui/hello"
@@ -701,6 +843,14 @@ def test_osc_server_hello() -> None:
     assert DRUMS_SET_ENABLED_ADDRESS == "/ji/drums/set_enabled"
     assert DRUMS_SET_LANE_ADDRESS == "/ji/drums/set_lane"
     assert DRUMS_SET_RATE_ADDRESS == "/ji/drums/set_rate"
+    assert DRUMS_SET_PRESET_ADDRESS == "/ji/drums/set_preset"
+    assert DRUMS_SET_DENSITY_ADDRESS == "/ji/drums/set_density"
+    assert DRUMS_SET_SYNCOPATION_ADDRESS == "/ji/drums/set_syncopation"
+    assert DRUMS_SET_SWING_ADDRESS == "/ji/drums/set_swing"
+    assert DRUMS_SET_PROBABILITY_ADDRESS == "/ji/drums/set_probability"
+    assert DRUMS_SET_STEP_ADDRESS == "/ji/drums/set_step"
+    assert DRUMS_SET_SEED_ADDRESS == "/ji/drums/set_seed"
+    assert DRUMS_RESET_GRID_ADDRESS == "/ji/drums/reset_grid"
     server._handle_ui_hello("/ji/ui/hello")
     assert called == [1]
     server._handle_ui_hello("/ji/ui/hello", "extra")
@@ -738,7 +888,49 @@ def test_osc_server_hello() -> None:
     assert drums_rate_called == [0.5]
     server._handle_rhythm_request("/ji/rhythm/request")
     assert rhythm_requested == [1]
-    print("  hello, MIDI, rhythm/drum callbacks; invalid values rejected")
+
+    server._handle_drums_preset("/ji/drums/set_preset", "Break")
+    server._handle_drums_preset("/ji/drums/set_preset", "nope")
+    assert preset_called == ["break"]
+    server._handle_drums_density("/ji/drums/set_density", 0.5)
+    server._handle_drums_density("/ji/drums/set_density", 2.0)
+    server._handle_drums_density("/ji/drums/set_density", float("nan"))
+    assert density_called == [0.5, 1.0]
+    server._handle_drums_syncopation("/ji/drums/set_syncopation", -1.0)
+    assert sync_called == [0.0]
+    server._handle_drums_swing("/ji/drums/set_swing", 0.25)
+    assert swing_called == [0.25]
+    server._handle_drums_probability("/ji/drums/set_probability", 0.75)
+    assert probability_called == [0.75]
+    server._handle_drums_step("/ji/drums/set_step", 2, 5, 1)
+    assert step_called == [(2, 5, True)]
+    server._handle_drums_step("/ji/drums/set_step", 16, 5, 1)
+    server._handle_drums_step("/ji/drums/set_step", 2, 32, 1)
+    assert len(step_called) == 1
+    server._handle_drums_seed("/ji/drums/set_seed", 9)
+    assert seed_called == [9]
+    server._handle_drums_reset_grid("/ji/drums/reset_grid")
+    assert reset_called == [1]
+
+    # Stage 8.2 request hooks: the handler asks the bridge to queue, while the
+    # direct trigger()/octave() API stays immediate.
+    mutation_requests: list[int] = []
+    octave_requests: list[int] = []
+    hooked = MutationOSCServer(
+        engine,
+        listen_port=19312,
+        on_mutation_request=lambda: mutation_requests.append(1),
+        on_octave_request=lambda: octave_requests.append(1),
+    )
+    before = list(engine.current_ratios)
+    hooked._handle_trigger("/ji/mutation/trigger")
+    hooked._handle_octave("/ji/mutation/octave")
+    assert mutation_requests == [1]
+    assert octave_requests == [1]
+    assert engine.current_ratios == before  # handler did not apply directly
+    hooked.trigger()  # direct API remains immediate
+    assert engine.current_ratios != before
+    print("  hello, MIDI, rhythm/drum/groove callbacks; quantize hook is soft")
 
 
 def test_bridge_ui_status() -> None:
@@ -809,11 +1001,19 @@ def test_bridge_ui_status() -> None:
             "/ji/midi/state",
             "/ji/rhythm/state",
             "/ji/drums/state",
+            "/ji/drums/groove",
+            "/ji/drums/grid",
+            "/ji/quantize/state",
         ]
         assert len(client.sent) == 1
         rhythm_args = ui_client.sent[4][1]
         assert rhythm_args == [120.0, 4, 4, 0, 0, 1.0]
         assert ui_client.sent[5][1] == [0, 0, 1.0, DRUM_LANE_DEFAULT_MASK]
+        groove_args = ui_client.sent[6][1]
+        assert groove_args[:2] == ["four", 0.0]
+        assert groove_args[5] == 1 and groove_args[6] == 16
+        assert len(ui_client.sent[7][1]) == 32
+        assert ui_client.sent[8][1] == [0, -1.0]
 
         # Rhythm commands: state changes go to sclang and the UI.
         client.sent.clear()
@@ -822,7 +1022,10 @@ def test_bridge_ui_status() -> None:
         assert ("/ji/rhythm/tempo", [140.0, 4, 4, 0]) in [
             (address, list(args)) for address, args in client.sent
         ]
-        assert ui_client.addresses() == ["/ji/rhythm/state"]
+        assert ui_client.addresses() == [
+            "/ji/rhythm/state",
+            "/ji/quantize/state",
+        ]
         assert ui_client.sent[0][1][0] == 140.0
 
         ui_client.sent.clear()
@@ -832,6 +1035,10 @@ def test_bridge_ui_status() -> None:
         bridge._on_rhythm_transport(True)
         assert ui_client.sent[0][1][3] == 1
         assert bridge.rhythm.running is True
+        # Transport changes also refresh the quantize state (countdown).
+        assert ui_client.addresses()[-1] == "/ji/quantize/state"
+        bridge._on_rhythm_transport(False)
+        assert bridge.rhythm.running is False
 
         ui_client.sent.clear()
         bridge._on_rhythm_request()
@@ -874,7 +1081,10 @@ def test_bridge_ui_status() -> None:
         assert fake_midi.drone_enabled is False
         assert fake_midi.arp_enabled is True
         assert fake_midi.calls == [("drone", False), ("arp", True)]
-        assert ui_client.addresses() == ["/ji/midi/state"]
+        assert ui_client.addresses() == [
+            "/ji/midi/state",
+            "/ji/quantize/state",
+        ]
         assert ui_client.sent[0][1] == [0, 1]
 
         ui_client.sent.clear()
@@ -890,6 +1100,7 @@ def test_bridge_ui_status() -> None:
         assert ui_client.addresses() == [
             "/ji/drums/state",
             "/ji/rhythm/state",
+            "/ji/quantize/state",
         ]
         assert ui_client.sent[0][1] == [1, 1, 1.0, DRUM_LANE_DEFAULT_MASK]
 
@@ -897,7 +1108,8 @@ def test_bridge_ui_status() -> None:
         bridge._on_drums_lane(37, True)
         assert fake_midi.drums is not None
         assert fake_midi.drums.lane_mask & (1 << 1)
-        assert ui_client.sent[-1][1][3] == fake_midi.drums.lane_mask
+        assert ui_client.sent[0][0] == "/ji/drums/state"
+        assert ui_client.sent[0][1][3] == fake_midi.drums.lane_mask
 
         ui_client.sent.clear()
         bridge._on_drums_rate(0.5)
@@ -913,6 +1125,55 @@ def test_bridge_ui_status() -> None:
         assert fake_midi.drum_calls[-1] == ("meter", 5, 4)
         bridge._on_rhythm_transport(False)
         assert fake_midi.drum_calls[-1] == ("transport", False)
+
+        # --- Stage 8.2 groove state and quantized edits ----------------
+        bridge._on_rhythm_transport(False)
+        ui_client.sent.clear()
+        bridge._on_drums_preset("break")
+        assert bridge.groove.spec.preset == "break"
+        assert "/ji/drums/groove" in ui_client.addresses()
+        assert "/ji/drums/grid" in ui_client.addresses()
+        assert bridge.quantizer.pending_count == 0
+
+        # With the transport running, a groove edit is queued and only lands
+        # when the queue flushes at the beat.
+        bridge._on_rhythm_transport(True)
+        bridge._on_drums_preset("techno")
+        assert bridge.groove.spec.preset == "break"
+        assert bridge.quantizer.pending_count == 1
+        ui_client.sent.clear()
+        bridge._on_quantize_change()
+        assert ui_client.addresses() == ["/ji/quantize/state"]
+        assert ui_client.sent[0][1][0] == 1
+        bridge.quantizer.flush("test beat")
+        assert bridge.groove.spec.preset == "techno"
+        assert bridge.quantizer.pending_count == 0
+
+        bridge._on_rhythm_transport(False)
+        bridge._on_groove_modifier("density", 0.5)
+        assert bridge.groove.spec.density == 0.5
+        bridge._on_drums_seed(7)
+        assert bridge.groove.spec.seed == 7
+        bridge._on_drums_step(0, 1, True)
+        assert bridge.groove.grid.is_on(0, 1)
+        bridge._on_drums_reset_grid()
+        assert not bridge.groove.grid.is_on(0, 1)
+
+        # Mutation requests obey the same rule: immediate when stopped,
+        # queued while running.
+        bridge._on_rhythm_transport(False)
+        before = list(bridge.engine.current_ratios)
+        bridge.request_mutation()
+        assert bridge.engine.current_ratios != before
+        assert bridge.quantizer.pending_count == 0
+        bridge._on_rhythm_transport(True)
+        after_immediate = list(bridge.engine.current_ratios)
+        bridge.request_octave()
+        assert bridge.quantizer.pending_count == 1
+        bridge.quantizer.flush("test beat")
+        assert bridge.quantizer.pending_count == 0
+        assert list(bridge.engine.current_ratios) == after_immediate
+        bridge._on_rhythm_transport(False)
 
         # The CLI defaults remain compatible.
         parser = bridge_module.build_parser()
@@ -1009,6 +1270,11 @@ def test_osc_controller() -> None:
     controller.set_drums_enabled(True)
     controller.set_drum_lane(36, False)
     controller.set_drum_rate(2.0)
+    controller.set_drums_preset("Break")
+    controller.set_groove_modifier("density", 0.4)
+    controller.set_drum_step(2, 5, True)
+    controller.set_drum_seed(9)
+    controller.reset_drum_grid()
     controller.request_rhythm_resync()
     assert bridge_client.addresses() == [
         "/ji/rhythm/set_tempo",
@@ -1017,6 +1283,11 @@ def test_osc_controller() -> None:
         "/ji/drums/set_enabled",
         "/ji/drums/set_lane",
         "/ji/drums/set_rate",
+        "/ji/drums/set_preset",
+        "/ji/drums/set_density",
+        "/ji/drums/set_step",
+        "/ji/drums/set_seed",
+        "/ji/drums/reset_grid",
         "/ji/rhythm/request",
     ]
     assert bridge_client.sent[0][1] == [140.0]
@@ -1024,7 +1295,12 @@ def test_osc_controller() -> None:
     assert bridge_client.sent[2][1] == [1]
     assert bridge_client.sent[4][1] == [36, 0]
     assert bridge_client.sent[5][1] == [2.0]
-    assert bridge_client.sent[6][1] == []
+    assert bridge_client.sent[6][1] == ["break"]
+    assert bridge_client.sent[7][1] == [0.4]
+    assert bridge_client.sent[8][1] == [2, 5, 1]
+    assert bridge_client.sent[9][1] == [9]
+    assert bridge_client.sent[10][1] == []
+    assert bridge_client.sent[-1][1] == []
 
     # Status handling updates the store and invokes the callback.
     controller._handle_status("/ji/cpu", [22.5])
@@ -1153,6 +1429,21 @@ class FakeController:
     def set_drum_rate(self, rate) -> None:
         self.calls.append(("set_drum_rate", rate))
 
+    def set_drums_preset(self, preset) -> None:
+        self.calls.append(("set_drums_preset", preset))
+
+    def set_groove_modifier(self, param, value) -> None:
+        self.calls.append(("set_groove_modifier", param, value))
+
+    def set_drum_step(self, lane, step, enabled) -> None:
+        self.calls.append(("set_drum_step", lane, step, enabled))
+
+    def set_drum_seed(self, seed) -> None:
+        self.calls.append(("set_drum_seed", seed))
+
+    def reset_drum_grid(self) -> None:
+        self.calls.append(("reset_drum_grid",))
+
 
 def run_qt_tests() -> int:
     print("\n=== Qt smoke test: one window, widgets, signals, close ===")
@@ -1181,10 +1472,19 @@ def run_qt_tests() -> int:
         "Live Autotune",
         "Loops",
         "Rhythm",
+        "Groove",
         "MIDI",
         "Status",
     ):
         assert expected in titles, f"missing {expected} group: {titles}"
+    assert window.show_grid_checkbox.isChecked() is False
+    assert window.grid_scroll.isVisible() is False
+    assert len(window.step_cells) == 0, "grid must be built lazily"
+    assert "waiting" in window.quantize_label.text()
+    assert window.width() <= 1400 and window.height() <= 820, (
+        window.width(),
+        window.height(),
+    )
     assert len(window.loop_state_labels) == 4
     assert len(window.autotune_knobs) == 2 * len(AUTOTUNE_PARAMS)
     assert len(window.lane_checkboxes) == 16
@@ -1373,6 +1673,67 @@ def run_qt_tests() -> int:
     assert not [call for call in fake.calls if call[0] == "loop_play"], fake.calls
     assert "beat-locked" in window.message_label.text()
 
+    # --- Stage 8.2 Groove group and lazy step grid ----------------------
+    fake.calls.clear()
+    window.show_grid_checkbox.setChecked(True)
+    app.processEvents()
+    expected_steps = grid_steps_for_meter(5, 4)  # meter from the earlier sync
+    assert window.grid_scroll.isVisible() is True
+    assert window._grid_built_steps == expected_steps
+    assert len(window.step_cells) == 16 * expected_steps
+    assert all(cell.width() == 14 for cell in list(window.step_cells.values())[:8])
+
+    window.step_cells[(0, 1)].click()
+    assert ("set_drum_step", 0, 1, True) in fake.calls, fake.calls
+
+    fake.calls.clear()
+    window.groove_preset_combo.setCurrentIndex(1)
+    assert ("set_drums_preset", "break") in fake.calls, fake.calls
+    window.groove_knobs["density"].set_value(0.5, emit=True)
+    window._flush_pending()
+    assert ("set_groove_modifier", "density", 0.5) in fake.calls, fake.calls
+    window.groove_seed_spin.setValue(7)
+    assert ("set_drum_seed", 7) in fake.calls, fake.calls
+    window.reset_grid_button.click()
+    assert ("reset_drum_grid",) in fake.calls, fake.calls
+
+    # Incoming groove/grid state syncs widgets without feedback OSC.
+    fake.calls.clear()
+    window._on_status_message(
+        "/ji/drums/groove", ["break", 0.5, 0.2, 0.1, 0.8, 7, 16]
+    )
+    assert window.groove_preset_combo.currentIndex() == 1
+    assert abs(window.groove_knobs["density"].value() - 0.5) < 1e-6
+    assert abs(window.groove_knobs["probability"].value() - 0.8) < 1e-6
+    assert window.groove_seed_spin.value() == 7
+    assert not [c for c in fake.calls if c[0].startswith("set_")], fake.calls
+
+    window._on_status_message("/ji/drums/grid", [1, 0] + [0] * 30)
+    assert window.step_cells[(0, 0)].isChecked()
+    assert not window.step_cells[(0, 1)].isChecked()
+    assert not [c for c in fake.calls if c[0] == "set_drum_step"], fake.calls
+
+    # Pending/quantize status line: running shows a countdown and count;
+    # stopped shows the immediate mode.
+    window._on_status_message("/ji/rhythm/state", [120, 4, 4, 1, 1, 1.0])
+    window._on_status_message("/ji/quantize/state", [2, 0.32])
+    assert "2 pending" in window.quantize_label.text()
+    assert "quantized off" not in window.quantize_label.text()
+
+    fake.calls.clear()
+    window.mutate_button.click()
+    assert ("trigger_mutation",) in fake.calls
+    assert "queued" in window.message_label.text().lower()
+
+    window._on_status_message("/ji/rhythm/state", [120, 4, 4, 0, 1, 1.0])
+    window._on_status_message("/ji/quantize/state", [0, -1.0])
+    assert "quantized off" in window.quantize_label.text()
+
+    fake.calls.clear()
+    window.mutate_button.click()
+    assert ("trigger_mutation",) in fake.calls
+    assert "immediately" in window.message_label.text().lower()
+
     # Missing drum port: show disabled state, disable the controls, no crash.
     window._on_status_message("/ji/drums/state", [0, 0, 1.0, 0x0045])
     assert not window.drum_enable_checkbox.isEnabled()
@@ -1385,7 +1746,7 @@ def run_qt_tests() -> int:
     assert fake.stopped is True
     window.deleteLater()
     app.processEvents()
-    print("  six groups, knob/button sends, rhythm/drum sync, and close succeeded")
+    print("  seven groups, groove/grid sync, pending status, and close succeeded")
     return 0
 
 

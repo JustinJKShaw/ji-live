@@ -69,6 +69,8 @@ if (failed.not) {
     "[RHYTHM TEST]  1. Rhythm group -> Play: the drum groove should start on the next step (120 BPM, 4/4).".postln;
     "[RHYTHM TEST]  2. Change BPM and meter while playing; drums should follow without an audio restart.".postln;
     "[RHYTHM TEST]  3. Loop 1 -> Beat, 4 beats; Loop 2 -> Beat, 3 beats; record both; they should phase.".postln;
+    "[RHYTHM TEST]     If Beat Rec/Play does nothing, re-evaluate ui/control_surface.scd:".postln;
+    "[RHYTHM TEST]     Stage 8.2.2 fixes action.value -> action.value(index) for scheduled beat actions.".postln;
     "[RHYTHM TEST]  4. Stop/Play and confirm no stuck drum notes and no stuck loops.".postln;
     "[RHYTHM TEST]  5. Free mode must behave exactly as Stage 7.".postln;
     "[RHYTHM TEST]  6. Missing IAC Bus 3: the bridge must keep drone/arp/audio running and report drums disabled.".postln;
