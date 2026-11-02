@@ -26,6 +26,7 @@ Actions are grouped into phases and applied in this order:
 8. ``lead`` (Stage 8.3d lead settings and variations)
 9. ``drone`` (Stage 8.3d drone mode and pad parameters)
 10. ``midi`` (drone/arp enables)
+11. ``state`` (Stage 8.5 performance-state recall, last so it wins the beat)
 
 Within a phase, actions retain request order (a monotonically increasing
 sequence), so the last request generally wins when two actions touch the same
@@ -63,6 +64,9 @@ PHASE_ARP = 6
 PHASE_LEAD = 7
 PHASE_DRONE = 8
 PHASE_MIDI = 9
+#: Stage 8.5 performance-state recall.  Deliberately **last**: a recall applied
+#: at a beat must win over every other request made for that same beat.
+PHASE_STATE = 10
 
 PHASE_NAMES: dict[int, str] = {
     PHASE_HOME: "home",
@@ -75,6 +79,7 @@ PHASE_NAMES: dict[int, str] = {
     PHASE_LEAD: "lead",
     PHASE_DRONE: "drone",
     PHASE_MIDI: "midi",
+    PHASE_STATE: "state",
 }
 
 PHASE_ORDER: dict[str, int] = {
@@ -470,6 +475,7 @@ __all__ = [
     "PHASE_NAMES",
     "PHASE_OCTAVE",
     "PHASE_ORDER",
+    "PHASE_STATE",
     "PendingAction",
     "StateQueue",
 ]

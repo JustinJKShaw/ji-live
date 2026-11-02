@@ -67,6 +67,7 @@ from pythonosc.osc_server import ThreadingOSCUDPServer
 
 try:  # Support both ``python -m control.osc_server`` and direct execution.
     from . import arp, bass, drone, groove, home, lead, rhythm
+    from . import state as state_module
     from .mutation import MutationBatch, MutationEngine, MutationEvent, OctaveEvent
 except ImportError:  # pragma: no cover - exercised only by direct execution
     import arp  # type: ignore[no-redef]
@@ -76,6 +77,7 @@ except ImportError:  # pragma: no cover - exercised only by direct execution
     import home  # type: ignore[no-redef]
     import lead  # type: ignore[no-redef]
     import rhythm  # type: ignore[no-redef]
+    import state as state_module  # type: ignore[no-redef]
     from mutation import (  # type: ignore[no-redef]
         MutationBatch,
         MutationEngine,
@@ -183,6 +185,16 @@ HOME_SET_EVERY_ADDRESS = "/ji/home/set_every"
 HOME_SET_SEED_ADDRESS = "/ji/home/set_seed"
 HOME_SET_DRIFT_ADDRESS = "/ji/home/set_drift"
 HOME_SET_GLIDE_ADDRESS = "/ji/home/set_glide"
+# Stage 8.5 performance states (UI -> Bridge).  Save/delete/list are immediate
+# file operations; a load is beat-quantized on PHASE_STATE.  The bridge owns
+# validation and quantization; these handlers only check arity/type.
+STATE_SAVE_ADDRESS = "/ji/state/save"
+STATE_LOAD_ADDRESS = "/ji/state/load"
+STATE_DELETE_ADDRESS = "/ji/state/delete"
+STATE_REQUEST_ADDRESS = "/ji/state/request"
+# Bridge -> UI replies.
+STATE_LIST_ADDRESS = "/ji/state/list"
+STATE_STATE_ADDRESS = "/ji/state/state"
 
 
 class MutationOSCServer:
@@ -283,6 +295,10 @@ class MutationOSCServer:
     HOME_SET_SEED_ADDRESS = HOME_SET_SEED_ADDRESS
     HOME_SET_DRIFT_ADDRESS = HOME_SET_DRIFT_ADDRESS
     HOME_SET_GLIDE_ADDRESS = HOME_SET_GLIDE_ADDRESS
+    STATE_SAVE_ADDRESS = STATE_SAVE_ADDRESS
+    STATE_LOAD_ADDRESS = STATE_LOAD_ADDRESS
+    STATE_DELETE_ADDRESS = STATE_DELETE_ADDRESS
+    STATE_REQUEST_ADDRESS = STATE_REQUEST_ADDRESS
 
     def __init__(
         self,
@@ -322,6 +338,10 @@ class MutationOSCServer:
         on_home_jump: Callable[[], None] | None = None,
         on_home_back: Callable[[], None] | None = None,
         on_home_setting: Callable[[str, Any], None] | None = None,
+        on_state_save: Callable[[str], None] | None = None,
+        on_state_load: Callable[[str], None] | None = None,
+        on_state_delete: Callable[[str], None] | None = None,
+        on_state_request: Callable[[], None] | None = None,
     ) -> None:
         if not isinstance(engine, MutationEngine):
             raise TypeError("engine must be a MutationEngine")
@@ -363,6 +383,10 @@ class MutationOSCServer:
             ("on_home_jump", on_home_jump),
             ("on_home_back", on_home_back),
             ("on_home_setting", on_home_setting),
+            ("on_state_save", on_state_save),
+            ("on_state_load", on_state_load),
+            ("on_state_delete", on_state_delete),
+            ("on_state_request", on_state_request),
         ):
             if callback is not None and not callable(callback):
                 raise TypeError(f"{label} must be callable or None")
@@ -403,6 +427,10 @@ class MutationOSCServer:
         self._on_home_jump = on_home_jump
         self._on_home_back = on_home_back
         self._on_home_setting = on_home_setting
+        self._on_state_save = on_state_save
+        self._on_state_load = on_state_load
+        self._on_state_delete = on_state_delete
+        self._on_state_request = on_state_request
 
         self._lock = threading.RLock()
         # Serializes apply -> print -> callback so a threaded OSC server cannot
@@ -584,6 +612,15 @@ class MutationOSCServer:
         )
         for address, handler in home_map:
             dispatcher.map(address, handler)
+        # Stage 8.5 performance states.
+        state_map = (
+            (self.STATE_SAVE_ADDRESS, self._handle_state_save),
+            (self.STATE_LOAD_ADDRESS, self._handle_state_load),
+            (self.STATE_DELETE_ADDRESS, self._handle_state_delete),
+            (self.STATE_REQUEST_ADDRESS, self._handle_state_request),
+        )
+        for address, handler in state_map:
+            dispatcher.map(address, handler)
         self._dispatcher = dispatcher
 
     # ------------------------------------------------------------------
@@ -729,11 +766,12 @@ class MutationOSCServer:
             self._notify(self._on_octave, event, "octave")
             return event
 
-    def set_glide_time(self, seconds: float) -> None:
+    def set_glide_time(self, seconds: float, *, log: bool = True) -> None:
         """Set the glide hint used by the next mutation/octave event.
 
         Negative values are clamped to zero, matching OSC and Stage 2
-        behaviour.  Non-finite values are rejected.
+        behaviour.  Non-finite values are rejected.  ``log=False`` is used by
+        the Stage 8.5 state recall, which prints one ``[STATE]`` line instead.
         """
 
         try:
@@ -745,9 +783,10 @@ class MutationOSCServer:
 
         with self._lock:
             self._glide_time = max(0.0, value)
-            print(f"[OSC] glide_time = {self._glide_time:.3f}s")
+            if log:
+                print(f"[OSC] glide_time = {self._glide_time:.3f}s")
 
-    def set_change_count(self, count: int) -> None:
+    def set_change_count(self, count: int, *, log: bool = True) -> None:
         """Set how many class edits one trigger applies (1..max_changes)."""
 
         try:
@@ -760,9 +799,10 @@ class MutationOSCServer:
         value = max(1, min(self._engine.max_changes, int(round(numeric))))
         with self._lock:
             self._change_count = value
-            print(f"[OSC] change_count = {self._change_count}")
+            if log:
+                print(f"[OSC] change_count = {self._change_count}")
 
-    def set_temperature(self, value: float) -> None:
+    def set_temperature(self, value: float, *, log: bool = True) -> None:
         """Set the mutation temperature (0..1)."""
 
         try:
@@ -774,9 +814,10 @@ class MutationOSCServer:
 
         with self._lock:
             self._temperature = max(0.0, min(1.0, numeric))
-            print(f"[OSC] temperature = {self._temperature:.3f}")
+            if log:
+                print(f"[OSC] temperature = {self._temperature:.3f}")
 
-    def set_anchor_mobility(self, value: float) -> None:
+    def set_anchor_mobility(self, value: float, *, log: bool = True) -> None:
         """Set anchor mobility (0 = fixed, 1 = no precedence)."""
 
         try:
@@ -789,7 +830,56 @@ class MutationOSCServer:
         mobility = max(0.0, min(1.0, numeric))
         with self._lock:
             self._engine.set_anchor_mobility(mobility)
-            print(f"[OSC] anchor_mobility = {self._engine.anchor_mobility:.3f}")
+            if log:
+                print(f"[OSC] anchor_mobility = {self._engine.anchor_mobility:.3f}")
+
+    def set_randomness(self, value: float, *, log: bool = True) -> float:
+        """Set the mutation palette randomness (0..1; Stage 8.5 recall path)."""
+
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            raise TypeError("randomness must be a real number") from None
+        if not math.isfinite(numeric):
+            raise ValueError("randomness must be finite")
+
+        with self._lock:
+            self._randomness = max(0.0, min(1.0, numeric))
+            if log:
+                print(f"[OSC] randomness = {self._randomness:.3f}")
+            return self._randomness
+
+    def set_dissonance_bias(self, value: float, *, log: bool = True) -> float:
+        """Set the dissonance bias (-1..1; Stage 8.5 recall path)."""
+
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            raise TypeError("dissonance_bias must be a real number") from None
+        if not math.isfinite(numeric):
+            raise ValueError("dissonance_bias must be finite")
+
+        with self._lock:
+            self._dissonance_bias = max(-1.0, min(1.0, numeric))
+            if log:
+                print(f"[OSC] dissonance_bias = {self._dissonance_bias:+.3f}")
+            return self._dissonance_bias
+
+    def set_stepwise_bias(self, value: float, *, log: bool = True) -> float:
+        """Set the stepwise bias (0..1; Stage 8.5 recall path)."""
+
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            raise TypeError("stepwise_bias must be a real number") from None
+        if not math.isfinite(numeric):
+            raise ValueError("stepwise_bias must be finite")
+
+        with self._lock:
+            self._stepwise_bias = max(0.0, min(1.0, numeric))
+            if log:
+                print(f"[OSC] stepwise_bias = {self._stepwise_bias:.3f}")
+            return self._stepwise_bias
 
     @staticmethod
     def _notify(
@@ -880,25 +970,19 @@ class MutationOSCServer:
         value = _one_float(args, self.RANDOMNESS_ADDRESS)
         if value is None:
             return
-        with self._lock:
-            self._randomness = _clamp(value, 0.0, 1.0)
-            print(f"[OSC] randomness = {self._randomness:.3f}")
+        self.set_randomness(value)
 
     def _handle_set_dissonance_bias(self, _address: str, *args: Any) -> None:
         value = _one_float(args, self.DISSONANCE_ADDRESS)
         if value is None:
             return
-        with self._lock:
-            self._dissonance_bias = _clamp(value, -1.0, 1.0)
-            print(f"[OSC] dissonance_bias = {self._dissonance_bias:+.3f}")
+        self.set_dissonance_bias(value)
 
     def _handle_set_stepwise_bias(self, _address: str, *args: Any) -> None:
         value = _one_float(args, self.STEPWISE_ADDRESS)
         if value is None:
             return
-        with self._lock:
-            self._stepwise_bias = _clamp(value, 0.0, 1.0)
-            print(f"[OSC] stepwise_bias = {self._stepwise_bias:.3f}")
+        self.set_stepwise_bias(value)
 
     def _handle_set_glide_time(self, _address: str, *args: Any) -> None:
         value = _one_float(args, self.GLIDE_ADDRESS)
@@ -1773,6 +1857,52 @@ class MutationOSCServer:
                 "glide",
             ),
         )
+
+    # -- Stage 8.5 performance states -------------------------------------
+
+    def _handle_state_name(
+        self,
+        args: tuple[Any, ...],
+        address: str,
+        callback: Callable[[str], None] | None,
+        label: str,
+    ) -> None:
+        """Validate arity/type only; the bridge owns the name rules and replies.
+
+        A rejected name is reported by the bridge with one ``[STATE]`` line and
+        a fresh ``/ji/state/state``, so the GUI and the log never disagree.
+        """
+
+        if len(args) != 1:
+            _warn(f"{address} expects one state name; got {len(args)} arguments")
+            return
+        raw = args[0]
+        if not isinstance(raw, str):
+            _warn(f"{address} expects a state name string; got {raw!r}")
+            return
+        self._call_callback(callback, label, raw)
+
+    def _handle_state_save(self, _address: str, *args: Any) -> None:
+        self._handle_state_name(
+            args, self.STATE_SAVE_ADDRESS, self._on_state_save, "state save"
+        )
+
+    def _handle_state_load(self, _address: str, *args: Any) -> None:
+        self._handle_state_name(
+            args, self.STATE_LOAD_ADDRESS, self._on_state_load, "state load"
+        )
+
+    def _handle_state_delete(self, _address: str, *args: Any) -> None:
+        self._handle_state_name(
+            args, self.STATE_DELETE_ADDRESS, self._on_state_delete, "state delete"
+        )
+
+    def _handle_state_request(self, _address: str, *args: Any) -> None:
+        if args:
+            _warn(
+                f"{self.STATE_REQUEST_ADDRESS} takes no arguments; ignoring extras"
+            )
+        self._call_callback(self._on_state_request, "state request")
 
     @staticmethod
     def _call_callback(

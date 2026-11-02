@@ -1054,6 +1054,8 @@ def test_phase_order() -> None:
     assert PHASE_NAMES[PHASE_HOME] == "home"
     assert PHASE_ORDER["home"] == 0
     order = [PHASE_NAMES[index] for index in sorted(PHASE_NAMES)]
+    # Stage 8.5 appends the state-recall phase last; every older phase keeps
+    # its number, so this test only gains the final name.
     assert order == [
         "home",
         "mutation",
@@ -1065,8 +1067,9 @@ def test_phase_order() -> None:
         "lead",
         "drone",
         "midi",
+        "state",
     ], order
-    print("  home, mutation, octave, groove, drums, bass, arp, lead, drone, midi")
+    print("  home, mutation, octave, groove, drums, bass, arp, lead, drone, midi, state")
 
 
 # ---------------------------------------------------------------------------

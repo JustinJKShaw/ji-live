@@ -1366,6 +1366,27 @@ class LeadEngine:
             self._projection = None
             return settings
 
+    def set_variation_index(self, index: object, *, force: bool = False) -> LeadMotif:
+        """Restore a saved variation index and rebuild the motif (Stage 8.5).
+
+        The motif is a pure function of the current settings, the set, and this
+        index, so restoring settings + index reproduces the recalled colour.
+        ``force=True`` regenerates even when the index did not change (the
+        state load applies the index once more after the new set reaches the
+        lead, whose ``on_set`` deliberately only re-projects).  This is
+        additive: ``vary()`` remains the only *performance* gesture.
+        """
+
+        value = max(0, _as_int(index, "variation_index"))
+        with self._lock:
+            if value == self._variation_index and not force:
+                return self._motif
+            self._variation_index = value
+            self._motif = self._generate_locked()
+            self._version += 1
+            self._projection = None
+            return self._motif
+
     def set_enabled(self, enabled: object) -> bool:
         with self._lock:
             self._settings = replace(
@@ -1892,6 +1913,33 @@ class LeadRig:
         elif key in _GENERATION_KEYS and settings != before:
             print(f"[LEAD] phrase {self.engine.describe_phrase()}")
         return settings
+
+    def set_settings(self, settings: LeadSettings) -> LeadSettings:
+        """Replace every lead setting at once (Stage 8.5 state recall).
+
+        Mirrors :meth:`set_setting`'s enable side effect: the scheduler starts or
+        stops when the recalled ``enabled`` flag differs from the live one.
+        """
+
+        if not isinstance(settings, LeadSettings):
+            raise TypeError("settings must be a LeadSettings")
+        before = self.engine.settings
+        applied = self.engine.set_settings(settings)
+        if applied.enabled != before.enabled:
+            if self._port_ok:
+                if applied.enabled and self._transport_running:
+                    self.scheduler.start()
+                elif not applied.enabled and self.scheduler.is_running:
+                    self.scheduler.stop()
+            print(f"[LEAD] {'enabled' if applied.enabled else 'disabled'}")
+        return applied
+
+    def set_variation_index(
+        self, index: object, *, force: bool = False
+    ) -> LeadMotif:
+        """Restore a saved variation index (Stage 8.5 state recall)."""
+
+        return self.engine.set_variation_index(index, force=force)
 
     def set_enabled(self, enabled: object) -> bool:
         self.set_setting("enabled", enabled)

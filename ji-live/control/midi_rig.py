@@ -36,7 +36,7 @@ from typing import Any
 try:  # Support both ``python -m control.midi_rig`` and direct execution.
     from . import arp as arp_module
     from .arp import DEFAULT_ORDER, ArpSettings, SetArp
-    from .bass import BassRig
+    from .bass import BassRig, BassSettings
     from .drone import DRONE_MODES as _DRONE_MODES
     from .drone import DroneConfig, DroneRig, DroneSettings
     from .drone import load_config as load_drone_config
@@ -46,7 +46,7 @@ try:  # Support both ``python -m control.midi_rig`` and direct execution.
 except ImportError:  # pragma: no cover - exercised only by direct execution
     import arp as arp_module  # type: ignore[no-redef]
     from arp import DEFAULT_ORDER, ArpSettings, SetArp  # type: ignore[no-redef]
-    from bass import BassRig  # type: ignore[no-redef]
+    from bass import BassRig, BassSettings  # type: ignore[no-redef]
     from drone import (  # type: ignore[no-redef]
         DRONE_MODES as _DRONE_MODES,
         DroneConfig,
@@ -879,6 +879,13 @@ class MIDIRig:
             raise RuntimeError("bass is not configured")
         return self.bass.set_setting(name, value)
 
+    def set_bass_settings(self, settings: BassSettings) -> object:
+        """Replace every bass setting at once (Stage 8.5 state recall)."""
+
+        if self.bass is None:
+            raise RuntimeError("bass is not configured")
+        return self.bass.set_settings(settings)
+
     def set_bass_enabled(self, enabled: bool) -> bool:
         if self.bass is None:
             return False
@@ -937,6 +944,20 @@ class MIDIRig:
             raise RuntimeError("lead is not configured (start with --lead)")
         return self.lead.set_setting(name, value)
 
+    def set_lead_settings(self, settings: LeadSettings) -> object:
+        """Replace every lead setting at once (Stage 8.5 state recall)."""
+
+        if self.lead is None:
+            raise RuntimeError("lead is not configured (start with --lead)")
+        return self.lead.set_settings(settings)
+
+    def set_lead_variation_index(self, index: int, force: bool = False) -> object:
+        """Restore the saved lead variation index (Stage 8.5 state recall)."""
+
+        if self.lead is None:
+            raise RuntimeError("lead is not configured (start with --lead)")
+        return self.lead.set_variation_index(index, force=force)
+
     def set_lead_enabled(self, enabled: bool) -> bool:
         if self.lead is None:
             return False
@@ -976,6 +997,13 @@ class MIDIRig:
         if self.drone_rig is None or not self._midi_enabled:
             raise RuntimeError("drone is not configured (start with --midi)")
         return self.drone_rig.set_setting(name, value)
+
+    def set_drone_settings(self, settings: DroneSettings) -> object:
+        """Replace every drone setting at once (Stage 8.5 state recall)."""
+
+        if self.drone_rig is None or not self._midi_enabled:
+            raise RuntimeError("drone is not configured (start with --midi)")
+        return self.drone_rig.set_settings(settings)
 
     def set_drone_bpm(self, bpm: float) -> None:
         if self.drone_rig is not None:

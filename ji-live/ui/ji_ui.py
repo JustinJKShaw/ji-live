@@ -471,7 +471,7 @@ class _StatusRelay(QObject):
 
 
 class MainWindow(QMainWindow):
-    """One screen: Mutation, Autotune, Loops, Rhythm, Groove, Bass, Arp, Drone, Lead, Status."""
+    """One screen: Mutation, Home, State, Autotune, Loops, Rhythm, Groove, Bass, Arp, Drone, Lead, Status."""
 
     def __init__(
         self,
@@ -497,6 +497,7 @@ class MainWindow(QMainWindow):
         self._lead_sync = False
         self._drone_sync = False
         self._home_sync = False
+        self._state_sync = False
         self._home_return_total: int | None = None
         self._home_active_slot: int | None = None
         self._grid_sync = False
@@ -511,10 +512,11 @@ class MainWindow(QMainWindow):
         )
         self._wire_controller_callback()
 
-        self.setWindowTitle("JI Station - Stage 8.4 Performance")
-        # One row taller than 8.3d so the extra Home row does not push Status
-        # below the fold; the scroll area remains the small-screen safety net.
-        self.resize(1280, 768)
+        self.setWindowTitle("JI Station - Stage 8.5 Performance")
+        # One row taller than the 8.4 window (which was one row taller than
+        # 8.3d) so the State row does not push Status below the fold; the
+        # scroll area remains the small-screen safety net.
+        self.resize(1280, 800)
         self.setMinimumSize(1080, 600)
         compact = QFont()
         compact.setPointSize(8)
@@ -532,6 +534,7 @@ class MainWindow(QMainWindow):
         top_row.addWidget(self._build_midi_group(), 2)
         outer.addLayout(top_row)
         outer.addWidget(self._build_home_group())
+        outer.addWidget(self._build_state_group())
         outer.addWidget(self._build_autotune_group())
         outer.addWidget(self._build_loops_group())
         outer.addWidget(self._build_rhythm_group())
@@ -567,6 +570,7 @@ class MainWindow(QMainWindow):
 
         self._refresh_status_labels()
         self._sync_home_controls()  # start disabled until a slot is captured
+        self._sync_state_controls()  # start disabled until a name is typed/known
 
         if autostart:
             self.start_controller()
@@ -632,6 +636,8 @@ class MainWindow(QMainWindow):
             self._sync_drone_controls()
         if address == osc_control.HOME_STATE:
             self._sync_home_controls()
+        if address in (osc_control.STATE_LIST, osc_control.STATE_STATE):
+            self._sync_state_controls()
 
         self._refresh_status_labels()
 
@@ -844,6 +850,70 @@ class MainWindow(QMainWindow):
             self.home_drift_spin,
             self.home_seed_spin,
         ]
+        return group
+
+    def _build_state_group(self) -> QGroupBox:
+        """Stage 8.5 compact State group (one control row + the status line)."""
+
+        group = QGroupBox("State")
+        layout = QVBoxLayout(group)
+        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setSpacing(1)
+
+        row = QHBoxLayout()
+        row.setSpacing(3)
+
+        row.addWidget(QLabel("Name"))
+        self.state_combo = QComboBox()
+        self.state_combo.setEditable(True)
+        self.state_combo.setFixedWidth(170)
+        self.state_combo.setToolTip(
+            "Saved performance state. A state holds the frequency set, mutation "
+            "controls, home slots, tempo/meter, groove, drums and the "
+            "bass/arp/lead/drone settings. Loops and the sclang autotune "
+            "parameters are NOT part of a state."
+        )
+        self.state_combo.currentTextChanged.connect(self._on_state_name_changed)
+        row.addWidget(self.state_combo)
+
+        self.state_save_button = QPushButton("Save")
+        self.state_save_button.setMinimumHeight(22)
+        self.state_save_button.setToolTip(
+            "Save the whole performance configuration under this name."
+        )
+        self.state_save_button.clicked.connect(self._on_state_save)
+        row.addWidget(self.state_save_button)
+
+        self.state_load_button = QPushButton("Load")
+        self.state_load_button.setMinimumHeight(22)
+        self.state_load_button.setToolTip(
+            "Recall the state: one set change and one update. While the "
+            "transport runs it lands on the next beat."
+        )
+        self.state_load_button.clicked.connect(self._on_state_load)
+        row.addWidget(self.state_load_button)
+
+        self.state_delete_button = QPushButton("Delete")
+        self.state_delete_button.setMinimumHeight(22)
+        self.state_delete_button.setToolTip("Delete this state file.")
+        self.state_delete_button.clicked.connect(self._on_state_delete)
+        row.addWidget(self.state_delete_button)
+
+        self.state_refresh_button = QPushButton("Refresh")
+        self.state_refresh_button.setMinimumHeight(22)
+        self.state_refresh_button.setToolTip(
+            "Ask the bridge for a fresh state list and status."
+        )
+        self.state_refresh_button.clicked.connect(self._on_state_refresh)
+        row.addWidget(self.state_refresh_button)
+
+        row.addSpacing(6)
+        self.state_label = QLabel("State: waiting for bridge")
+        self.state_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        row.addWidget(self.state_label, 1)
+        layout.addLayout(row)
         return group
 
     def _build_autotune_group(self) -> QGroupBox:
@@ -2451,6 +2521,86 @@ class MainWindow(QMainWindow):
             return
         self.home_label.setText(home.status_line(self._home_return_total))
 
+    # -- Stage 8.5 state controls -----------------------------------------
+
+    def _state_name(self) -> str:
+        return str(self.state_combo.currentText()).strip()
+
+    def _state_known(self) -> bool:
+        name = self._state_name().casefold()
+        if not name:
+            return False
+        return any(
+            str(value).casefold() == name for value in self.store.state_names
+        )
+
+    def _update_state_buttons(self) -> None:
+        name = self._state_name()
+        known = self._state_known()
+        self.state_save_button.setEnabled(bool(name))
+        self.state_load_button.setEnabled(known)
+        self.state_delete_button.setEnabled(known)
+
+    def _on_state_name_changed(self, _text: str) -> None:
+        if self._state_sync:
+            return
+        self._update_state_buttons()
+
+    def _on_state_save(self) -> None:
+        name = self._state_name()
+        self._guard(self.controller.state_save, name)
+        self._set_message(f"State save {name}")
+
+    def _on_state_load(self) -> None:
+        name = self._state_name()
+        running = self._transport_running()
+        self._guard(self.controller.state_load, name)
+        self._set_message(
+            f"State load {name} queued for the next beat"
+            if running
+            else f"State load {name} applied immediately"
+        )
+
+    def _on_state_delete(self) -> None:
+        name = self._state_name()
+        self._guard(self.controller.state_delete, name)
+        self._set_message(f"State delete {name}")
+
+    def _on_state_refresh(self) -> None:
+        self._guard(self.controller.request_state_list)
+        self._set_message("State list refreshed")
+
+    def _sync_state_controls(self) -> None:
+        """Reflect ``/ji/state/list`` + ``/ji/state/state`` with no feedback OSC."""
+
+        self._state_sync = True
+        try:
+            names = list(self.store.state_names)
+            current = self._state_name()
+            self.state_combo.blockSignals(True)
+            try:
+                self.state_combo.clear()
+                self.state_combo.addItems(names)
+                if current:
+                    self.state_combo.setCurrentText(current)
+                elif names:
+                    self.state_combo.setCurrentText(names[0])
+                else:
+                    self.state_combo.setCurrentText("")
+            finally:
+                self.state_combo.blockSignals(False)
+        finally:
+            self._state_sync = False
+        self._update_state_buttons()
+        self._update_state_label()
+
+    def _update_state_label(self) -> None:
+        status = self.store.state
+        if status is None:
+            self.state_label.setText("State: waiting for bridge")
+            return
+        self.state_label.setText(status.status_line())
+
     def _build_lead_group(self) -> QGroupBox:
         """Stage 8.3d compact lead group (two rows + status line)."""
 
@@ -3382,6 +3532,7 @@ class MainWindow(QMainWindow):
         self._update_lead_label()
         self._update_drone_label()
         self._update_home_label()
+        self._update_state_label()
 
         for index in range(1, 5):
             self._refresh_loop_label(index)
@@ -3438,7 +3589,7 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(f"{label} must be between 1 and 65535")
 
     app = QApplication(sys.argv[:1])
-    app.setApplicationName("JI Station Stage 8.4")
+    app.setApplicationName("JI Station Stage 8.5")
 
     controller = OSCController(
         bridge_host=args.bridge_host,
@@ -3455,7 +3606,7 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         message = f"Could not start the UI OSC listener:\n{exc}"
         print(f"[UI] {message}", file=sys.stderr)
-        QMessageBox.critical(None, "JI Stage 8.4 UI", message)
+        QMessageBox.critical(None, "JI Stage 8.5 UI", message)
         window.close()
         return 1
 

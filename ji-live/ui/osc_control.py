@@ -165,6 +165,14 @@ HOME_SET_DRIFT = "/ji/home/set_drift"
 HOME_SET_GLIDE = "/ji/home/set_glide"
 HOME_STATE = "/ji/home/state"
 
+# Stage 8.5 performance states (UI -> Bridge) and the two replies.
+STATE_SAVE = "/ji/state/save"
+STATE_LOAD = "/ji/state/load"
+STATE_DELETE = "/ji/state/delete"
+STATE_REQUEST = "/ji/state/request"
+STATE_LIST = "/ji/state/list"
+STATE_STATE = "/ji/state/state"
+
 AUTOTUNE_SET = "/ji/autotune/set"
 AUTOTUNE_STATE = "/ji/autotune/state"
 
@@ -202,6 +210,8 @@ STATUS_ADDRESSES = (
     LEAD_NOTE,
     DRONE_STATE,
     HOME_STATE,
+    STATE_LIST,
+    STATE_STATE,
     CPU,
     LOOP_STATE,
     LOOP_CONFIG,
@@ -1921,6 +1931,33 @@ def build_set_home_glide(seconds: Any) -> tuple[str, list[Any]]:
     return build_set_home_setting("return_glide", seconds)
 
 
+# Stage 8.5 performance states.  The bridge owns the name rules and replies
+# with one /ji/state/state line; the GUI only refuses an empty name.
+
+
+def _state_name(value: Any) -> str:
+    name = str(value if value is not None else "").strip()
+    if not name:
+        raise ValueError("a state name cannot be empty")
+    return name
+
+
+def build_state_save(name: Any) -> tuple[str, list[Any]]:
+    return STATE_SAVE, [_state_name(name)]
+
+
+def build_state_load(name: Any) -> tuple[str, list[Any]]:
+    return STATE_LOAD, [_state_name(name)]
+
+
+def build_state_delete(name: Any) -> tuple[str, list[Any]]:
+    return STATE_DELETE, [_state_name(name)]
+
+
+def build_state_request() -> tuple[str, list[Any]]:
+    return STATE_REQUEST, []
+
+
 def build_loop_set_mode(index: Any, mode: Any) -> tuple[str, list[Any]]:
     return LOOP_SET_MODE, [_validate_index(index), str(_validate_loop_mode(mode))]
 
@@ -2312,6 +2349,38 @@ class HomeStatus:
             f"dist {self.distance} | auto {self.every} | "
             f"drift {self.drift} | back {self.history_depth}"
         )
+
+
+@dataclass(frozen=True)
+class StateStatus:
+    """``/ji/state/state`` snapshot: count, last saved/loaded, message."""
+
+    count: int
+    last_saved: str
+    last_loaded: str
+    message: str
+
+    @property
+    def is_error(self) -> bool:
+        message = self.message.strip().lower()
+        return message.startswith(
+            ("invalid", "no such", "save failed", "delete failed", "cannot")
+        )
+
+    def status_line(self) -> str:
+        """``State: 3 saved | saved A-drone | loaded A-drone`` (or an error)."""
+
+        message = self.message.strip()
+        if self.is_error:
+            return f"State: error {message}"
+        if self.count <= 0:
+            return "State: none saved"
+        parts = [f"State: {int(self.count)} saved"]
+        if self.last_saved:
+            parts.append(f"saved {self.last_saved}")
+        if self.last_loaded:
+            parts.append(f"loaded {self.last_loaded}")
+        return " | ".join(parts)
 
 
 @dataclass(frozen=True)
@@ -2729,6 +2798,40 @@ def parse_home_state(args: Sequence[Any]) -> "HomeStatus":
     )
 
 
+def parse_state_list(args: Sequence[Any]) -> tuple[str, ...]:
+    """Parse ``[int count, name_1 ... name_N]``; the count must match."""
+
+    if len(args) < 1:
+        raise ValueError("state list needs a count and zero or more names")
+    count = int(round(_as_finite_float(args[0], "state count")))
+    if count < 0:
+        raise ValueError("state count must be non-negative")
+    names = [str(value) for value in args[1:]]
+    if len(names) != count:
+        raise ValueError(
+            f"state list says {count} states but carries {len(names)} names"
+        )
+    return tuple(names)
+
+
+def parse_state_status(args: Sequence[Any]) -> StateStatus:
+    """Parse ``[count, last_saved, last_loaded, message]``."""
+
+    if len(args) != 4:
+        raise ValueError(
+            "state status needs count, last_saved, last_loaded, message"
+        )
+    count = int(round(_as_finite_float(args[0], "state count")))
+    if count < 0:
+        raise ValueError("state count must be non-negative")
+    return StateStatus(
+        count=count,
+        last_saved="" if args[1] is None else str(args[1]),
+        last_loaded="" if args[2] is None else str(args[2]),
+        message="" if args[3] is None else str(args[3]),
+    )
+
+
 def parse_loop_config(args: Sequence[Any]) -> tuple[int, LoopConfig]:
     """Parse ``[index, mode, beats, seconds]``."""
 
@@ -2796,6 +2899,8 @@ STATUS_PARSERS: dict[str, Callable[[Sequence[Any]], Any]] = {
     LEAD_NOTE: parse_lead_note,
     DRONE_STATE: parse_drone_state,
     HOME_STATE: parse_home_state,
+    STATE_LIST: parse_state_list,
+    STATE_STATE: parse_state_status,
     CPU: parse_cpu,
     LOOP_STATE: parse_loop_state,
     LOOP_CONFIG: parse_loop_config,
@@ -2827,6 +2932,8 @@ class StatusStore:
         self.lead_note: LeadNoteStatus | None = None
         self.drone: DroneStatus | None = None
         self.home: HomeStatus | None = None
+        self.state_names: tuple[str, ...] = ()
+        self.state: StateStatus | None = None
         self.cpu: float | None = None
         self.loop_states: dict[int, str] = {
             index: "waiting" for index in range(LOOP_INDEX_MIN, LOOP_INDEX_MAX + 1)
@@ -2915,6 +3022,12 @@ class StatusStore:
             self.bridge_seen = True
         elif address == HOME_STATE:
             self.home = parsed
+            self.bridge_seen = True
+        elif address == STATE_LIST:
+            self.state_names = tuple(parsed)
+            self.bridge_seen = True
+        elif address == STATE_STATE:
+            self.state = parsed
             self.bridge_seen = True
         elif address == CPU:
             self.cpu = parsed
@@ -3495,6 +3608,28 @@ class OSCController:
     def set_home_glide(self, seconds: Any) -> tuple[str, list[Any]]:
         return self.set_home_setting("return_glide", seconds)
 
+    # -- Stage 8.5 performance states -----------------------------------
+
+    def state_save(self, name: Any) -> tuple[str, list[Any]]:
+        message = build_state_save(name)
+        self._send_bridge(*message)
+        return message
+
+    def state_load(self, name: Any) -> tuple[str, list[Any]]:
+        message = build_state_load(name)
+        self._send_bridge(*message)
+        return message
+
+    def state_delete(self, name: Any) -> tuple[str, list[Any]]:
+        message = build_state_delete(name)
+        self._send_bridge(*message)
+        return message
+
+    def request_state_list(self) -> tuple[str, list[Any]]:
+        message = build_state_request()
+        self._send_bridge(*message)
+        return message
+
     def loop_record(
         self, index: Any, seconds: float | None = None
     ) -> tuple[str, list[Any]]:
@@ -3789,6 +3924,19 @@ __all__ = ["AUTOTUNE_PARAMS",
     "HOME_SLOTS",
     "HOME_STATE",
     "HomeStatus",
+    "STATE_DELETE",
+    "STATE_LIST",
+    "STATE_LOAD",
+    "STATE_REQUEST",
+    "STATE_SAVE",
+    "STATE_STATE",
+    "StateStatus",
+    "build_state_delete",
+    "build_state_load",
+    "build_state_request",
+    "build_state_save",
+    "parse_state_list",
+    "parse_state_status",
     "build_home_back",
     "build_home_capture",
     "build_home_clear",

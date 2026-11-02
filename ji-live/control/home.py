@@ -643,6 +643,12 @@ class HomeManager:
         with self._lock:
             self._active_slot = index
 
+    def clear_active(self) -> None:
+        """Keep every captured slot but leave no active home (Stage 8.5 load)."""
+
+        with self._lock:
+            self._active_slot = -1
+
     @property
     def active_slot(self) -> int:
         with self._lock:
@@ -858,6 +864,20 @@ class HomeManager:
     def reset_journey(self) -> None:
         with self._lock:
             self._journey_mutations = 0
+
+    def restore_journey(self, seed: int | None = None, mutations: int = 0) -> None:
+        """Restore a saved journey seed/counter (Stage 8.5 state recall).
+
+        Unlike :meth:`start_journey` this needs no active home: a state file may
+        carry a journey seed without a captured slot.  ``seed`` is clamped with
+        the same rule as the GUI/OSC control; ``mutations`` is floored at 0.
+        """
+
+        value = self._journey_seed if seed is None else clamp_seed(seed)
+        count = max(0, int(mutations))
+        with self._lock:
+            self._journey_seed = value
+            self._journey_mutations = count
 
     def journey_due(self) -> bool:
         """True when auto is on and the journey has reached ``every``."""

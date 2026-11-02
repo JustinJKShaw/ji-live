@@ -80,6 +80,18 @@ edits snap at 0.005 s and no longer use the knob. No new flag, OSC address or
 config key; no sclang/SynthDef/DSP change. Design and checklist:
 [docs/README_stage8_4.md](docs/README_stage8_4.md) §6.1.
 
+**Stage 8.5 is built and awaits human acceptance.** It saves the whole
+performance configuration under a name and recalls it later without restarting
+anything: frequency set, mutation controls, home slots/journey, tempo/meter,
+drums, groove + grid, and every bass/arp/lead/drone setting (plus the lead
+variation index). The **State** row (Name / Save / Load / Delete / Refresh) sits
+under Home; a recall is **one** set change and **one** `/ji/freqset/update`,
+immediate while stopped and on the next quarter beat while running. Loops
+(explicitly excluded by the owner), the sclang autotune parameters, the transport
+and the Back history are **not** part of a state. Files live in
+`ji-live/states/<name>.json` (`--state-dir` overrides). Design, format, procedure
+and the human checklist: [docs/README_stage8_5.md](docs/README_stage8_5.md).
+
 **Start here:** [docs/START_HERE.md](docs/START_HERE.md) is the authoritative
 start/stop/flag sheet. It is updated with every stage. Stage 8.3b details are in
 [docs/README_stage8_3b.md](docs/README_stage8_3b.md); the arp sync/evolution
@@ -107,7 +119,8 @@ ji-live/
 │   ├── lead.py                # Stage 8.3d lead: motif, variations, scheduler
 │   ├── drone.py               # Stage 6 hold drone + Stage 8.3d pulse/bend
 │   ├── glide.py               # Stage 8.4.1 class-melt planner + scheduler
-│   └── home.py                # Stage 8.4 slots, planner, journeys, history
+│   ├── home.py                # Stage 8.4 slots, planner, journeys, history
+│   └── state.py               # Stage 8.5 performance states: format/library
 ├── ui/                        # PyQt6 GUI, pure OSC layer, sclang UI surface
 ├── config/                    # routing, MPE, rhythm, bass, home, lead, drone JSON
 ├── tests/
@@ -123,6 +136,7 @@ ji-live/
 │   ├── test_drone.py          # Stage 8.3d drone: hold/pulse/bend
 │   ├── test_home.py           # Stage 8.4 distance/plan/return/back/drift
 │   ├── test_glide.py          # Stage 8.4.1 class melt + bridge cancel/fan-out
+│   ├── test_state.py          # Stage 8.5 state format/library/recall
 │   ├── test_startup.py        # launcher/start-file/docs
 │   ├── test_ui.py
 │   └── sc/                    # sclang test scripts
@@ -143,6 +157,7 @@ ji-live/
     ├── README_stage8_3c.md
     ├── README_stage8_3d.md    # lead/melody + drone pad modes
     ├── README_stage8_4.md     # home sets / journeys / smooth return
+    ├── README_stage8_5.md     # performance state save / recall
     ├── START_HERE_stage8_1.txt … _stage8_3.txt   (archival)
     ├── README_live_rig.md
     ├── README_mpe.md
@@ -180,8 +195,9 @@ in **[docs/START_HERE.md](docs/START_HERE.md)**.
    alone is enough. Use `--no-midi`, `--no-drums`, `--no-bass`, `--no-gui`
    or `--no-bridge` to drop a voice; add `--lead` for the Stage 8.3d melody
    (off by default, needs IAC Bus 5 + an Ableton Lead track); `--dry-run`
-   prints the exact child commands; `--check` validates imports, configs, and
-   mido output names.
+   prints the exact child commands; `--check` validates imports, configs, the
+   state directory, and mido output names; `--state-dir` points the State row at
+   another folder (default `ji-live/states/`).
 
 3. **Ableton** must be running with the Drone / Arp / Drums / Bass / Sub tracks
    (and Lead when `--lead` is used); see §1 of `docs/START_HERE.md`.
@@ -215,6 +231,7 @@ uv run --with python-osc python tests/test_arp.py
 uv run --with python-osc python tests/test_lead.py
 uv run --with python-osc python tests/test_drone.py
 uv run --with python-osc python tests/test_home.py
+uv run --with python-osc python tests/test_state.py
 uv run --with python-osc python tests/test_startup.py
 uv run --with python-osc python tests/test_ui.py --pure
 
@@ -236,6 +253,7 @@ python -m tests.test_ui --pure
 
 - [START HERE — start/stop/flag sheet](docs/START_HERE.md)
 - [GUI parameter reference — every control, one line each](docs/GUI_PARAMETERS.md)
+- [Stage 8.5 performance state save / recall](docs/README_stage8_5.md)
 - [Stage 8.4 home sets / journeys / smooth return](docs/README_stage8_4.md)
 - [Stage 8.3d lead/melody + drone pad modes](docs/README_stage8_3d.md)
 - [Stage 8.3c beat-synced arp + self-evolution](docs/README_stage8_3c.md)

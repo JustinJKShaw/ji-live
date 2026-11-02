@@ -19,8 +19,10 @@ Behavior:
 * If the bridge exits early, its exit code is printed and the GUI is stopped;
   a dead GUI is never left behind.
 * ``--dry-run`` prints exactly what would start and exits 0 without importing
-  PyQt6 or mido.  ``--check`` validates imports, config parsing, and the mido
-  output names, then exits without starting anything.
+  PyQt6 or mido.  ``--check`` validates imports, config parsing, the state
+  directory, and the mido output names, then exits without starting anything.
+* ``--state-dir`` points the bridge at a different performance-state folder
+  (default ``ji-live/states/``); relative paths resolve from the project root.
 * The direct commands (``python control/ji_bridge.py ...`` and
   ``python ui/ji_ui.py ...``) keep working unchanged.
 
@@ -202,6 +204,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--state-dir",
+        default=None,
+        help=(
+            "Stage 8.5 performance-state directory (default: states/ next to "
+            "the project; a relative path resolves from the project root)"
+        ),
+    )
+    parser.add_argument(
         "--bridge-args",
         default="",
         metavar="ARGS",
@@ -291,6 +301,8 @@ def build_bridge_argv(args: argparse.Namespace) -> list[str]:
         argv.extend(["--lead-config", str(args.lead_config)])
     if args.drone_config:
         argv.extend(["--drone-config", str(args.drone_config)])
+    if args.state_dir:
+        argv.extend(["--state-dir", str(args.state_dir)])
     argv.extend(shlex.split(str(args.bridge_args or "")))
     return argv
 
@@ -504,6 +516,19 @@ def run_checks(args: argparse.Namespace) -> int:
         )
     except (OSError, TypeError, ValueError) as exc:
         problems.append(f"home config: {exc}")
+
+    try:
+        from control.state import StateLibrary, resolve_state_dir
+
+        state_directory = resolve_state_dir(args.state_dir)
+        library = StateLibrary(state_directory)
+        library.ensure()
+        print(
+            f"[CHECK] state dir ok: path={state_directory} "
+            f"states={library.count()}"
+        )
+    except (OSError, TypeError, ValueError) as exc:
+        problems.append(f"state dir: {exc}")
 
     if importlib.util.find_spec("mido") is not None:
         try:

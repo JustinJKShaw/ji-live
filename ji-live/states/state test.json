@@ -1,0 +1,197 @@
+{
+  "format": "ji-performance-state",
+  "version": 1,
+  "saved_at": "2026-11-02T11:36:22-05:00",
+  "name": "state test",
+  "freqset": {
+    "ratios": [
+      1.0,
+      1.09375,
+      1.125,
+      1.25,
+      1.333333333333,
+      1.454545454545,
+      1.666666666667
+    ],
+    "anchor": 1.0,
+    "octaves": [
+      [
+        1.0,
+        0
+      ],
+      [
+        1.09375,
+        0
+      ],
+      [
+        1.125,
+        0
+      ],
+      [
+        1.25,
+        0
+      ],
+      [
+        1.333333333333,
+        0
+      ],
+      [
+        1.454545454545,
+        0
+      ],
+      [
+        1.666666666667,
+        0
+      ]
+    ],
+    "fundamental": 220.0
+  },
+  "mutation": {
+    "randomness": 0.55,
+    "dissonance_bias": 0.0,
+    "stepwise_bias": 0.25,
+    "temperature": 0.0,
+    "anchor_mobility": 0.25,
+    "change_count": 1,
+    "glide_time": 0.15,
+    "max_changes": 3
+  },
+  "home": {
+    "slots": [
+      null,
+      null,
+      null,
+      null
+    ],
+    "active_slot": -1,
+    "auto": false,
+    "every": 8,
+    "seed": 1,
+    "max_drift": 0,
+    "return_glide": 0.06,
+    "journey_seed": 1,
+    "journey_mutations": 0
+  },
+  "rhythm": {
+    "bpm": 120.0,
+    "meter_num": 4,
+    "meter_den": 4
+  },
+  "drums": {
+    "enabled": true,
+    "rate": 1.0,
+    "lane_mask": 69
+  },
+  "groove": {
+    "preset": "four",
+    "density": 0.0,
+    "syncopation": 0.0,
+    "swing": 0.0,
+    "probability": 0.0,
+    "seed": 1,
+    "grid": [
+      4369,
+      0,
+      0,
+      0,
+      4112,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      17476,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ]
+  },
+  "bass": {
+    "enabled": false,
+    "preset": "pulse",
+    "grid": "1/4",
+    "length_steps": null,
+    "density": 0.0,
+    "syncopation": 0.0,
+    "swing": 0.0,
+    "gate_beats": 3.5,
+    "accent": 0.0,
+    "root_downbeat": true,
+    "pitch_mode": "root",
+    "movement": 0.0,
+    "octave_range": 0,
+    "octave_jump": 0.0,
+    "base_octave": -2,
+    "seed": 1,
+    "sub_enabled": false,
+    "sub_octaves": 1
+  },
+  "arp": {
+    "step_seconds": 0.12020000070333481,
+    "gate_seconds": 0.05000000074505806,
+    "velocity": 90,
+    "octave_offsets": [
+      0,
+      1,
+      2
+    ],
+    "shared_mode": "random",
+    "order": "forward",
+    "seed": 1,
+    "sync_mode": "free",
+    "division": "1/8",
+    "evolve": true,
+    "evolve_beats": 4,
+    "evolve_depth": 0.0
+  },
+  "lead": {
+    "enabled": false,
+    "grid": "1/8",
+    "phrase_bars": 2,
+    "density": 0.75,
+    "gate_beats": 0.5,
+    "velocity": 90,
+    "octave_range": 1,
+    "base_octave": 0,
+    "variation": "identity",
+    "variation_bars": 0,
+    "swing": 0.0,
+    "groove_link": true,
+    "seed": 1,
+    "variation_index": 0
+  },
+  "drone": {
+    "mode": "hold",
+    "velocity": 90,
+    "pulse_notes": 4,
+    "pulse_grid": "1/4",
+    "pulse_gate": 0.5,
+    "pulse_octave_span": 1,
+    "slide_direction": "down",
+    "slide_semitones": 2,
+    "slide_seconds": 0.4,
+    "hold_beats": 2.5,
+    "seed": 1,
+    "seq_notes": 5,
+    "seq_bars": "1",
+    "seq_gate": 1.0
+  }
+}

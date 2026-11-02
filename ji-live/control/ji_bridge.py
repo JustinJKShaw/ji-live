@@ -63,6 +63,16 @@ mutation requested for the same beat) and apply immediately while the transport
 is stopped (the whole return then becomes one set change).  Every batch reuses
 :meth:`JIBridge.send_set`, so sclang, MIDI, the UI and the history all see it.
 ``/ji/home/state`` is the 13-value status message.
+
+Stage 8.5 adds **performance states**: a named, versioned JSON snapshot of the
+whole performance configuration (frequency set, mutation controls, home slots,
+tempo/meter, drums, groove, bass/arp/lead/drone settings) in ``states/``.
+``/ji/state/save|load|delete|request`` are the control surface, ``/ji/state/list``
+and ``/ji/state/state`` the replies.  Save/delete/list are immediate file
+operations; a **load is beat-quantized on** ``PHASE_STATE`` (last, so it wins
+the beat) and applies as one atomic set change: cancel a pending return/glide,
+restore everything, then one ``send_set`` with the saved glide time.  Loops and
+the sclang-owned autotune parameters are deliberately **not** part of a state.
 """
 
 from __future__ import annotations
@@ -70,6 +80,7 @@ from __future__ import annotations
 import argparse
 import math
 import sys
+from datetime import datetime
 import threading
 import time
 from typing import Any, Callable
@@ -83,7 +94,8 @@ try:  # Support both ``python -m control.ji_bridge`` and direct execution.
     from . import glide as glide_module
     from . import home as home_module
     from . import lead as lead_module
-    from .drums import DEFAULT_LANE_MASK, DRUM_RATE_DEFAULT
+    from . import state as state_module
+    from .drums import DEFAULT_LANE_MASK, DRUM_RATE_DEFAULT, LANE_COUNT
     from .groove import Groove, validate_preset
     from .mutation import (
         MutationBatch,
@@ -104,6 +116,7 @@ try:  # Support both ``python -m control.ji_bridge`` and direct execution.
         PHASE_MIDI,
         PHASE_MUTATION,
         PHASE_OCTAVE,
+        PHASE_STATE,
         BeatQuantizer,
     )
     from .rhythm import RhythmEngine, RhythmState
@@ -114,7 +127,12 @@ except ImportError:  # pragma: no cover - exercised only by direct execution
     import glide as glide_module  # type: ignore[no-redef]
     import home as home_module  # type: ignore[no-redef]
     import lead as lead_module  # type: ignore[no-redef]
-    from drums import DEFAULT_LANE_MASK, DRUM_RATE_DEFAULT  # type: ignore[no-redef]
+    import state as state_module  # type: ignore[no-redef]
+    from drums import (  # type: ignore[no-redef]
+        DEFAULT_LANE_MASK,
+        DRUM_RATE_DEFAULT,
+        LANE_COUNT,
+    )
     from groove import Groove, validate_preset  # type: ignore[no-redef]
     from mutation import (  # type: ignore[no-redef]
         MutationBatch,
@@ -135,6 +153,7 @@ except ImportError:  # pragma: no cover - exercised only by direct execution
         PHASE_MIDI,
         PHASE_MUTATION,
         PHASE_OCTAVE,
+        PHASE_STATE,
         BeatQuantizer,
     )
     from rhythm import RhythmEngine, RhythmState  # type: ignore[no-redef]
@@ -159,6 +178,8 @@ LEAD_STATE_ADDRESS = "/ji/lead/state"
 LEAD_NOTE_ADDRESS = "/ji/lead/note"
 DRONE_STATE_ADDRESS = "/ji/drone/state"
 HOME_STATE_ADDRESS = "/ji/home/state"
+STATE_LIST_ADDRESS = "/ji/state/list"
+STATE_STATE_ADDRESS = "/ji/state/state"
 MAX_RATIOS = 12
 
 
@@ -262,6 +283,7 @@ class JIBridge:
         lead_config: str | None = None,
         drone_config: str | None = None,
         home_config: str | None = None,
+        state_dir: str | None = None,
     ) -> None:
         self.sc_host = str(sc_host)
         self.sc_port = int(sc_port)
@@ -315,6 +337,14 @@ class JIBridge:
         # The initial set is the first history entry, so Back works from the
         # very first mutation even before a home is captured.
         self.home.record(self.engine.snapshot())
+        # Stage 8.5: the state library is always constructed; a missing
+        # directory costs nothing and is created on the first save.
+        self.state_dir = state_module.resolve_state_dir(state_dir)
+        self.states = state_module.StateLibrary(self.state_dir)
+        self._state_lock = threading.RLock()
+        self._state_last_saved = ""
+        self._state_last_loaded = ""
+        self._state_message = ""
         self.server = MutationOSCServer(
             self.engine,
             listen_host=self.listen_host,
@@ -352,6 +382,10 @@ class JIBridge:
             on_home_jump=self.request_home_jump,
             on_home_back=self.request_back,
             on_home_setting=self._on_home_setting,
+            on_state_save=self.request_state_save,
+            on_state_load=self.request_state_load,
+            on_state_delete=self.request_state_delete,
+            on_state_request=self.request_state_list,
         )
         # Stage 2 API: this is the glide carried by every subsequent event.
         self.server.set_glide_time(glide_time)
@@ -500,6 +534,9 @@ class JIBridge:
         self._send_lead_state()
         self._send_drone_state()
         self._send_home_state()
+        self._print_state_dir()
+        self._send_state_list()
+        self._send_state_state()
         if self._bass_rig() is None:
             print(
                 "[BASS] not configured; start the bridge with --bass "
@@ -840,6 +877,8 @@ class JIBridge:
         self._send_lead_state()
         self._send_drone_state()
         self._send_home_state()
+        self._send_state_list()
+        self._send_state_state()
         self._send_quantize_state()
 
     def _drums_snapshot(self) -> tuple[bool, bool, float, int]:
@@ -1998,6 +2037,505 @@ class JIBridge:
             f"rate={rate:.1f} lanes=0x{mask:04x}"
         )
 
+    # ------------------------------------------------------------------
+    # Stage 8.5 performance states
+    # ------------------------------------------------------------------
+
+    def _state_dir_label(self) -> str:
+        directory = self.states.directory
+        try:
+            relative = directory.relative_to(state_module.PROJECT_ROOT)
+        except ValueError:
+            return str(directory)
+        return f"{relative}/"
+
+    def _print_state_dir(self) -> None:
+        print(f"[STATE] dir={self._state_dir_label()} states={self.states.count()}")
+
+    def _set_state_status(
+        self,
+        message: str | None = None,
+        *,
+        saved: str | None = None,
+        loaded: str | None = None,
+    ) -> None:
+        with self._state_lock:
+            if message is not None:
+                self._state_message = str(message)
+            if saved is not None:
+                self._state_last_saved = str(saved)
+            if loaded is not None:
+                self._state_last_loaded = str(loaded)
+
+    def _send_state_list(self) -> None:
+        """One ``/ji/state/list`` ``[count, name_1 ... name_N]`` (sorted)."""
+
+        try:
+            names = list(self.states.names())
+        except Exception as exc:  # a broken directory must not kill the UI feed
+            print(f"[STATE] list failed: {exc}", file=sys.stderr)
+            names = []
+        self._send_ui_message(STATE_LIST_ADDRESS, [len(names), *names])
+
+    def _send_state_state(self) -> None:
+        """One ``/ji/state/state`` ``[count, last_saved, last_loaded, message]``."""
+
+        with self._state_lock:
+            saved = self._state_last_saved
+            loaded = self._state_last_loaded
+            message = self._state_message
+        self._send_ui_message(
+            STATE_STATE_ADDRESS,
+            [int(self.states.count()), saved, loaded, message],
+        )
+
+    def _reply_state(
+        self,
+        message: str | None = None,
+        *,
+        saved: str | None = None,
+        loaded: str | None = None,
+    ) -> None:
+        """Update the status string and send both reply messages."""
+
+        self._set_state_status(message, saved=saved, loaded=loaded)
+        self._send_state_list()
+        self._send_state_state()
+
+    # -- capture --------------------------------------------------------
+
+    def capture_state(self, name: str) -> state_module.PerformanceState:
+        """Build a validated :class:`PerformanceState` from the live rig.
+
+        Missing buses are captured at their shipped defaults, so a state saved
+        without ``--bass`` never invents a bass setting.
+        """
+
+        server = self.server
+        bass_rig = self._bass_rig()
+        arp_rig = self._arp_rig()
+        lead_rig = self._lead_rig()
+        drone_rig = self._drone_rig()
+        home = self.home
+        config = home.config
+        enabled, _port_ok, rate, lane_mask = self._drums_snapshot()
+
+        lead_settings = (
+            lead_rig.engine.settings
+            if lead_rig is not None
+            else lead_module.LeadSettings()
+        )
+        lead_index = (
+            int(lead_rig.engine.motif.variation_index)
+            if lead_rig is not None
+            else 0
+        )
+        return state_module.PerformanceState.create(
+            name=name,
+            snapshot=self.engine.snapshot(),
+            fundamental=self.engine.fundamental,
+            saved_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+            mutation=state_module.MutationSettings.create(
+                randomness=server.randomness,
+                dissonance_bias=server.dissonance_bias,
+                stepwise_bias=server.stepwise_bias,
+                temperature=server.temperature,
+                anchor_mobility=server.anchor_mobility,
+                change_count=server.change_count,
+                glide_time=server.glide_time,
+                max_changes=self.engine.max_changes,
+            ),
+            home=state_module.HomeSection.create(
+                slots=home.slots,
+                active_slot=home.active_slot,
+                auto=config.auto,
+                every=config.every,
+                seed=config.seed,
+                max_drift=config.max_drift,
+                return_glide=config.return_glide,
+                journey_seed=home.journey_seed,
+                journey_mutations=home.journey_mutations,
+            ),
+            rhythm=self.rhythm.state,
+            drums=state_module.DrumsSection.create(
+                enabled=enabled, rate=rate, lane_mask=lane_mask
+            ),
+            groove=self.groove.spec,
+            grid=self.groove.grid,
+            bass=(
+                bass_rig.engine.settings
+                if bass_rig is not None
+                else bass_module.BassSettings()
+            ),
+            arp=(
+                arp_rig.settings
+                if arp_rig is not None
+                else arp_module.ArpSettings()
+            ),
+            lead=lead_settings,
+            lead_variation_index=lead_index,
+            drone=(
+                drone_rig.settings
+                if drone_rig is not None
+                else drone_module.DroneSettings()
+            ),
+        )
+
+    # -- requests -------------------------------------------------------
+
+    def request_state_save(self, name: str) -> None:
+        """Save the live configuration under ``name`` (immediate file op)."""
+
+        try:
+            valid = state_module.validate_state_name(name)
+        except state_module.StateError as exc:
+            print(f"[STATE] invalid name {name!r}: {exc}")
+            self._reply_state(f"invalid state: {exc}")
+            return
+        try:
+            # Serialise against a load so a save never captures a half-applied
+            # state (a load holds the same lock).
+            with self._state_lock:
+                state = self.capture_state(valid)
+                self.states.save(state)
+        except state_module.StateError as exc:
+            print(f"[STATE] save failed: {exc}")
+            self._reply_state(f"save failed: {exc}")
+            return
+        print(
+            f"[STATE] saved {valid} "
+            f"({state.field_count()} fields, {self._state_dir_label()})"
+        )
+        self._reply_state("saved", saved=valid)
+
+    def request_state_load(self, name: str) -> None:
+        """Queue one state recall for the next beat (immediate when stopped)."""
+
+        try:
+            valid = state_module.validate_state_name(name)
+        except state_module.StateError as exc:
+            print(f"[STATE] invalid name {name!r}: {exc}")
+            self._reply_state(f"invalid state: {exc}")
+            return
+        self.quantizer.schedule(
+            ("state", "load"),
+            lambda: self._apply_state_load(valid),
+            phase=PHASE_STATE,
+            label=f"state load {valid}",
+        )
+
+    def request_state_delete(self, name: str) -> None:
+        """Delete one state file (immediate; it changes no sound)."""
+
+        try:
+            valid = state_module.validate_state_name(name)
+        except state_module.StateError as exc:
+            print(f"[STATE] invalid name {name!r}: {exc}")
+            self._reply_state(f"invalid state: {exc}")
+            return
+        try:
+            deleted = self.states.delete(valid)
+        except state_module.StateError as exc:
+            print(f"[STATE] delete failed: {exc}")
+            self._reply_state(f"delete failed: {exc}")
+            return
+        if not deleted:
+            print(
+                f'[STATE] gap: no state named "{valid}" '
+                f"({self.states.count()} saved)"
+            )
+            self._reply_state("no such state")
+            return
+        with self._state_lock:
+            if self._state_last_saved.casefold() == valid.casefold():
+                self._state_last_saved = ""
+            if self._state_last_loaded.casefold() == valid.casefold():
+                self._state_last_loaded = ""
+        print(f"[STATE] deleted {valid}")
+        self._reply_state("deleted")
+
+    def request_state_list(self) -> None:
+        """Reply with a fresh list + status (immediate; changes no sound)."""
+
+        self._reply_state("refreshed")
+
+    # -- applying a load ------------------------------------------------
+
+    def _preflight_state(self, state: state_module.PerformanceState) -> None:
+        """Reject a state this bridge cannot apply *before* touching anything."""
+
+        engine = self.engine
+        if len(state.freqset.ratios) > engine.max_size:
+            raise state_module.StateError(
+                f"frequency set has {len(state.freqset.ratios)} classes; "
+                f"this bridge allows {engine.max_size}"
+            )
+        for ratio, octave in state.freqset.octaves:
+            if not engine.octave_min <= octave <= engine.octave_max:
+                raise state_module.StateError(
+                    f"analysis octave {octave:+d} for {ratio:.6f} is outside "
+                    f"{engine.octave_min}..{engine.octave_max}"
+                )
+
+    def _restore_mutation(self, state: state_module.PerformanceState) -> None:
+        server = self.server
+        settings = state.mutation
+        server.set_randomness(settings.randomness, log=False)
+        server.set_dissonance_bias(settings.dissonance_bias, log=False)
+        server.set_stepwise_bias(settings.stepwise_bias, log=False)
+        server.set_temperature(settings.temperature, log=False)
+        server.set_anchor_mobility(settings.anchor_mobility, log=False)
+        server.set_glide_time(settings.glide_time, log=False)
+        change_count = min(int(settings.change_count), self.engine.max_changes)
+        if change_count != settings.change_count:
+            print(
+                f"[STATE] change_count {settings.change_count} clamped to "
+                f"{change_count} (bridge --max-changes)"
+            )
+        server.set_change_count(change_count, log=False)
+
+    def _restore_home(self, state: state_module.PerformanceState) -> None:
+        home = self.home
+        section = state.home
+        home.update_config(
+            auto=section.auto,
+            every=section.every,
+            seed=section.seed,
+            max_drift=section.max_drift,
+            return_glide=section.return_glide,
+        )
+        for index, slot in enumerate(section.slots):
+            if slot is None:
+                home.clear(index)
+            else:
+                home.capture(index, slot)
+        if section.active_slot < 0:
+            home.clear_active()
+        else:
+            home.set_active_slot(section.active_slot)
+        home.restore_journey(section.journey_seed, section.journey_mutations)
+        # A deterministic stream from the saved seed; a mid-journey RNG stream
+        # is deliberately not resumed exactly (documented).
+        self.engine.reseed(section.journey_seed)
+
+    def _restore_rhythm(self, state: state_module.PerformanceState) -> None:
+        rhythm = self.rhythm
+        rhythm.set_bpm(state.rhythm.bpm)
+        rhythm.set_meter(state.rhythm.meter_num, state.rhythm.meter_den)
+        current = rhythm.state
+        self._midi_call("set_drums_bpm", current.bpm)
+        self._midi_call("set_bass_bpm", current.bpm)
+        self._midi_call("set_arp_bpm", current.bpm)
+        self._midi_call("set_lead_bpm", current.bpm)
+        self._midi_call("set_drone_bpm", current.bpm)
+        # A drum meter reloads the preset grid; the exact grid is forced below.
+        self._midi_call("set_drums_meter", current.meter_num, current.meter_den)
+        if self._drum_engine() is None:
+            self.groove.set_meter(current.meter_num, current.meter_den)
+        self._midi_call("set_bass_meter", current.meter_num, current.meter_den)
+        self._midi_call("set_lead_meter", current.meter_num, current.meter_den)
+        self._midi_call("set_drone_meter", current.meter_num, current.meter_den)
+        self._broadcast_rhythm()
+
+    def _restore_groove(self, state: state_module.PerformanceState) -> None:
+        engine = self._drum_engine()
+        groove = self.groove
+        spec = state.groove.spec
+        if engine is not None:
+            engine.set_preset(spec.preset)
+            for name, value in (
+                ("density", spec.density),
+                ("syncopation", spec.syncopation),
+                ("swing", spec.swing),
+                ("probability", spec.probability),
+            ):
+                engine.set_groove_modifier(name, value)
+            engine.set_seed(spec.seed)
+        else:
+            groove.set_preset(spec.preset)
+            for name, value in (
+                ("density", spec.density),
+                ("syncopation", spec.syncopation),
+                ("swing", spec.swing),
+                ("probability", spec.probability),
+            ):
+                groove.set_modifier(name, value)
+            groove.set_seed(spec.seed)
+
+        target = state.groove.grid
+        current = self.groove.grid
+        for lane in range(LANE_COUNT):
+            for step in range(32):
+                wanted = target.is_on(lane, step)
+                if wanted == current.is_on(lane, step):
+                    continue
+                if engine is not None:
+                    engine.set_step(lane, step, wanted)
+                else:
+                    self.groove.set_cell(lane, step, wanted)
+
+    def _lane_notes(self) -> list[int]:
+        rig = getattr(self.midi, "drums", None)
+        engine = getattr(rig, "engine", None)
+        lanes = getattr(engine, "lanes", None)
+        if lanes is not None:
+            try:
+                value = lanes() if callable(lanes) else lanes
+                return [int(lane.note) for lane in value]
+            except Exception:  # a fake/legacy rig falls back to the map
+                pass
+        return [36 + index for index in range(LANE_COUNT)]
+
+    def _restore_drums(self, state: state_module.PerformanceState) -> None:
+        enabled, port_ok, rate, lane_mask = self._drums_snapshot()
+        drums = state.drums
+        if not port_ok:
+            print(
+                "[STATE] drums skipped: Bus 3 not available; "
+                "the rest of the state is applied"
+            )
+            return
+        notes = self._lane_notes()
+        if drums.lane_mask != lane_mask:
+            for index in range(LANE_COUNT):
+                wanted = bool(drums.lane_mask & (1 << index))
+                if wanted != bool(lane_mask & (1 << index)):
+                    self._midi_call("set_drums_lane", notes[index], wanted)
+        if not math.isclose(drums.rate, rate, rel_tol=0.0, abs_tol=1e-9):
+            self._midi_call("set_drums_rate", drums.rate)
+        self._midi_call("set_drums_enabled", drums.enabled)
+
+    def _midi_enabled(self) -> bool:
+        return self.midi is not None and bool(
+            getattr(self.midi, "midi_enabled", True)
+        )
+
+    def _arp_port_ok(self) -> bool:
+        return bool(getattr(self.midi, "arp_port_ok", False))
+
+    def _drone_port_ok(self) -> bool:
+        return bool(getattr(self.midi, "drone_port_ok", False))
+
+    def _restore_voices(self, state: state_module.PerformanceState) -> None:
+        """Restore bass/arp/lead/drone; one missing bus degrades one voice."""
+
+        midi_enabled = self._midi_enabled()
+
+        bass_rig = self._bass_rig()
+        if bass_rig is not None and bool(getattr(bass_rig, "port_ok", False)):
+            self._midi_call("set_bass_settings", state.bass)
+        else:
+            print(
+                "[STATE] bass skipped: Bus 4 not available; "
+                "the rest of the state is applied"
+            )
+
+        if midi_enabled and self._arp_rig() is not None and self._arp_port_ok():
+            self._midi_call("set_arp_settings", state.arp)
+        else:
+            print(
+                "[STATE] arp skipped: Bus 2 not available; "
+                "the rest of the state is applied"
+            )
+
+        lead_rig = self._lead_rig()
+        if lead_rig is not None and bool(getattr(lead_rig, "port_ok", False)):
+            self._midi_call("set_lead_settings", state.lead)
+        else:
+            print(
+                "[STATE] lead skipped: Bus 5 not available; "
+                "the rest of the state is applied"
+            )
+
+        drone_rig = self._drone_rig()
+        if drone_rig is not None and midi_enabled and self._drone_port_ok():
+            self._midi_call("set_drone_settings", state.drone)
+        else:
+            print(
+                "[STATE] drone skipped: Bus 1 not available; "
+                "the rest of the state is applied"
+            )
+
+    def _apply_state_values(self, state: state_module.PerformanceState) -> None:
+        """Apply every restored value except the single set broadcast."""
+
+        self.engine.apply_snapshot(state.freqset)
+        # Fundamental is part of the frequency-set identity, not the snapshot.
+        self.engine.fundamental = float(state.fundamental)
+        if state.freqset.anchor is not None:
+            self._set_home_anchor(state.freqset)
+        self._restore_mutation(state)
+        self._restore_home(state)
+        self._restore_rhythm(state)
+        self._restore_groove(state)
+        self._restore_drums(state)
+        self._restore_voices(state)
+        self._push_lead_swing()
+
+    def _apply_state_load(self, name: str) -> None:
+        """One atomic recall: validate, restore, one set update, one log."""
+
+        try:
+            state = self.states.load(name)
+        except state_module.StateError as exc:
+            if exc.kind == "missing":
+                print(
+                    f'[STATE] gap: no state named "{name}" '
+                    f"({self.states.count()} saved)"
+                )
+                self._reply_state("no such state")
+            else:
+                print(f'[STATE] invalid state "{name}": {exc}')
+                self._reply_state(f"invalid state: {exc}")
+            return
+
+        try:
+            self._preflight_state(state)
+        except state_module.StateError as exc:
+            print(f'[STATE] invalid state "{name}": {exc}')
+            self._reply_state(f"invalid state: {exc}")
+            return
+
+        # A load is a set change: a pending return and an active class glide
+        # must not overwrite it later.
+        if self._cancel_return(silent=True):
+            print("[STATE] return cancelled by state load")
+        self._cancel_glide("state load")
+
+        with self._state_lock:
+            self._apply_state_values(state)
+            # Exactly one set update, with the recalled glide time (a jump, not
+            # a smooth return).
+            self.send_set(state.mutation.glide_time)
+            # The lead's on_set only re-projects an existing motif, so rebuild
+            # it once from the recalled set + saved variation index.
+            if self._lead_available():
+                self._midi_call(
+                    "set_lead_variation_index",
+                    state.lead_variation_index,
+                    True,
+                )
+            self._record_set()
+
+        self._send_home_state()
+        self._send_rhythm_state()
+        self._send_drums_state()
+        self._send_groove_state()
+        self._send_grid_state()
+        self._send_bass_state()
+        self._send_arp_state()
+        self._send_lead_state()
+        self._send_drone_state()
+
+        distance = self.home.distance(self.engine.snapshot())
+        self._set_state_status("loaded", loaded=state.name)
+        print(f"[STATE] loaded {state.name}")
+        print(
+            f"[STATE] load {state.name}: distance {distance}, 1 set update"
+        )
+        self._send_state_list()
+        self._send_state_state()
+
     def _send_ui_message(self, address: str, args: list[Any]) -> None:
         """Best-effort UI UDP send; a missing UI must never break the bridge."""
 
@@ -2207,10 +2745,10 @@ def run_interactive(bridge: JIBridge) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Stage 3/6/7/8.1/8.3a/8.3b/8.3d/8.4 bridge: mutation engine -> "
+            "Stage 3/6/7/8.1/8.3a/8.3b/8.3d/8.4/8.5 bridge: mutation engine -> "
             "sclang /ji/freqset/update, optional MPE MIDI rig (drone/arp "
             "parameters), drum and bass outputs, rhythm state, home sets and "
-            "smooth return, and UI status"
+            "smooth return, performance states, and UI status"
         )
     )
     parser.add_argument("--sc-host", default="127.0.0.1")
@@ -2348,6 +2886,15 @@ def build_parser() -> argparse.ArgumentParser:
             "auto, every, seed, max_drift, return_glide, history_depth)"
         ),
     )
+    parser.add_argument(
+        "--state-dir",
+        default=None,
+        help=(
+            "Stage 8.5 performance-state directory "
+            "(default: states/ next to the project; a relative path resolves "
+            "from the project root)"
+        ),
+    )
     return parser
 
 
@@ -2396,6 +2943,7 @@ def main(argv: list[str] | None = None) -> int:
         lead_config=args.lead_config,
         drone_config=args.drone_config,
         home_config=args.home_config,
+        state_dir=args.state_dir,
         ui_host=args.ui_host,
         ui_port=args.ui_port,
     )

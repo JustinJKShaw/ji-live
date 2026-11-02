@@ -19,7 +19,11 @@ Status: implemented and covered by pure tests. **Audio, MIDI, Ableton, IAC,
 sclang timing and the live GUI were not tested by the agent; 8.4 awaits the human
 acceptance checklist in §9.** The design doc's planned 8.4 was
 "pattern/sequencing mutation"; this stage scopes that idea to the frequency-set
-layer first. MIDI pattern recall and whole-session save/recall stay in 8.5.
+layer first. Volume/mixer/whole-session recall stayed out of scope; the
+performance state save/recall the owner asked for is **Stage 8.5** — see
+[docs/README_stage8_5.md](README_stage8_5.md). A Stage 8.5 state carries the
+home slots and the active home, so 8.4 settings are saved with everything else
+(the 64-deep Back history stays a session trace and is not saved).
 
 **Stage 8.4.1 (stepwise/replaced class glide)** sits on top of 8.4 and changes
 only what the Glide knob broadcasts: a replacement class now melts from its old

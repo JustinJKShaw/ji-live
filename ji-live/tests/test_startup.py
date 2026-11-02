@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import contextlib
 import io
+import shutil
 import sys
+import tempfile
 import traceback
 from pathlib import Path
 
@@ -85,7 +87,11 @@ def test_default_plan() -> None:
     assert _option(plan.bridge, "--sc-port") == "57120"
     assert _option(plan.gui, "--sc-port") == "57120"
     assert plan.notes == ["lead off: Bus 5 is not opened (default)"]
-    print("  bridge and gui share listen/ui/sc ports; lead off; no --interactive")
+    assert args.state_dir is None, "--state-dir defaults to states/ in the bridge"
+    assert "--state-dir" not in plan.bridge
+    print(
+        "  bridge and gui share listen/ui/sc ports; lead off; no --interactive"
+    )
 
 
 def test_no_flags() -> None:
@@ -150,6 +156,8 @@ def test_extra_args() -> None:
             "cfg/bass.json",
             "--home-config",
             "cfg/home.json",
+            "--state-dir",
+            "cfg/states",
             "--bridge-args",
             "--change-count 2 --temperature 0.2",
         ]
@@ -163,6 +171,7 @@ def test_extra_args() -> None:
     assert _option(bridge, "--rhythm-config") == "cfg/rhythm.json"
     assert _option(bridge, "--bass-config") == "cfg/bass.json"
     assert _option(bridge, "--home-config") == "cfg/home.json"
+    assert _option(bridge, "--state-dir") == "cfg/states"
     # --bridge-args is split, not passed as one token.
     assert "--change-count" in bridge and "2" in bridge
     assert "--temperature" in bridge and "0.2" in bridge
@@ -183,7 +192,10 @@ def test_extra_args() -> None:
             pass
         else:
             raise AssertionError(f"invalid argument accepted: {bad}")
-    print("  quoted --bridge-args, config paths, and port/glide validation")
+    print(
+        "  quoted --bridge-args, config paths, --state-dir, port/glide "
+        "validation"
+    )
 
 
 def test_dry_run() -> None:
@@ -215,10 +227,14 @@ def test_dry_run() -> None:
 
 def test_check_mode_is_side_effect_free() -> None:
     print("\n=== Test 5: --check reports without starting anything ===")
+    directory = tempfile.mkdtemp(prefix="ji-check-states-")
     out = io.StringIO()
     err = io.StringIO()
-    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-        code = main(["--check"])
+    try:
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = main(["--check", "--state-dir", directory])
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
     text = out.getvalue() + err.getvalue()
     assert code in (0, 1), code
     assert "[CHECK]" in text, text
@@ -228,8 +244,37 @@ def test_check_mode_is_side_effect_free() -> None:
     assert "lead config ok" in text, text
     assert "drone config ok" in text, text
     assert "home config ok" in text, text
+    assert "state dir ok" in text, text
+    assert "states=0" in text, text
     assert "target ports" in text, text
-    print(f"  --check exit={code}; config parsing exercised without children")
+    # A read-only state directory is reported as a problem, not a crash.
+    readonly = Path(tempfile.mkdtemp(prefix="ji-check-ro-"))
+    out = io.StringIO()
+    err = io.StringIO()
+    try:
+        readonly.chmod(0o500)
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = main(
+                [
+                    "--check",
+                    "--no-gui",
+                    "--no-midi",
+                    "--no-drums",
+                    "--no-bass",
+                    "--no-lead",
+                    "--state-dir",
+                    str(readonly),
+                ]
+            )
+        text = out.getvalue() + err.getvalue()
+        assert code == 1, code
+        assert "FAIL: state dir" in text, text
+    finally:
+        readonly.chmod(0o700)
+        shutil.rmtree(readonly, ignore_errors=True)
+    print(
+        f"  --check exit={code}; configs + state dir exercised without children"
+    )
 
 
 def test_format_command() -> None:
@@ -323,6 +368,7 @@ def test_start_here_docs() -> None:
         "--lead-config",
         "--drone-config",
         "--home-config",
+        "--state-dir",
     ):
         assert flag in text, f"START_HERE.md must document {flag}"
     # One-time setup facts the owner asked for.
@@ -359,6 +405,7 @@ def test_readme_links() -> None:
     assert "run/ji_station.py" in text
     assert "docs/README_stage8_3d.md" in text
     assert "docs/README_stage8_4.md" in text
+    assert "docs/README_stage8_5.md" in text
     assert STAGE_DOC.exists(), STAGE_DOC
     assert OLD_STAGE_DOC.exists(), OLD_STAGE_DOC
     stage = STAGE_DOC.read_text(encoding="utf-8")
@@ -369,7 +416,17 @@ def test_readme_links() -> None:
         "consistency",
     ):
         assert heading in stage, heading
-    print("  README links START_HERE + 8.3d; stage doc has the checklist")
+    state_doc = ROOT / "docs" / "README_stage8_5.md"
+    assert state_doc.exists(), state_doc
+    body = state_doc.read_text(encoding="utf-8")
+    for heading in (
+        "Human acceptance checklist",
+        "Save / recall a state",
+        "Loops are out of scope",
+        "ji-performance-state",
+    ):
+        assert heading in body, heading
+    print("  README links START_HERE + 8.3d/8.5; stage docs have the checklists")
 
 
 def run() -> None:

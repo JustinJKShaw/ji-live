@@ -185,6 +185,42 @@ default; the shipped `config/home_config.json` is `every: 8`, `seed: 1`,
 `drift: 0`, `return_glide: 0.06`, `history_depth: 64`. Details:
 [docs/README_stage8_4.md](README_stage8_4.md).
 
+### Performance states — save / recall a state (Stage 8.5, runtime, no command)
+
+The **State** row (under **Home**) saves the whole performance configuration
+under a name and recalls it later, without restarting anything. It needs no flag
+and no new bus; a recall reuses `/ji/freqset/update`.
+
+| Control | What it does |
+|---|---|
+| `Name` | an existing state (sorted), or type a new name |
+| `Save` | save the current set, mutation controls, home slots, tempo/meter, drums, groove and bass/arp/lead/drone settings (immediate) |
+| `Load` | recall the state: immediate when stopped, next quarter beat while running |
+| `Delete` | delete the state file (immediate) |
+| `Refresh` | ask the bridge for a fresh list + status |
+
+The status line reads `State: 3 saved | saved A-drone | loaded A-drone`, or
+`State: none saved`, or `State: error …`. `Save` is disabled while the name is
+empty; `Load`/`Delete` only enable for a name in the list.
+
+**Procedure.**
+
+1. Make the rig sound the way you want, type `A-drone` in `Name`, press `Save`.
+   The log shows `[STATE] saved A-drone (… fields, states/)`.
+2. Change the set, controls, tempo/meter, groove, homes and voice settings.
+3. Select `A-drone`, press `Load`. Stopped: one set change and one
+   `/ji/freqset/update` at once. Running: it lands on the next beat, still one
+   update, no burst.
+4. Quit and restart the bridge (same state folder), press `Refresh`, load `A`
+   again: the file persists.
+
+A state is a **colour, not a play command**: the transport keeps its current
+state. **Loops and the sclang autotune parameters are not part of a state** (the
+owner excluded loop recall), and nothing writes into `config/`. The files live
+in `ji-live/states/<name>.json` (created on the first save); `--state-dir`
+overrides the folder. Format, name rules, atomic-save notes, diagnostics and the
+human checklist: [docs/README_stage8_5.md](README_stage8_5.md).
+
 ### Stepwise class glide (Stage 8.4.1, runtime, no command)
 
 The Mutation group's **Glide** knob is the **replacement melt** time, not a
@@ -239,11 +275,12 @@ canonical tempo/meter/transport when it installs.
 | `--rhythm-config <path>` | package default | alternative `config/rhythm_config.json` |
 | `--bass-config <path>` | package default | alternative `config/bass_config.json` |
 | `--home-config <path>` | package default | alternative `config/home_config.json` (slots, auto/every/seed/drift, return glide, history depth) |
+| `--state-dir <path>` | `states/` | Stage 8.5 performance-state folder. A relative path resolves from `ji-live/` (the project root) |
 | `--lead-config <path>` | package default | alternative `config/lead_config.json` |
 | `--drone-config <path>` | package default | alternative `config/drone_config.json` (mode + pad parameters; the bus stays `--mpe-config`'s `drone_port`) |
 | `--bridge-args "<flags>"` | empty | extra bridge flags, quoted: `--bridge-args "--change-count 2 --temperature 0.2"` |
 | `--dry-run` | off | print exactly what would start, then exit 0 (imports no PyQt6/mido) |
-| `--check` | off | validate imports, config files, and mido output names, then exit |
+| `--check` | off | validate imports, config files, the state directory, and mido output names, then exit |
 
 `--check` is the fastest way to diagnose "it will not start":
 
@@ -266,6 +303,7 @@ uv run --with python-osc --with mido --with python-rtmidi --with PyQt6 \
 | `--ui-host` / `--ui-port` | `127.0.0.1` / `9001` | UI status destination |
 | `--sc-host` / `--sc-port` | `127.0.0.1` / `57120` | sclang destination for `/ji/freqset/update` and `/ji/rhythm/tempo` |
 | `--mpe-config` / `--rhythm-config` / `--bass-config` / `--home-config` / `--lead-config` / `--drone-config` | package defaults | config overrides |
+| `--state-dir <path>` | `states/` | Stage 8.5 performance-state folder (relative paths resolve from the project root) |
 | `--seed`, `--max-changes`, `--change-count`, `--temperature`, `--anchor-mobility` | see `--help` | mutation-engine defaults |
 
 ### 3.3 GUI — `ui/ji_ui.py` (started by the launcher)
@@ -342,6 +380,15 @@ without restarting the interpreter changes the control-bus numbering — re-run
 | Arp does not sit on the grid | `Sync` must be `beat`; press Play once so the arp snaps to the transport origin, or change `Div` (both re-snap). With the transport stopped the arp still runs at the BPM but has no beat to lock to |
 | Stale behaviour after editing a `.scd` file | The editor buffer, not the file, is what gets evaluated. Re-evaluate `ji_start.scd` (it re-installs everything cleanly) |
 | Bus numbering warnings | scsynth was rebooted without restarting sclang. Language → Restart Interpreter, then re-evaluate `ji_start.scd` |
+| `State: error invalid state: …` | The state file has a bad value (e.g. an anchor not in its set) or a newer `version`. Nothing was applied. Compare with `docs/README_stage8_5.md` §2, fix or re-save it |
+| `State: error no such state` / `[STATE] gap: …` | The name is not in the list (deleted, or a different `--state-dir`). Press `Refresh`; check `[STATE] dir=…` at bridge start |
+| `State: error invalid state: …name…` on Save | The typed name breaks the rules (1–40 chars, starts alphanumeric, only `A-Z a-z 0-9 space . _ -`, no `..`/`/`/`\`). Rename it |
+| `[STATE] save failed: state directory … is not writable` | The folder is read-only or cannot be created. Point `--state-dir` somewhere writable; states are never written into `config/` |
+| `[STATE] invalid state "set.json": … invalid JSON …` | The file is hand-corrupted. Delete it (or fix the JSON) and re-save from the GUI; nothing was applied |
+| `[STATE] bass/drums/arp/lead/drone skipped: … not available` | That bus is missing (e.g. `--no-bass`). Only that voice was skipped; the rest of the state landed. Fix the bus and load again |
+| The load changed the sound but not the transport | Correct: a state is a colour, not a play command. Press Play/Stop yourself |
+| Load does nothing while running | Expected up to one quarter beat. Look for `[QUANT] state load …` on the next beat. While stopped it is immediate |
+| A loop or the autotune changed after a recall | It should not; loops and autotune are excluded from a state. If it happens, it is a bug: record the `[STATE]` lines |
 
 ---
 

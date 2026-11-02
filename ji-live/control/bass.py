@@ -1838,6 +1838,29 @@ class BassRig:
             print(f"[BASS] {self.engine.description()}")
         return settings
 
+    def set_settings(self, settings: BassSettings) -> BassSettings:
+        """Replace every bass setting at once (Stage 8.5 state recall).
+
+        Mirrors :meth:`set_setting`'s enable side effect: the scheduler starts or
+        stops when the recalled ``enabled`` flag differs from the live one.
+        """
+
+        if not isinstance(settings, BassSettings):
+            raise TypeError("settings must be a BassSettings")
+        before = self.engine.settings
+        applied = self.engine.set_settings(settings)
+        if applied.enabled != before.enabled:
+            if self._port_ok:
+                if applied.enabled and self._transport_running:
+                    self.scheduler.start()
+                elif not applied.enabled and self.scheduler.is_running:
+                    self.scheduler.stop()
+        if not applied.sub_enabled:
+            self.scheduler.release_sub()
+        if applied != before:
+            print(f"[BASS] {self.engine.description()}")
+        return applied
+
     def set_preset(self, preset: object) -> BassSettings:
         return self.set_setting("preset", preset)
 

@@ -32,6 +32,7 @@ from control.quantize import (
     PHASE_MIDI,
     PHASE_MUTATION,
     PHASE_OCTAVE,
+    PHASE_STATE,
     BeatQuantizer,
 )
 from control.rhythm import RhythmEngine
@@ -222,6 +223,32 @@ def test_deterministic_order() -> None:
     queue.tick(301.5)
     assert applied == ["home", "mutation"], applied
     print("  home lands before mutation at the same beat")
+
+    # Stage 8.5: a state recall is last at the beat, so it wins over every
+    # other request made for that same beat (including the MIDI enables).
+    applied.clear()
+    clock.now = 302.0
+    queue.schedule(
+        ("state", "load"),
+        lambda: applied.append("state"),
+        phase=PHASE_STATE,
+        label="state load A",
+    )
+    queue.schedule(
+        ("midi", "enabled"),
+        lambda: applied.append("midi"),
+        phase=PHASE_MIDI,
+        label="midi enables",
+    )
+    queue.schedule(
+        ("home", "go", 0),
+        lambda: applied.append("home"),
+        phase=PHASE_HOME,
+        label="home go A",
+    )
+    queue.tick(302.5)
+    assert applied == ["home", "midi", "state"], applied
+    print("  state recall lands after home and midi at the same beat")
 
 
 def test_tempo_change_reschedules() -> None:

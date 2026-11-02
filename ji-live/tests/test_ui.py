@@ -21,7 +21,9 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import sys
+import tempfile
 import time
 import traceback
 from pathlib import Path
@@ -113,6 +115,12 @@ from ui.osc_control import (
     build_home_go,
     build_home_jump,
     build_home_return,
+    build_state_delete,
+    build_state_load,
+    build_state_request,
+    build_state_save,
+    parse_state_list,
+    parse_state_status,
     build_set_home_auto,
     build_set_home_drift,
     build_set_home_every,
@@ -1329,6 +1337,8 @@ def test_bridge_ui_status() -> None:
             "/ji/lead/state",
             "/ji/drone/state",
             "/ji/home/state",
+            "/ji/state/list",
+            "/ji/state/state",
             "/ji/quantize/state",
         ]
         assert len(client.sent) == 1
@@ -1381,7 +1391,9 @@ def test_bridge_ui_status() -> None:
         ).gated is False
         assert ui_client.sent[12][1][0] == 0  # /ji/home/state (no home yet)
         assert len(ui_client.sent[12][1]) == 13
-        assert ui_client.sent[13][1] == [0, -1.0]
+        assert ui_client.sent[13][1] == [0]  # /ji/state/list (none saved)
+        assert ui_client.sent[14][1] == [0, "", "", ""]  # /ji/state/state
+        assert ui_client.sent[15][1] == [0, -1.0]
 
         # Rhythm commands: state changes go to sclang and the UI.
         client.sent.clear()
@@ -1946,6 +1958,18 @@ class FakeController:
     def set_home_setting(self, name, value) -> None:
         self.calls.append(("set_home_setting", name, value))
 
+    def state_save(self, name) -> None:
+        self.calls.append(("state_save", name))
+
+    def state_load(self, name) -> None:
+        self.calls.append(("state_load", name))
+
+    def state_delete(self, name) -> None:
+        self.calls.append(("state_delete", name))
+
+    def request_state_list(self) -> None:
+        self.calls.append(("request_state_list",))
+
 
 def run_qt_tests() -> int:
     print("\n=== Qt smoke test: one window, widgets, signals, close ===")
@@ -1981,6 +2005,7 @@ def run_qt_tests() -> int:
         "Lead",
         "MIDI",
         "Home",
+        "State",
         "Status",
     ):
         assert expected in titles, f"missing {expected} group: {titles}"
@@ -2822,12 +2847,87 @@ def run_qt_tests() -> int:
     assert window.home_label.text() == "Home: none (Set home to capture)"
     assert not window.home_auto_checkbox.isEnabled()
 
+    # --- Stage 8.5 State group ------------------------------------------
+    assert window.state_label.text() == "State: waiting for bridge"
+    assert not window.state_save_button.isEnabled()
+    assert not window.state_load_button.isEnabled()
+    assert not window.state_delete_button.isEnabled()
+
+    # Incoming list + status sync the combo/label with signals blocked.
+    fake.calls.clear()
+    window._on_status_message("/ji/state/list", [2, "A-drone", "b mix"])
+    window._on_status_message("/ji/state/state", [2, "A-drone", "", "saved"])
+    assert fake.calls == [], fake.calls
+    assert window.state_combo.currentText() == "A-drone"
+    assert "State: 2 saved" in window.state_label.text()
+    assert "saved A-drone" in window.state_label.text()
+    assert window.state_save_button.isEnabled()
+    assert window.state_load_button.isEnabled()
+    assert window.state_delete_button.isEnabled()
+
+    # An unknown name keeps Save enabled but disables Load/Delete.
+    window.state_combo.setCurrentText("new-colour")
+    assert window.state_save_button.isEnabled()
+    assert not window.state_load_button.isEnabled()
+    assert not window.state_delete_button.isEnabled()
+    # Membership is case-insensitive, like the bridge's lookup.
+    window.state_combo.setCurrentText("a-DRONE")
+    assert window.state_load_button.isEnabled()
+
+    fake.calls.clear()
+    window.state_combo.setCurrentText("b mix")
+    window.state_save_button.click()
+    assert ("state_save", "b mix") in fake.calls, fake.calls
+    window.state_load_button.click()
+    assert ("state_load", "b mix") in fake.calls
+    window.state_delete_button.click()
+    assert ("state_delete", "b mix") in fake.calls
+    window.state_refresh_button.click()
+    assert ("request_state_list",) in fake.calls
+
+    # Buttons send immediately; the Status line reports the queue rule.
+    window._on_status_message("/ji/rhythm/state", [120, 4, 4, 1, 1, 1.0])
+    window._on_state_load()
+    assert "queued" in window.message_label.text().lower()
+    window._on_status_message("/ji/rhythm/state", [120, 4, 4, 0, 1, 1.0])
+    window._on_state_load()
+    assert "immediately" in window.message_label.text().lower()
+    window._on_state_save()
+    assert "state save" in window.message_label.text().lower()
+    window._on_state_delete()
+    assert "state delete" in window.message_label.text().lower()
+    window._on_state_refresh()
+    assert "refreshed" in window.message_label.text().lower()
+
+    # Errors show on the State line, not as a traceback.
+    window._on_status_message(
+        "/ji/state/state",
+        [2, "A-drone", "", "invalid state: bad anchor"],
+    )
+    assert window.state_label.text() == (
+        "State: error invalid state: bad anchor"
+    )
+    window._on_status_message("/ji/state/state", [0, "", "", ""])
+    assert window.state_label.text() == "State: none saved"
+
+    # A typed name survives a list refresh.
+    window.state_combo.setCurrentText("typed name")
+    window._on_status_message("/ji/state/list", [2, "A-drone", "b mix"])
+    assert window.state_combo.currentText() == "typed name"
+    assert window.state_save_button.isEnabled()
+    assert not window.state_load_button.isEnabled()
+
+    assert window.width() <= 1400 and window.height() <= 820, (
+        window.width(),
+        window.height(),
+    )
+
     window.close()
     app.processEvents()
     assert fake.stopped is True
     window.deleteLater()
     app.processEvents()
-    print("  home group, groove/grid sync, pending status, close")
+    print("  home/state groups, groove/grid sync, pending status, close")
     return 0
 
 
@@ -2968,6 +3068,127 @@ def test_home_builders_and_state() -> None:
     print("  builders/clamps, 13-value parser, store, controller, bridge state")
 
 
+def test_state_builders_and_store() -> None:
+    print("\n=== Test 11: Stage 8.5 state builders, parsers, store, controller ===")
+    assert osc_control.STATE_SAVE == "/ji/state/save"
+    assert osc_control.STATE_LOAD == "/ji/state/load"
+    assert osc_control.STATE_DELETE == "/ji/state/delete"
+    assert osc_control.STATE_REQUEST == "/ji/state/request"
+    assert osc_control.STATE_LIST == "/ji/state/list"
+    assert osc_control.STATE_STATE == "/ji/state/state"
+    assert osc_control.STATE_LIST in osc_control.STATUS_ADDRESSES
+    assert osc_control.STATE_STATE in osc_control.STATUS_ADDRESSES
+
+    assert build_state_save("  A-drone ") == ("/ji/state/save", ["A-drone"])
+    assert build_state_load("b mix") == ("/ji/state/load", ["b mix"])
+    assert build_state_delete("A") == ("/ji/state/delete", ["A"])
+    assert build_state_request() == ("/ji/state/request", [])
+    for bad in ("", "   ", None):
+        try:
+            build_state_save(bad)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"empty state name accepted: {bad!r}")
+    # Only emptiness is the UI's business; the bridge owns the name rules.
+    assert build_state_save("..") == ("/ji/state/save", [".."])
+
+    assert parse_state_list([0]) == ()
+    assert parse_state_list([2, "A-drone", "b mix"]) == ("A-drone", "b mix")
+    for bad in ([], [2, "only-one"], [-1]):
+        try:
+            parse_state_list(bad)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"bad state list accepted: {bad}")
+
+    empty = parse_state_status([0, "", "", ""])
+    assert empty.status_line() == "State: none saved"
+    saved = parse_state_status([3, "A-drone", "b mix", "loaded"])
+    assert saved.status_line() == (
+        "State: 3 saved | saved A-drone | loaded b mix"
+    )
+    assert parse_state_status([1, "A", "", "saved"]).status_line() == (
+        "State: 1 saved | saved A"
+    )
+    error = parse_state_status([2, "A", "", "invalid state: bad anchor"])
+    assert error.is_error and error.status_line() == (
+        "State: error invalid state: bad anchor"
+    )
+    assert parse_state_status([0, "", "", "no such state"]).status_line() == (
+        "State: error no such state"
+    )
+    try:
+        parse_state_status([1, "A"])
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("short state status accepted")
+
+    store = StatusStore()
+    assert store.state is None and store.state_names == ()
+    assert store.apply(osc_control.STATE_LIST, [2, "A-drone", "b mix"])
+    assert store.state_names == ("A-drone", "b mix")
+    assert store.apply(osc_control.STATE_STATE, [2, "A-drone", "", "saved"])
+    assert store.state is not None and store.state.count == 2
+    assert store.state.last_saved == "A-drone" and store.bridge_seen
+    assert not store.apply("/ji/state/unknown", [])
+
+    bridge_client = FakeClient("127.0.0.1", 9000)
+    sc_client = FakeClient("127.0.0.1", 57120)
+    listener = FakeListener("127.0.0.1", 9001, lambda address, args: None)
+    controller = OSCController(
+        bridge_client=bridge_client,
+        sc_client=sc_client,
+        listener=listener,
+    )
+    controller.start()
+    bridge_client.sent.clear()
+    controller.state_save("A-drone")
+    controller.state_load("A-drone")
+    controller.state_delete("b mix")
+    controller.request_state_list()
+    assert bridge_client.sent == [
+        ("/ji/state/save", ["A-drone"]),
+        ("/ji/state/load", ["A-drone"]),
+        ("/ji/state/delete", ["b mix"]),
+        ("/ji/state/request", []),
+    ]
+    controller.stop()
+
+    # The bridge replies to save/load with both messages, sorted names.
+    original = bridge_module.SimpleUDPClient
+    FakeClient.instances = []
+    bridge_module.SimpleUDPClient = FakeClient
+    directory = tempfile.mkdtemp(prefix="ji-ui-state-")
+    try:
+        bridge = bridge_module.JIBridge(seed=3, state_dir=directory)
+        _client, ui_client = FakeClient.instances
+        bridge.request_state_save("B-two")
+        bridge.request_state_save("A-one")
+        assert [
+            args for address, args in ui_client.sent
+            if address == "/ji/state/list"
+        ][-1] == [2, "A-one", "B-two"]
+        status = [
+            args for address, args in ui_client.sent
+            if address == "/ji/state/state"
+        ][-1]
+        assert status == [2, "A-one", "", "saved"]
+        bridge.request_state_load("A-one")
+        status = [
+            args for address, args in ui_client.sent
+            if address == "/ji/state/state"
+        ][-1]
+        assert status == [2, "A-one", "A-one", "loaded"]
+        bridge.stop()
+    finally:
+        bridge_module.SimpleUDPClient = original
+        shutil.rmtree(directory, ignore_errors=True)
+    print("  builders, strict parsers, store, controller, sorted bridge replies")
+
+
 def run_pure_tests() -> None:
     assert "PyQt6" not in sys.modules, "ui.osc_control imported PyQt6"
     test_mutation_builders()
@@ -2983,6 +3204,7 @@ def run_pure_tests() -> None:
     test_osc_controller()
     test_controller_startup_send_failure_is_nonfatal()
     test_home_builders_and_state()
+    test_state_builders_and_store()
 
 
 def build_parser() -> argparse.ArgumentParser:

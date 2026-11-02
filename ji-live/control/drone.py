@@ -51,7 +51,7 @@ import sys
 import threading
 import time
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -1513,7 +1513,9 @@ class DroneRig:
 
     # -- settings -------------------------------------------------------
 
-    def set_setting(self, name: object, value: object) -> DroneSettings:
+    def set_setting(
+        self, name: object, value: object, *, log: bool = True
+    ) -> DroneSettings:
         key = str(name).strip().lower()
         if key == "mode":
             return self.set_mode(value)
@@ -1528,8 +1530,32 @@ class DroneRig:
         if key == "seed":
             with self._lock:
                 self._pulse_key = None
-        print(f"[DRONE] {key}={_describe_setting(after, key)}")
+        if log:
+            print(f"[DRONE] {key}={_describe_setting(after, key)}")
         return after
+
+    def set_settings(self, settings: DroneSettings) -> DroneSettings:
+        """Replace every drone setting at once (Stage 8.5 state recall).
+
+        The mode goes through :meth:`set_mode` (so the pulse/bend/sequence
+        threads start or stop correctly); every other field is applied quietly
+        through :meth:`set_setting` and summarised with one ``[DRONE]`` line.
+        """
+
+        if not isinstance(settings, DroneSettings):
+            raise TypeError("settings must be a DroneSettings")
+        before = self.settings
+        if settings.mode != before.mode:
+            self.set_mode(settings.mode)
+        for item in fields(settings):
+            key = item.name
+            if key == "mode":
+                continue
+            if getattr(settings, key) != getattr(self.settings, key):
+                self.set_setting(key, getattr(settings, key), log=False)
+        if self.settings != before:
+            print(f"[DRONE] restored: {self.settings.describe_mode(self.bpm)}")
+        return self.settings
 
     def set_mode(self, mode: object) -> DroneSettings:
         """Switch mode without adding a second enable path.

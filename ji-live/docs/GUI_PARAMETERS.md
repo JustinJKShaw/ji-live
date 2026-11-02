@@ -73,6 +73,24 @@ knob value so the resting state stays consistent with the Glide control.
 | `Seed` | 0–2³¹−1 (1) | Journey seed. Same home + seed + mutation count reproduces the journey (a manual mutation becomes part of it). |
 | Status | read-only | `Home: A · 7 cl \| dist 2 \| auto 8 \| drift 3 \| back 12`, or `returning to A · 2/3 beats`, or `none`. |
 
+## State (Stage 8.5)
+
+| Control | Range (default) | What it does |
+|---|---|---|
+| `Name` | 1–40 chars | Editable list of saved states (sorted, case-insensitive). Rules: first character alphanumeric, then `A-Z a-z 0-9 space . _ -`; no `/`, `\`, `..`, control characters or a leading dot. |
+| **Save** | button | Saves the whole performance configuration under `Name` (immediate, even while running). Disabled while the name is empty. |
+| **Load** ⟳ | button | Recalls the state: one set change and one `/ji/freqset/update`, immediate when stopped, next quarter beat while running. Disabled unless the name is in the list. |
+| **Delete** | button | Deletes the state file (immediate). Disabled unless the name is in the list. |
+| **Refresh** | button | Asks the bridge for a fresh list + status (immediate). |
+| Status | read-only | `State: 3 saved \| saved A-drone \| loaded A-drone`, `State: none saved`, or `State: error …`. |
+
+A state holds the frequency set, mutation controls, the four home slots + active
+home + journey bookkeeping, tempo/meter, drums, groove + 32-int grid, and every
+bass/arp/lead/drone setting + the lead variation index. It does **not** hold the
+transport, loops, the autotune parameters, pending quantizer actions or the Back
+history. A load cancels a pending return and an active class glide first. See
+[docs/README_stage8_5.md](README_stage8_5.md).
+
 ## Live Autotune
 
 `Link` moves both input channels together. `Retune`, `Mix`, `Window`, `Range`,
