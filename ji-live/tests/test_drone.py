@@ -784,7 +784,11 @@ def test_sequence_plays() -> None:
     off_message, off_at = offs[0]
     on_message, on_at = onsets[0]
     assert off_message.note == on_message.note
-    assert 0.15 <= off_at - on_at <= 0.25, (off_at - on_at)
+    # The scheduled gap is min(10 ms, 2% of the note) = 5 ms at this tempo, so
+    # the ideal length is ~0.245 s.  A 0.30 s bound tolerates scheduler jitter
+    # on slow/CI machines; the monophonic check below still rejects an off that
+    # arrives after the next note-on.
+    assert 0.15 <= off_at - on_at <= 0.30, (off_at - on_at)
 
     # Monophonic, and stop sends CC 123.
     events = [

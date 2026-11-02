@@ -1080,7 +1080,7 @@ def test_bridge_quantization() -> None:
         assert rig.lead.engine.settings.velocity == 90
         assert bridge.quantizer.flush("test beat") == 1
         assert rig.lead.engine.settings.velocity == 50
-        assert PHASE_LEAD == 6
+        assert PHASE_LEAD == 7  # Stage 8.4 inserted PHASE_HOME first
 
         # Coalescing: same key last-wins, different keys both run.
         bridge._on_lead_change("density", 0.5)

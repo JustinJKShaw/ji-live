@@ -46,7 +46,7 @@ bridge tempo) and let it evolve on its own (`Evolve` every N beats with a depth
 control) without any mutation. Both are off by default, so the accepted
 free-running arp is unchanged.
 
-**Stage 8.3d is built and awaits human acceptance.** It adds a monophonic
+**Stage 8.3d is human-approved (2026-11-01).** It adds a monophonic
 transport-locked **lead/melody** voice on its own optional `IAC Driver Bus 5`
 (MPE member 2, 48 st — a ready FX insert point) with a seeded motif that keeps
 its identity through frequency-set mutations, eight deterministic variations
@@ -60,9 +60,15 @@ default command still starts the 8.3c rig. Design, the consistency contract, the
 worked example and the human checklist are in
 [docs/README_stage8_3d.md](docs/README_stage8_3d.md).
 
-**Next:** human acceptance of 8.3d (lead + drone modes), then Stage 9 (SC-side
-FX). The prompt is
-[docs/prompts/PROMPT_stage8_3d_lead_drone.md](docs/prompts/PROMPT_stage8_3d_lead_drone.md).
+**Stage 8.4 is built and awaits human acceptance.** It adds four **home** slots
+(`A`–`D`), a seeded **journey**, an optional **drift** cap, **Back**, and a
+beat-spaced **return** that lands exactly on a captured set in
+`ceil(distance / max_changes)` quarter beats — the basis for set chord
+progressions. The mutation algorithm is untouched; the "future state" idea lives
+in a bridge-layer drift policy that ships off. Design, the worked example, the
+OSC/state surface and the human checklist are in
+[docs/README_stage8_4.md](docs/README_stage8_4.md). The prompt stays at
+[docs/prompts/PROMPT_stage8_4_home_return.md](docs/prompts/PROMPT_stage8_4_home_return.md).
 
 **Start here:** [docs/START_HERE.md](docs/START_HERE.md) is the authoritative
 start/stop/flag sheet. It is updated with every stage. Stage 8.3b details are in
@@ -89,9 +95,10 @@ ji-live/
 │   │                          # beat sync, evolution
 │   ├── bass.py                # Stage 8.3a monophonic JI bass voice
 │   ├── lead.py                # Stage 8.3d lead: motif, variations, scheduler
-│   └── drone.py               # Stage 6 hold drone + Stage 8.3d pulse/bend
+│   ├── drone.py               # Stage 6 hold drone + Stage 8.3d pulse/bend
+│   └── home.py                # Stage 8.4 slots, planner, journeys, history
 ├── ui/                        # PyQt6 GUI, pure OSC layer, sclang UI surface
-├── config/                    # routing, MPE, rhythm, bass, lead, drone JSON
+├── config/                    # routing, MPE, rhythm, bass, home, lead, drone JSON
 ├── tests/
 │   ├── test_mutation.py
 │   ├── test_mutation_controls.py
@@ -103,6 +110,7 @@ ji-live/
 │   ├── test_arp.py            # arp settings/orders/timing/bridge
 │   ├── test_lead.py           # Stage 8.3d lead: motif/consistency/scheduler
 │   ├── test_drone.py          # Stage 8.3d drone: hold/pulse/bend
+│   ├── test_home.py           # Stage 8.4 distance/plan/return/back/drift
 │   ├── test_startup.py        # launcher/start-file/docs
 │   ├── test_ui.py
 │   └── sc/                    # sclang test scripts
@@ -122,7 +130,7 @@ ji-live/
     ├── README_stage8_3b.md
     ├── README_stage8_3c.md
     ├── README_stage8_3d.md    # lead/melody + drone pad modes
-    ├── README_stage8_3b.md
+    ├── README_stage8_4.md     # home sets / journeys / smooth return
     ├── START_HERE_stage8_1.txt … _stage8_3.txt   (archival)
     ├── README_live_rig.md
     ├── README_mpe.md
@@ -133,7 +141,8 @@ ji-live/
         ├── PROMPT_stage8_2_groove.md
         ├── PROMPT_stage8_3_bass.md
         ├── PROMPT_stage8_3b_arp_startup.md
-        └── PROMPT_stage8_3d_lead_drone.md
+        ├── PROMPT_stage8_3d_lead_drone.md
+        └── PROMPT_stage8_4_home_return.md
 ```
 
 Run all commands from `ji-live/`.
@@ -192,6 +201,7 @@ uv run --with python-osc python tests/test_bass.py
 uv run --with python-osc python tests/test_arp.py
 uv run --with python-osc python tests/test_lead.py
 uv run --with python-osc python tests/test_drone.py
+uv run --with python-osc python tests/test_home.py
 uv run --with python-osc python tests/test_startup.py
 uv run --with python-osc python tests/test_ui.py --pure
 
@@ -212,12 +222,14 @@ python -m tests.test_ui --pure
 ## Documentation
 
 - [START HERE — start/stop/flag sheet](docs/START_HERE.md)
+- [Stage 8.4 home sets / journeys / smooth return](docs/README_stage8_4.md)
 - [Stage 8.3d lead/melody + drone pad modes](docs/README_stage8_3d.md)
 - [Stage 8.3c beat-synced arp + self-evolution](docs/README_stage8_3c.md)
 - [Stage 8.3b arp parameters + one-entry startup](docs/README_stage8_3b.md)
 - [Stage 8.3a monophonic bass](docs/README_stage8_3.md)
 - [Stage 8.2 groove + beat-quantized state](docs/README_stage8_2.md)
 - [Stage 8.1 rhythm foundation + drum engine](docs/README_stage8.md)
+- [Stage 8.4 home sets / journeys / smooth return prompt](docs/prompts/PROMPT_stage8_4_home_return.md)
 - [Stage 8.3d lead/melody + drone pad options prompt](docs/prompts/PROMPT_stage8_3d_lead_drone.md)
 - [Stage 8.3b arp + startup prompt](docs/prompts/PROMPT_stage8_3b_arp_startup.md)
 - [Stage 8.3a bass prompt](docs/prompts/PROMPT_stage8_3_bass.md)
@@ -240,9 +252,11 @@ python -m tests.test_ui --pure
 - `control/lead.py` resolves `config/lead_config.json` the same way, and
   `control/drone.py` resolves `config/drone_config.json` (mode/parameters only;
   the drone bus stays `mpe_config.json`'s `drone_port`).
+- `control/home.py` resolves `config/home_config.json` the same way.
 - `control/ji_bridge.py --mpe-config` / `--rhythm-config` / `--bass-config` /
-  `--lead-config` / `--drone-config` default to those package-relative configs;
-  pass an explicit path only if you keep a config elsewhere.
+  `--home-config` / `--lead-config` / `--drone-config` default to those
+  package-relative configs; pass an explicit path only if you keep a config
+  elsewhere.
 - `startup.scd` and `ji_start.scd` stay at the project root: `startup.scd`
   resolves `synthdefs/*.scd` from `thisProcess.nowExecutingPath`, and
   `ji_start.scd` resolves the other three files from its own path.

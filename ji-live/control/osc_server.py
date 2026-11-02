@@ -44,6 +44,12 @@ No audio and no scsynth calls live here.  Addresses:
     The drone mode (``hold``/``pulse``/``bend``) and its pad parameters.  They
     never enable/disable the drone: the top-row Drone switch stays the only mute.
 
+``/ji/home/*`` (Stage 8.4)
+    Home-slot capture/clear/go, return/jump/back, and the auto/every/seed/drift/
+    glide settings.  Handlers validate and clamp; the bridge owns the beat
+    quantization and sends ``/ji/home/state``.  The mutation trigger is still
+    ``/ji/mutation/trigger``.
+
 The server runs in a daemon thread so ``start()`` returns immediately.  Stage 3
 attaches an outgoing bridge through the optional ``on_event`` / ``on_octave``
 callbacks; this module still sends no audio OSC itself.
@@ -60,13 +66,14 @@ from pythonosc.dispatcher import Dispatcher
 from pythonosc.osc_server import ThreadingOSCUDPServer
 
 try:  # Support both ``python -m control.osc_server`` and direct execution.
-    from . import arp, bass, drone, groove, lead, rhythm
+    from . import arp, bass, drone, groove, home, lead, rhythm
     from .mutation import MutationBatch, MutationEngine, MutationEvent, OctaveEvent
 except ImportError:  # pragma: no cover - exercised only by direct execution
     import arp  # type: ignore[no-redef]
     import bass  # type: ignore[no-redef]
     import drone  # type: ignore[no-redef]
     import groove  # type: ignore[no-redef]
+    import home  # type: ignore[no-redef]
     import lead  # type: ignore[no-redef]
     import rhythm  # type: ignore[no-redef]
     from mutation import (  # type: ignore[no-redef]
@@ -164,6 +171,18 @@ DRONE_SET_SEED_ADDRESS = "/ji/drone/set_seed"
 DRONE_SET_SEQ_NOTES_ADDRESS = "/ji/drone/set_seq_notes"
 DRONE_SET_SEQ_BARS_ADDRESS = "/ji/drone/set_seq_bars"
 DRONE_SET_SEQ_GATE_ADDRESS = "/ji/drone/set_seq_gate"
+# Stage 8.4 home sets (UI -> Bridge).  Quantization is the bridge's job.
+HOME_CAPTURE_ADDRESS = "/ji/home/capture"
+HOME_CLEAR_ADDRESS = "/ji/home/clear"
+HOME_GO_ADDRESS = "/ji/home/go"
+HOME_RETURN_ADDRESS = "/ji/home/return"
+HOME_JUMP_ADDRESS = "/ji/home/jump"
+HOME_BACK_ADDRESS = "/ji/home/back"
+HOME_SET_AUTO_ADDRESS = "/ji/home/set_auto"
+HOME_SET_EVERY_ADDRESS = "/ji/home/set_every"
+HOME_SET_SEED_ADDRESS = "/ji/home/set_seed"
+HOME_SET_DRIFT_ADDRESS = "/ji/home/set_drift"
+HOME_SET_GLIDE_ADDRESS = "/ji/home/set_glide"
 
 
 class MutationOSCServer:
@@ -253,6 +272,17 @@ class MutationOSCServer:
     DRONE_SET_SEQ_NOTES_ADDRESS = DRONE_SET_SEQ_NOTES_ADDRESS
     DRONE_SET_SEQ_BARS_ADDRESS = DRONE_SET_SEQ_BARS_ADDRESS
     DRONE_SET_SEQ_GATE_ADDRESS = DRONE_SET_SEQ_GATE_ADDRESS
+    HOME_CAPTURE_ADDRESS = HOME_CAPTURE_ADDRESS
+    HOME_CLEAR_ADDRESS = HOME_CLEAR_ADDRESS
+    HOME_GO_ADDRESS = HOME_GO_ADDRESS
+    HOME_RETURN_ADDRESS = HOME_RETURN_ADDRESS
+    HOME_JUMP_ADDRESS = HOME_JUMP_ADDRESS
+    HOME_BACK_ADDRESS = HOME_BACK_ADDRESS
+    HOME_SET_AUTO_ADDRESS = HOME_SET_AUTO_ADDRESS
+    HOME_SET_EVERY_ADDRESS = HOME_SET_EVERY_ADDRESS
+    HOME_SET_SEED_ADDRESS = HOME_SET_SEED_ADDRESS
+    HOME_SET_DRIFT_ADDRESS = HOME_SET_DRIFT_ADDRESS
+    HOME_SET_GLIDE_ADDRESS = HOME_SET_GLIDE_ADDRESS
 
     def __init__(
         self,
@@ -285,6 +315,13 @@ class MutationOSCServer:
         on_lead_change: Callable[[str, Any], None] | None = None,
         on_lead_vary: Callable[[], None] | None = None,
         on_drone_change: Callable[[str, Any], None] | None = None,
+        on_home_capture: Callable[[int], None] | None = None,
+        on_home_clear: Callable[[int], None] | None = None,
+        on_home_go: Callable[[int], None] | None = None,
+        on_home_return: Callable[[], None] | None = None,
+        on_home_jump: Callable[[], None] | None = None,
+        on_home_back: Callable[[], None] | None = None,
+        on_home_setting: Callable[[str, Any], None] | None = None,
     ) -> None:
         if not isinstance(engine, MutationEngine):
             raise TypeError("engine must be a MutationEngine")
@@ -319,6 +356,13 @@ class MutationOSCServer:
             ("on_lead_change", on_lead_change),
             ("on_lead_vary", on_lead_vary),
             ("on_drone_change", on_drone_change),
+            ("on_home_capture", on_home_capture),
+            ("on_home_clear", on_home_clear),
+            ("on_home_go", on_home_go),
+            ("on_home_return", on_home_return),
+            ("on_home_jump", on_home_jump),
+            ("on_home_back", on_home_back),
+            ("on_home_setting", on_home_setting),
         ):
             if callback is not None and not callable(callback):
                 raise TypeError(f"{label} must be callable or None")
@@ -352,6 +396,13 @@ class MutationOSCServer:
         self._on_lead_change = on_lead_change
         self._on_lead_vary = on_lead_vary
         self._on_drone_change = on_drone_change
+        self._on_home_capture = on_home_capture
+        self._on_home_clear = on_home_clear
+        self._on_home_go = on_home_go
+        self._on_home_return = on_home_return
+        self._on_home_jump = on_home_jump
+        self._on_home_back = on_home_back
+        self._on_home_setting = on_home_setting
 
         self._lock = threading.RLock()
         # Serializes apply -> print -> callback so a threaded OSC server cannot
@@ -517,6 +568,22 @@ class MutationOSCServer:
         )
         for address, handler in drone_map:
             dispatcher.map(address, handler)
+        # Stage 8.4 home sets and journey settings.
+        home_map = (
+            (self.HOME_CAPTURE_ADDRESS, self._handle_home_capture),
+            (self.HOME_CLEAR_ADDRESS, self._handle_home_clear),
+            (self.HOME_GO_ADDRESS, self._handle_home_go),
+            (self.HOME_RETURN_ADDRESS, self._handle_home_return),
+            (self.HOME_JUMP_ADDRESS, self._handle_home_jump),
+            (self.HOME_BACK_ADDRESS, self._handle_home_back),
+            (self.HOME_SET_AUTO_ADDRESS, self._handle_home_auto),
+            (self.HOME_SET_EVERY_ADDRESS, self._handle_home_every),
+            (self.HOME_SET_SEED_ADDRESS, self._handle_home_seed),
+            (self.HOME_SET_DRIFT_ADDRESS, self._handle_home_drift),
+            (self.HOME_SET_GLIDE_ADDRESS, self._handle_home_glide),
+        )
+        for address, handler in home_map:
+            dispatcher.map(address, handler)
         self._dispatcher = dispatcher
 
     # ------------------------------------------------------------------
@@ -567,12 +634,31 @@ class MutationOSCServer:
     # ------------------------------------------------------------------
 
     def trigger(self) -> MutationEvent | MutationBatch | None:
-        """Apply one mutation trigger.
+        """Apply one mutation trigger and announce it.
 
         With ``change_count == 1`` this returns a single ``MutationEvent`` and
         preserves the Stage 2/3 callback shape.  Above 1 it applies a
         ``MutationBatch`` atomically and returns that batch.  The configured
         ``on_event`` callback runs after application and lock release.
+
+        Stage 8.4 splits the two halves so the bridge's drift policy can apply,
+        inspect, roll back and only announce the accepted trigger (see
+        :meth:`apply_trigger` and :meth:`announce`).  ``trigger()`` itself is
+        exactly that pair, so the accepted behavior is unchanged.
+        """
+
+        event = self.apply_trigger()
+        if event is None:
+            return None
+        self.announce(event)
+        return event
+
+    def apply_trigger(self) -> MutationEvent | MutationBatch | None:
+        """Apply one configured trigger *without* printing or notifying.
+
+        Returns the applied ``MutationEvent``/``MutationBatch`` (or ``None`` on
+        failure).  Stage 8.4's drift cap uses this to try a proposal, inspect
+        the resulting set, and roll the state back before the single announce.
         """
 
         event: MutationEvent | None = None
@@ -603,17 +689,22 @@ class MutationOSCServer:
                 except (RuntimeError, ValueError, TypeError) as exc:
                     _warn(f"mutation trigger failed: {exc}")
                     return None
-
             if batch is not None:
-                _print_batch(batch, self._engine)
-                self._notify(self._on_event, batch, "mutation batch")
                 return batch
+            return event
 
-            if event is None:  # defensive; both branches above assign one
-                return None
+    def announce(self, event: MutationEvent | MutationBatch) -> None:
+        """Print and run ``on_event`` for an already applied trigger."""
+
+        if event is None:
+            return
+        with self._event_lock:
+            if isinstance(event, MutationBatch):
+                _print_batch(event, self._engine)
+                self._notify(self._on_event, event, "mutation batch")
+                return
             _print_mutation(event, self._engine)
             self._notify(self._on_event, event, "mutation")
-            return event
 
     def octave(self) -> OctaveEvent | None:
         """Propose and apply one octave/register move.
@@ -1551,6 +1642,138 @@ class MutationOSCServer:
             drone.validate_seq_gate,
         )
 
+    # -- Stage 8.4 home sets ----------------------------------------------
+
+    def _handle_home_slot(
+        self,
+        args: tuple[Any, ...],
+        address: str,
+        callback: Callable[[int], None] | None,
+        label: str,
+    ) -> None:
+        if len(args) != 1:
+            _warn(f"{address} expects one slot 0..3; got {len(args)} arguments")
+            return
+        try:
+            slot = home.validate_slot(_one_int(args[0], "slot"))
+        except (TypeError, ValueError) as exc:
+            _warn(f"{address}: {exc}")
+            return
+        self._call_callback(callback, label, slot)
+
+    def _handle_home_capture(self, _address: str, *args: Any) -> None:
+        self._handle_home_slot(
+            args, self.HOME_CAPTURE_ADDRESS, self._on_home_capture, "home capture"
+        )
+
+    def _handle_home_clear(self, _address: str, *args: Any) -> None:
+        self._handle_home_slot(
+            args, self.HOME_CLEAR_ADDRESS, self._on_home_clear, "home clear"
+        )
+
+    def _handle_home_go(self, _address: str, *args: Any) -> None:
+        self._handle_home_slot(
+            args, self.HOME_GO_ADDRESS, self._on_home_go, "home go"
+        )
+
+    def _handle_home_return(self, _address: str, *args: Any) -> None:
+        if args:
+            _warn(f"{self.HOME_RETURN_ADDRESS} takes no arguments; ignoring extras")
+        self._call_callback(self._on_home_return, "home return")
+
+    def _handle_home_jump(self, _address: str, *args: Any) -> None:
+        if args:
+            _warn(f"{self.HOME_JUMP_ADDRESS} takes no arguments; ignoring extras")
+        self._call_callback(self._on_home_jump, "home jump")
+
+    def _handle_home_back(self, _address: str, *args: Any) -> None:
+        if args:
+            _warn(f"{self.HOME_BACK_ADDRESS} takes no arguments; ignoring extras")
+        self._call_callback(self._on_home_back, "home back")
+
+    def _handle_home_setting(
+        self,
+        args: tuple[Any, ...],
+        address: str,
+        key: str,
+        parser: Callable[[Any], Any],
+    ) -> None:
+        if len(args) != 1:
+            _warn(f"{address} expects one value; got {len(args)} arguments")
+            return
+        try:
+            value = parser(args[0])
+        except (TypeError, ValueError) as exc:
+            _warn(f"{address}: {exc}")
+            return
+        self._call_callback(
+            self._on_home_setting, f"home {key}", key, value
+        )
+
+    def _handle_home_auto(self, _address: str, *args: Any) -> None:
+        self._handle_home_setting(
+            args,
+            self.HOME_SET_AUTO_ADDRESS,
+            "auto",
+            lambda value: _one_bool(value, "auto"),
+        )
+
+    def _handle_home_every(self, _address: str, *args: Any) -> None:
+        self._handle_home_setting(
+            args,
+            self.HOME_SET_EVERY_ADDRESS,
+            "every",
+            lambda value: _clamped_int(
+                value,
+                self.HOME_SET_EVERY_ADDRESS,
+                home.EVERY_MIN,
+                home.EVERY_MAX,
+                "every",
+            ),
+        )
+
+    def _handle_home_seed(self, _address: str, *args: Any) -> None:
+        self._handle_home_setting(
+            args,
+            self.HOME_SET_SEED_ADDRESS,
+            "seed",
+            lambda value: _clamped_int(
+                value,
+                self.HOME_SET_SEED_ADDRESS,
+                home.SEED_MIN,
+                home.SEED_MAX,
+                "seed",
+            ),
+        )
+
+    def _handle_home_drift(self, _address: str, *args: Any) -> None:
+        self._handle_home_setting(
+            args,
+            self.HOME_SET_DRIFT_ADDRESS,
+            "max_drift",
+            lambda value: _clamped_int(
+                value,
+                self.HOME_SET_DRIFT_ADDRESS,
+                home.DRIFT_MIN,
+                home.DRIFT_MAX,
+                "drift",
+            ),
+        )
+
+    def _handle_home_glide(self, _address: str, *args: Any) -> None:
+        self._handle_home_setting(
+            args,
+            self.HOME_SET_GLIDE_ADDRESS,
+            "return_glide",
+            lambda value: _clamped_float(
+                value,
+                self.HOME_SET_GLIDE_ADDRESS,
+                home.RETURN_GLIDE_MIN,
+                home.RETURN_GLIDE_MAX,
+                "glide",
+            ),
+        )
+
     @staticmethod
     def _call_callback(
         callback: Callable[..., None] | None, label: str, *args: Any
@@ -1623,6 +1846,28 @@ def _one_float(args: tuple[Any, ...], address: str) -> float | None:
 
 def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
+
+
+def _clamped_int(
+    value: Any, address: str, low: int, high: int, label: str
+) -> int:
+    numeric = _one_int(value, label)
+    clamped = max(low, min(high, numeric))
+    if clamped != numeric:
+        _warn(f"{address}: {numeric} clamped to {clamped}")
+    return clamped
+
+
+def _clamped_float(
+    value: Any, address: str, low: float, high: float, label: str
+) -> float:
+    numeric = float(value) if not isinstance(value, bool) else float("nan")
+    if not math.isfinite(numeric):
+        raise ValueError(f"{label} must be a finite number")
+    clamped = max(low, min(high, numeric))
+    if not math.isclose(clamped, numeric, rel_tol=0.0, abs_tol=1e-9):
+        _warn(f"{address}: {numeric:.3f} clamped to {clamped:.3f}")
+    return clamped
 
 
 def _print_mutation(event: MutationEvent, engine: MutationEngine) -> None:

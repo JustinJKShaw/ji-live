@@ -1,4 +1,4 @@
-"""Stage 8.2 pure beat-quantized state queue.
+"""Stage 8.2/8.4 pure beat-quantized state queue.
 
 Major performance-state changes (mutation/octave, MIDI/drum enables, drum rate
 and lanes, groove edits) are applied at the next **quarter-note beat** while the
@@ -15,15 +15,17 @@ Order at a beat
 ---------------
 Actions are grouped into phases and applied in this order:
 
-1. ``mutation``
-2. ``octave``
-3. ``groove`` (preset/grid/modifiers)
-4. ``drums`` (enable/rate/lanes)
-5. ``bass`` (Stage 8.3a bass settings)
-6. ``arp`` (Stage 8.3b arp parameters)
-7. ``lead`` (Stage 8.3d lead settings and variations)
-8. ``drone`` (Stage 8.3d drone mode and pad parameters)
-9. ``midi`` (drone/arp enables)
+1. ``home`` (Stage 8.4 capture/go/return/back/jump; a return batch lands
+   first, so a mutation requested for the same beat composes on top of it)
+2. ``mutation``
+3. ``octave``
+4. ``groove`` (preset/grid/modifiers)
+5. ``drums`` (enable/rate/lanes)
+6. ``bass`` (Stage 8.3a bass settings)
+7. ``arp`` (Stage 8.3b arp parameters)
+8. ``lead`` (Stage 8.3d lead settings and variations)
+9. ``drone`` (Stage 8.3d drone mode and pad parameters)
+10. ``midi`` (drone/arp enables)
 
 Within a phase, actions retain request order (a monotonically increasing
 sequence), so the last request generally wins when two actions touch the same
@@ -51,17 +53,19 @@ from typing import Any, Callable, Hashable
 # Phases / order
 # ---------------------------------------------------------------------------
 
-PHASE_MUTATION = 0
-PHASE_OCTAVE = 1
-PHASE_GROOVE = 2
-PHASE_DRUMS = 3
-PHASE_BASS = 4
-PHASE_ARP = 5
-PHASE_LEAD = 6
-PHASE_DRONE = 7
-PHASE_MIDI = 8
+PHASE_HOME = 0
+PHASE_MUTATION = 1
+PHASE_OCTAVE = 2
+PHASE_GROOVE = 3
+PHASE_DRUMS = 4
+PHASE_BASS = 5
+PHASE_ARP = 6
+PHASE_LEAD = 7
+PHASE_DRONE = 8
+PHASE_MIDI = 9
 
 PHASE_NAMES: dict[int, str] = {
+    PHASE_HOME: "home",
     PHASE_MUTATION: "mutation",
     PHASE_OCTAVE: "octave",
     PHASE_GROOVE: "groove",
@@ -459,6 +463,7 @@ __all__ = [
     "PHASE_DRONE",
     "PHASE_DRUMS",
     "PHASE_GROOVE",
+    "PHASE_HOME",
     "PHASE_LEAD",
     "PHASE_MIDI",
     "PHASE_MUTATION",

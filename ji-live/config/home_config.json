@@ -1,0 +1,9 @@
+{
+  "slots": 4,
+  "auto": false,
+  "every": 8,
+  "seed": 1,
+  "max_drift": 0,
+  "return_glide": 0.06,
+  "history_depth": 64
+}

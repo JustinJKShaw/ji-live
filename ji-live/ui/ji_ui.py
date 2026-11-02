@@ -101,6 +101,18 @@ if __package__:  # ``python -m ui.ji_ui`` and normal package imports
         DRONE_SLIDE_SEMITONES_MAX,
         DRONE_SLIDE_SEMITONES_MIN,
         DRONE_VELOCITY_PARAM,
+        HOME_DRIFT_DEFAULT,
+        HOME_DRIFT_MAX,
+        HOME_DRIFT_MIN,
+        HOME_EVERY_DEFAULT,
+        HOME_EVERY_MAX,
+        HOME_EVERY_MIN,
+        HOME_GLIDE_DEFAULT,
+        HOME_HISTORY_DEFAULT,
+        HOME_SEED_DEFAULT,
+        HOME_SEED_MAX,
+        HOME_SLOT_NAMES,
+        HOME_SLOTS,
         LEAD_BASE_OCTAVE_MAX,
         LEAD_BASE_OCTAVE_MIN,
         LEAD_DEFAULT_BASE_OCTAVE,
@@ -221,6 +233,18 @@ else:  # pragma: no cover - direct ``python ui/ji_ui.py``
         DRONE_SLIDE_SEMITONES_MAX,
         DRONE_SLIDE_SEMITONES_MIN,
         DRONE_VELOCITY_PARAM,
+        HOME_DRIFT_DEFAULT,
+        HOME_DRIFT_MAX,
+        HOME_DRIFT_MIN,
+        HOME_EVERY_DEFAULT,
+        HOME_EVERY_MAX,
+        HOME_EVERY_MIN,
+        HOME_GLIDE_DEFAULT,
+        HOME_HISTORY_DEFAULT,
+        HOME_SEED_DEFAULT,
+        HOME_SEED_MAX,
+        HOME_SLOT_NAMES,
+        HOME_SLOTS,
         LEAD_BASE_OCTAVE_MAX,
         LEAD_BASE_OCTAVE_MIN,
         LEAD_DEFAULT_BASE_OCTAVE,
@@ -472,6 +496,9 @@ class MainWindow(QMainWindow):
         self._arp_sync = False
         self._lead_sync = False
         self._drone_sync = False
+        self._home_sync = False
+        self._home_return_total: int | None = None
+        self._home_active_slot: int | None = None
         self._grid_sync = False
         self._grid_built_steps = 0
         self.step_cells: dict[tuple[int, int], QPushButton] = {}
@@ -484,8 +511,10 @@ class MainWindow(QMainWindow):
         )
         self._wire_controller_callback()
 
-        self.setWindowTitle("JI Station - Stage 8.3d Performance")
-        self.resize(1280, 720)
+        self.setWindowTitle("JI Station - Stage 8.4 Performance")
+        # One row taller than 8.3d so the extra Home row does not push Status
+        # below the fold; the scroll area remains the small-screen safety net.
+        self.resize(1280, 768)
         self.setMinimumSize(1080, 600)
         compact = QFont()
         compact.setPointSize(8)
@@ -502,6 +531,7 @@ class MainWindow(QMainWindow):
         top_row.addWidget(self._build_mutation_group(), 3)
         top_row.addWidget(self._build_midi_group(), 2)
         outer.addLayout(top_row)
+        outer.addWidget(self._build_home_group())
         outer.addWidget(self._build_autotune_group())
         outer.addWidget(self._build_loops_group())
         outer.addWidget(self._build_rhythm_group())
@@ -536,6 +566,7 @@ class MainWindow(QMainWindow):
         self._quantize_timer.start()
 
         self._refresh_status_labels()
+        self._sync_home_controls()  # start disabled until a slot is captured
 
         if autostart:
             self.start_controller()
@@ -599,6 +630,8 @@ class MainWindow(QMainWindow):
             self._update_lead_label()
         if address == osc_control.DRONE_STATE:
             self._sync_drone_controls()
+        if address == osc_control.HOME_STATE:
+            self._sync_home_controls()
 
         self._refresh_status_labels()
 
@@ -671,6 +704,139 @@ class MainWindow(QMainWindow):
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
         layout.addWidget(self.midi_label)
+        return group
+
+    def _build_home_group(self) -> QGroupBox:
+        """Stage 8.4 compact Home group (one control row + the status line)."""
+
+        group = QGroupBox("Home")
+        layout = QVBoxLayout(group)
+        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setSpacing(1)
+
+        row = QHBoxLayout()
+        row.setSpacing(3)
+
+        row.addWidget(QLabel("Slot"))
+        self.home_slot_combo = QComboBox()
+        self.home_slot_combo.addItems(list(HOME_SLOT_NAMES))
+        self.home_slot_combo.setFixedWidth(44)
+        self.home_slot_combo.currentIndexChanged.connect(
+            self._on_home_slot_changed
+        )
+        row.addWidget(self.home_slot_combo)
+
+        self.home_set_button = QPushButton("Set home")
+        self.home_set_button.setMinimumHeight(22)
+        self.home_set_button.setToolTip(
+            "Capture the current frequency set into the selected slot and make "
+            "it the active home."
+        )
+        self.home_set_button.clicked.connect(self._on_home_set)
+        row.addWidget(self.home_set_button)
+
+        self.home_go_button = QPushButton("Go")
+        self.home_go_button.setMinimumHeight(22)
+        self.home_go_button.setToolTip(
+            "Smooth return to the selected slot: one batch per quarter beat."
+        )
+        self.home_go_button.clicked.connect(self._on_home_go)
+        row.addWidget(self.home_go_button)
+
+        self.home_clear_button = QPushButton("Clear")
+        self.home_clear_button.setMinimumHeight(22)
+        self.home_clear_button.setToolTip("Forget the selected slot.")
+        self.home_clear_button.clicked.connect(self._on_home_clear)
+        row.addWidget(self.home_clear_button)
+
+        row.addSpacing(6)
+        self.home_return_button = QPushButton("Return")
+        self.home_return_button.setMinimumHeight(22)
+        self.home_return_button.setToolTip(
+            "Return to the active home in ceil(distance / max_changes) beats."
+        )
+        self.home_return_button.clicked.connect(self._on_home_return)
+        row.addWidget(self.home_return_button)
+
+        self.home_back_button = QPushButton("Back")
+        self.home_back_button.setMinimumHeight(22)
+        self.home_back_button.setToolTip(
+            "Restore the immediately previous frequency set; press again to "
+            "walk further back."
+        )
+        self.home_back_button.clicked.connect(self._on_home_back)
+        row.addWidget(self.home_back_button)
+
+        self.home_jump_button = QPushButton("Jump")
+        self.home_jump_button.setMinimumHeight(22)
+        self.home_jump_button.setToolTip(
+            "instant set swap, not a smooth return"
+        )
+        self.home_jump_button.clicked.connect(self._on_home_jump)
+        row.addWidget(self.home_jump_button)
+
+        row.addSpacing(6)
+        self.home_auto_checkbox = QCheckBox("Auto")
+        self.home_auto_checkbox.setToolTip(
+            "Return automatically after Every mutations (needs a captured slot)."
+        )
+        self.home_auto_checkbox.toggled.connect(self._on_home_auto)
+        row.addWidget(self.home_auto_checkbox)
+
+        row.addWidget(QLabel("Every"))
+        self.home_every_spin = QSpinBox()
+        self.home_every_spin.setRange(HOME_EVERY_MIN, HOME_EVERY_MAX)
+        self.home_every_spin.setValue(HOME_EVERY_DEFAULT)
+        self.home_every_spin.setFixedWidth(46)
+        self.home_every_spin.setToolTip("Mutations before an automatic return.")
+        self.home_every_spin.valueChanged.connect(self._on_home_every)
+        row.addWidget(self.home_every_spin)
+
+        row.addWidget(QLabel("Drift"))
+        self.home_drift_spin = QSpinBox()
+        self.home_drift_spin.setRange(HOME_DRIFT_MIN, HOME_DRIFT_MAX)
+        self.home_drift_spin.setValue(HOME_DRIFT_DEFAULT)
+        self.home_drift_spin.setFixedWidth(46)
+        self.home_drift_spin.setToolTip(
+            "Maximum distance from the active home during a journey; "
+            "0 = unlimited."
+        )
+        self.home_drift_spin.valueChanged.connect(self._on_home_drift)
+        row.addWidget(self.home_drift_spin)
+
+        row.addWidget(QLabel("Seed"))
+        self.home_seed_spin = QSpinBox()
+        self.home_seed_spin.setRange(0, int(HOME_SEED_MAX))
+        self.home_seed_spin.setValue(int(HOME_SEED_DEFAULT))
+        self.home_seed_spin.setFixedWidth(90)
+        self.home_seed_spin.setToolTip(
+            "Journey seed. Same home + same seed + same number of mutations "
+            "reproduces the same journey (a manual mutation is part of it)."
+        )
+        self.home_seed_spin.valueChanged.connect(self._on_home_seed)
+        row.addWidget(self.home_seed_spin)
+
+        row.addSpacing(6)
+        self.home_label = QLabel("Home: none (Set home to capture)")
+        self.home_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        row.addWidget(self.home_label, 1)
+        layout.addLayout(row)
+
+        self.home_controls: list[QWidget] = [
+            self.home_slot_combo,
+            self.home_set_button,
+            self.home_go_button,
+            self.home_clear_button,
+            self.home_return_button,
+            self.home_back_button,
+            self.home_jump_button,
+            self.home_auto_checkbox,
+            self.home_every_spin,
+            self.home_drift_spin,
+            self.home_seed_spin,
+        ]
         return group
 
     def _build_autotune_group(self) -> QGroupBox:
@@ -2143,6 +2309,141 @@ class MainWindow(QMainWindow):
             available and drone.mode == "sequence"
         )
 
+    # -- Stage 8.4 home controls ------------------------------------------
+
+    def _home_slot(self) -> int:
+        return int(self.home_slot_combo.currentIndex())
+
+    def _home_message(self, label: str, action: Callable[..., Any], *args: Any) -> None:
+        """Send one home action; report the queue rule in the Status line."""
+
+        running = self._transport_running()
+        self._guard(action, *args)
+        self._set_message(
+            f"{label} queued for the next beat"
+            if running
+            else f"{label} applied immediately"
+        )
+
+    def _on_home_slot_changed(self, _index: int) -> None:
+        if self._home_sync:
+            return
+        self._sync_home_controls()
+
+    def _on_home_set(self) -> None:
+        self._home_message(
+            "Set home", self.controller.home_capture, self._home_slot()
+        )
+
+    def _on_home_go(self) -> None:
+        self._home_message("Go", self.controller.home_go, self._home_slot())
+
+    def _on_home_clear(self) -> None:
+        self._home_message(
+            "Clear", self.controller.home_clear, self._home_slot()
+        )
+
+    def _on_home_return(self) -> None:
+        self._home_message("Return", self.controller.home_return)
+
+    def _on_home_back(self) -> None:
+        self._home_message("Back", self.controller.home_back)
+
+    def _on_home_jump(self) -> None:
+        self._home_message("Jump", self.controller.home_jump)
+
+    def _on_home_auto(self, checked: bool) -> None:
+        if self._home_sync:
+            return
+        self._guard(
+            self.controller.set_home_setting, "auto", bool(checked)
+        )
+        self._set_message(
+            "Auto return on" if checked else "Auto return off"
+        )
+
+    def _on_home_every(self, value: int) -> None:
+        if self._home_sync:
+            return
+        self._pending[("home", "every")] = int(value)
+
+    def _on_home_drift(self, value: int) -> None:
+        if self._home_sync:
+            return
+        self._pending[("home", "max_drift")] = int(value)
+
+    def _on_home_seed(self, value: int) -> None:
+        if self._home_sync:
+            return
+        self._pending[("home", "seed")] = int(value)
+
+    def _sync_home_controls(self) -> None:
+        """Reflect ``/ji/home/state`` with signals blocked (no feedback OSC)."""
+
+        home = self.store.home
+        has_home = bool(home.has_home) if home is not None else False
+        distance = home.distance if home is not None else 0
+        returning = bool(home.returning) if home is not None else False
+
+        if home is not None and home.returning:
+            # The payload carries the pending count; the first state of a
+            # return arrives after batch 0, so total = pending + 1.
+            if (
+                self._home_return_total is None
+                or home.pending_batches + 1 > self._home_return_total
+            ):
+                self._home_return_total = home.pending_batches + 1
+        else:
+            self._home_return_total = None
+
+        self._home_sync = True
+        try:
+            if home is not None:
+                # Follow the bridge's active slot only when it actually moved,
+                # so a manual Slot selection is not snapped back on every
+                # incoming state.
+                if home.active_slot != self._home_active_slot:
+                    self._home_active_slot = home.active_slot
+                    if 0 <= home.active_slot < HOME_SLOTS:
+                        self.home_slot_combo.setCurrentIndex(home.active_slot)
+                self.home_auto_checkbox.setChecked(bool(home.auto))
+                self.home_every_spin.setValue(int(home.every))
+                self.home_drift_spin.setValue(int(home.drift))
+                self.home_seed_spin.setValue(int(home.seed))
+            slot = self._home_slot()
+            slot_captured = (
+                home.slot_captured(slot) if home is not None else False
+            )
+            self.home_set_button.setEnabled(True)
+            self.home_clear_button.setEnabled(slot_captured)
+            self.home_go_button.setEnabled(
+                bool(slot_captured and not returning)
+            )
+            self.home_return_button.setEnabled(
+                bool(has_home and distance > 0 and not returning)
+            )
+            self.home_back_button.setEnabled(
+                bool(
+                    home is not None
+                    and home.history_depth > 1
+                    and not returning
+                )
+            )
+            self.home_jump_button.setEnabled(
+                bool(has_home and distance > 0)
+            )
+            self.home_auto_checkbox.setEnabled(has_home)
+        finally:
+            self._home_sync = False
+        self._update_home_label()
+
+    def _update_home_label(self) -> None:
+        home = self.store.home
+        if home is None:
+            self.home_label.setText("Home: waiting for bridge")
+            return
+        self.home_label.setText(home.status_line(self._home_return_total))
+
     def _build_lead_group(self) -> QGroupBox:
         """Stage 8.3d compact lead group (two rows + status line)."""
 
@@ -2864,6 +3165,8 @@ class MainWindow(QMainWindow):
                 self._guard(self.controller.set_lead_param, key[1], value)
             elif key[0] == "drone":
                 self._guard(self.controller.set_drone_param, key[1], value)
+            elif key[0] == "home":
+                self._guard(self.controller.set_home_setting, key[1], value)
 
     def _guard(self, action: Callable[..., Any], *args: Any) -> None:
         try:
@@ -3069,6 +3372,7 @@ class MainWindow(QMainWindow):
         self._update_bass_label()
         self._update_lead_label()
         self._update_drone_label()
+        self._update_home_label()
 
         for index in range(1, 5):
             self._refresh_loop_label(index)
@@ -3125,7 +3429,7 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(f"{label} must be between 1 and 65535")
 
     app = QApplication(sys.argv[:1])
-    app.setApplicationName("JI Station Stage 8.3b")
+    app.setApplicationName("JI Station Stage 8.4")
 
     controller = OSCController(
         bridge_host=args.bridge_host,
@@ -3142,7 +3446,7 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         message = f"Could not start the UI OSC listener:\n{exc}"
         print(f"[UI] {message}", file=sys.stderr)
-        QMessageBox.critical(None, "JI Stage 8.3b UI", message)
+        QMessageBox.critical(None, "JI Stage 8.4 UI", message)
         window.close()
         return 1
 

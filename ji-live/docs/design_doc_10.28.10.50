@@ -663,6 +663,14 @@ MutationBatch(events: tuple[MutationEvent, ...], glideTime)
 
 **Manual trigger only.** No auto-clocking. MIDI mapping in Stage 8.
 
+**Stage 8.4 addition (algorithm untouched).** Home sets need to read and restore
+the engine state, not to change how it mutates. Three additive methods exist:
+`reseed(seed)` (replace the RNG at a journey start), `snapshot()` (immutable
+`SetSnapshot(ratios, anchor, octaves)`) and `apply_snapshot(snapshot)` (validated
+exact restore for Back/jump/landing). `propose_mutation()`/`mutate_many()` are
+byte-identical; a return is planned as ordinary targeted `apply()` edits. The
+"future state" policy is the bridge-layer drift cap (§6.19), which ships off.
+
 ### 6.6 Loop recording and playback
 
 **Stage 4 implementation (mono):** raw input (pre-autotune) into a mono Buffer via `RecordBuf`, `loop: 0`, `doneAction: 2`, overwrite from frame 0. The `run` control and `~ji_stop_record.()` stop early; the buffer is kept. Buffer length is `seconds * sampleRate` (one channel). No overdub.
@@ -1388,9 +1396,10 @@ shipped 2.5 beats + 0.4 s gives 4 beats. A mutation during the hold retunes like
 
 #### 6.18.7 Bridge / GUI
 
-`PHASE_LEAD` (6) and `PHASE_DRONE` (7) sit between `arp` and `midi`, so the order
-is `mutation, octave, groove, drums, bass, arp, lead, drone, midi`; stopped →
-immediate. `/ji/lead/state` (16 values) and `/ji/drone/state` (14 values) are
+`PHASE_LEAD` (7) and `PHASE_DRONE` (8) sit between `arp` and `midi` (Stage 8.4
+inserted `PHASE_HOME` at 0 and shifted every later phase by one), so the order
+is `home, mutation, octave, groove, drums, bass, arp, lead, drone, midi`;
+stopped → immediate. `/ji/lead/state` (16 values) and `/ji/drone/state` (14 values) are
 sent at start, on hello, after every applied change, after a transport change,
 after a variation, and (for the derived cycle) after a tempo change — one small
 message per event, never per note. The GUI gains a compact **Lead** group below
@@ -1400,6 +1409,96 @@ incoming state syncs with signals blocked.
 **Tests:** `tests/test_lead.py`, `tests/test_drone.py`, plus the Qt additions in
 `tests/test_ui.py --qt`. Human acceptance is tracked in
 `docs/README_stage8_3d.md`.
+
+### 6.19 Home sets, deterministic journeys, and smooth return (Stage 8.4)
+
+**Goal:** make movement through frequency sets repeatable and musical — capture a
+"home" set, drift through seeded mutations, and return to it in the *minimum*
+number of allowed changes per mutation, plus a Back button; four slots make set
+chord progressions possible.
+
+**Snapshot model.** `control.mutation.SetSnapshot` is an immutable
+`(ratios, anchor, octaves)` copy; ratios are octave-reduced, sorted and unique.
+`MutationEngine` gained exactly three additive methods — `reseed(seed)`,
+`snapshot()`, `apply_snapshot(snapshot)` — and `apply_snapshot` validates before
+committing (positive ratios, ≤ `max_size`, anchor in the set, octaves in range)
+and raises `ValueError` without touching state. `propose_mutation()` /
+`mutate_many()` are unchanged; `tests/test_mutation.py` passes unmodified and
+`tests/test_home.py` pins a recorded seed-5 sequence. The owner's "future states
+will have to be considered" is answered by a bridge-layer **drift** policy, not
+by touching the algorithm.
+
+**Distance and planning.** `control/home.py` is a pure module (standard library
+only, no OSC/Qt/mido/threads in the planner):
+
+```
+remove   = current - home
+add      = home - current
+distance = max(len(remove), len(add))
+batches  = ceil(distance / MutationEngine.max_changes)
+```
+
+`plan_return()` returns batches of `(remove, add)`; applying them in order lands
+exactly home in `batches` beats, never one more. Pairing is voice-led: removals
+are ordered by distance from home (most distant first), each takes the nearest
+remaining home class (cents), and the seed only breaks ties. Pure additions run
+first when home is larger, pure removals first when it is smaller, so
+intermediate sizes stay inside `[min_size, max_size]`; the home anchor is never
+removed while present and, when missing, is added in the last batch and the
+engine anchor is set after landing.
+
+Worked example: current `{1, 9/8, 4/3, 3/2, 5/3}`, home `{1, 9/8, 5/4, 3/2,
+5/3}`, `max_changes = 1` → one batch `(4/3 → 5/4)`, one beat.
+
+**Slots, journeys, history.** Four slots `A`–`D`; `capture` stores and activates,
+`go` returns, `clear` forgets. A capture starts a journey from the configured
+seed (`reseed` + counter 0). Each applied mutation increments the counter; with
+`auto` on and `journey_mutations >= every` a return is queued on the next beat
+and the counter resets on landing. `max_drift` (0 = unlimited) rejects and
+retries a proposal up to 8 times, accepting the last as a last resort with one
+`[HOME] drift cap exceeded (8 tries)` line. The manager keeps a bounded history
+(`deque(maxlen=history_depth)`, default 64) of every applied set change;
+`back()` restores the previous snapshot, repeated Back walks further back, a
+new forward change clears the redo stack, and Back during a pending return
+cancels it first. A capture is not a set change and does not enter history.
+
+**Return timing.** Transport running: one batch per quarter beat, self-scheduled
+on `PHASE_HOME` from inside the previous batch, one `send_set(return_glide)` per
+batch (glide 0.02–0.30 s, default 0.06); after the last batch the bridge logs
+`[HOME] returned to A in 3 beats (3 batches)` and sends one `/ji/home/state`.
+Transport stopped: the whole return is **one** set change and **one**
+`/ji/freqset/update`. A manual mutation, manual octave move, `go` to another
+slot, `back`, or a transport stop cancels a pending return with one log line.
+Every batch reuses `JIBridge.send_set`, so sclang, MIDI (drone/arp/bass/lead),
+the UI and the history all see it.
+
+**Surface.** `/ji/home/capture|clear|go` (slot), `/ji/home/return|jump|back`
+(none), `/ji/home/set_auto|set_every|set_seed|set_drift|set_glide`, all on
+`PHASE_HOME` (stopped → immediate). `/ji/home/state` is 13 values: has_home,
+active_slot, home_classes, distance, pending_batches, history_depth, auto,
+every, seed, drift, returning, journey_mutations, slot_mask. It is sent at
+start, on `/ji/ui/hello`, after every applied home action, after every set
+change that moves distance, and after a transport change — never per note. The
+GUI gains a one-row **Home** group (slot, Set home/Go/Clear, Return/Back/Jump,
+Auto, Every, Drift, Seed, status line) placed under the Mutation/MIDI row.
+
+**Determinism caveat.** The same home + same seed + the same number of mutations
+reproduces a journey only while no human mutates by hand; a manual mutation is
+part of the sequence. This is documented in `docs/README_stage8_4.md`, not
+promised beyond.
+
+**Optional stretch left out (deliberately):** slot cycle (`A→B→C→A` on the bar
+grid), bar-grid landing, and a redo button. `HomeManager.redo()` is complete and
+tested but has no OSC/GUI surface.
+
+**Tests:** `tests/test_home.py` (config/slots, distance/plan over random sets,
+the worked example, engine additions and the pinned sequence, stopped/running
+returns, anchor rules, journey determinism, auto return, all four cancellations,
+drift cap + fallback, Back/redo, OSC handlers and state shape, phase order, no
+mido import), `tests/test_quantize.py` (home before mutation at one beat),
+`tests/test_ui.py` (builders/parser/store/controller + Qt Home group),
+`tests/test_startup.py` (`--home-config`, `--check`). Human acceptance stays in
+`docs/README_stage8_4.md`.
 
 ---
 
@@ -1527,6 +1626,18 @@ incoming state syncs with signals blocked.
 | `/ji/drone/set_seq_bars` | string (`1/4`\|`1/2`\|`1`\|`2`\|`4`, bars per note) | UI → Bridge | 8.3d.2 🟡 |
 | `/ji/drone/set_seq_gate` | float 0.1..1.0 (fraction of the note) | UI → Bridge | 8.3d.2 🟡 |
 | `/ji/drone/state` | 17 values: port_ok, mode, velocity, pulse_notes, pulse_grid, pulse_gate, octave_span, direction, slide_semitones, slide_seconds, hold_beats, cycle_beats (derived), seed, playing, seq_notes, seq_bars, seq_gate | Bridge → UI | 8.3d/8.3d.2 🟡 |
+| `/ji/home/capture` | int slot 0..3 | UI → Bridge | 8.4 🟡 |
+| `/ji/home/clear` | int slot 0..3 | UI → Bridge | 8.4 🟡 |
+| `/ji/home/go` | int slot 0..3 | UI → Bridge | 8.4 🟡 |
+| `/ji/home/return` | none | UI → Bridge | 8.4 🟡 |
+| `/ji/home/jump` | none (instant exact swap) | UI → Bridge | 8.4 🟡 |
+| `/ji/home/back` | none | UI → Bridge | 8.4 🟡 |
+| `/ji/home/set_auto` | int 0/1 | UI → Bridge | 8.4 🟡 |
+| `/ji/home/set_every` | int 1..32 | UI → Bridge | 8.4 🟡 |
+| `/ji/home/set_seed` | int 0..2^31−1 | UI → Bridge | 8.4 🟡 |
+| `/ji/home/set_drift` | int 0..12 (0 = unlimited) | UI → Bridge | 8.4 🟡 |
+| `/ji/home/set_glide` | float 0.02..0.30 | UI → Bridge | 8.4 🟡 |
+| `/ji/home/state` | 13 values: has_home, active_slot, home_classes, distance, pending_batches, history_depth, auto, every, seed, drift, returning, journey_mutations, slot_mask | Bridge → UI | 8.4 🟡 |
 | `/ji/midi/map` | [int, string] | Control → Bridge | 8 |
 | `/ji/granular/trigger` | [float, float] | Control → Server | 9 |
 | `/ji/event/mutation` | [float, float, float[]] | Bridge → Visual | 11 |
@@ -1554,6 +1665,15 @@ transport is stopped. `/ji/lead/state` and `/ji/drone/state` are one small
 message per event, never per note. The top-row Drone switch remains the only
 drone mute; the Lead `on` checkbox is the lead's own enable (the port stays
 open).
+
+**Stage 8.4 adds the home rows above**: the six set requests are queued on
+`PHASE_HOME` (the first phase, so a return batch lands before a mutation
+requested for the same beat) and apply immediately while the transport is
+stopped (the whole return then becomes one set change and one update). The
+auto/every/seed/drift/glide settings are config, not set changes, and apply
+immediately. `/ji/home/state` is one small message per event (start, hello,
+applied home action, distance-moving set change, transport change), never per
+note.
 
 `/ji/quantize/state` is unchanged and is the only pending-count message. **Stage
 8.3a adds the bass rows above**: a separate optional plain-MIDI port (Bus 4,
@@ -2015,7 +2135,7 @@ subphases between increments.
 | 8.1 | Rhythm foundation + drum engine v1: transport, tempo, meter, free/beat loops, per-loop beat lengths/phasing, drum MIDI output, note map, four-on-the-floor, lane toggles, half/double time | ✅ Owner-confirmed 2026-10-31 |
 | 8.2 | Groove generation: pattern presets, density, syncopation, swing, probability, per-step lane grid — plus beat-quantized state changes (mutation, toggles, drum rate, groove edits land on the next quarter beat) | ✅ Owner-confirmed 2026-10-31 |
 | 8.3 | More MIDI voices: bass first (monophonic + optional sub channel), then arp parameters, a one-entry startup, a beat-synced/self-evolving arp, and the lead/melody engine + drone pad options; further buses later | 🟡 8.3a owner-confirmed; 8.3b/8.3c built, awaiting human acceptance; 8.3d built, awaiting human acceptance |
-| 8.4 | Pattern/sequencing mutation: repeating frequency-set and MIDI patterns, pattern mutation, seed/recall of generated patterns | ⬜ Planned |
+| 8.4 | Home sets + deterministic journeys + smooth return: four slots, seeded journeys, optional drift cap, Back, beat-spaced minimal return (the frequency-set half of pattern/sequencing mutation) | 🟡 Built, awaiting human; MIDI pattern recall moved to 8.5 |
 | 8.5 | State save/recall + seeded reproduction: JSON snapshot of frequency set, mutation controls, rhythm, drums, MIDI voices, loop settings; restore without restart | ⬜ Planned |
 | 8.6 | Loop options: more loops, per-loop routing/gain/overdub, loop-player autotune controls, loop-file persistence | ⬜ Planned |
 | 8.7 | Optional: MIDI-triggered mutation mapping and SC-side VST hosting | ⬜ Optional |
@@ -2305,6 +2425,32 @@ still passes unchanged.
 8.3d is not complete until the human confirms the lead and the drone modes with
 no audio/MIDI regressions (checklist: `docs/README_stage8_3d.md`).
 
+**8.4 delivered (implemented, awaiting human acceptance):** home sets,
+deterministic journeys and smooth return. `control/mutation.py` gained
+`SetSnapshot` plus the additive `reseed()`/`snapshot()`/`apply_snapshot()`
+(validated, state untouched on error); `control/home.py` adds `HomeConfig`,
+`HomeState`, the pure `HomePlanner`/`plan_return` (exact
+`ceil(distance/max_changes)` batches, voice-led pairing, size-safe ordering, the
+home anchor added last) and `HomeManager` (four slots, active home, journeys,
+bounded history, redo, planner cache). `control/quantize.py` inserts
+`PHASE_HOME = 0` and shifts the older phases by one (`home, mutation, octave,
+groove, drums, bass, arp, lead, drone, midi`). `control/ji_bridge.py` owns the
+manager, queues the six set requests on `PHASE_HOME`, plays the return one batch
+per quarter beat (one set change + one update while stopped), implements the
+8-try drift cap, the journey counter/auto return, Back/jump/history and the
+13-value `/ji/home/state`; `control/osc_server.py` gains the eleven
+`/ji/home/*` handlers and the additive `apply_trigger()`/`announce()` split used
+by the drift policy. `ui/osc_control.py`/`ui/ji_ui.py` add the builders,
+`HomeStatus`/parser/store, controller methods and a one-row **Home** group.
+`config/home_config.json` ships `auto: false`, `every: 8`, `seed: 1`,
+`max_drift: 0`, `return_glide: 0.06`, `history_depth: 64`, so the accepted rig
+is unchanged until the player captures a home. `run/ji_station.py` gains
+`--home-config` and `--check` output. No sclang file, SynthDef, audio DSP,
+`/ji/freqset/update` contract or MIDI voice changed.
+
+8.4 is not complete until the human confirms the return is smooth, minimal and
+repeatable (checklist: `docs/README_stage8_4.md`).
+
 **8.2+ increments:** the remaining subphases extend the same state and GUI.
 Save/recall and seed-based reproduction must capture rhythm/drum state,
 frequency set, mutation controls, MIDI voice settings, and loop settings in a
@@ -2372,10 +2518,11 @@ unchanged when no visual subscriber is present.
 | 5.5 | ✅ Complete | Live rig: two autotuned inputs + two loops on SC 0/1/2/3, Python mutation bridge; `tests/sc/test_live_rig.scd`, `config/live_rig_routing.json`, `README_live_rig.md`. Four mono tracks in Ableton. Owner reported all sound checks passed (2026-10-30), including the adjustable loop length (8 s default). |
 | 6 | ✅ Complete — owner-confirmed 2026-10-30 | Two monophonic MPE buses: anchor drone (Bus 1) + set arp (Bus 2). Owner confirmed ports, calibration, drone/arp, and no stuck notes; existing audio unchanged. Pure Python tests pass. |
 | 7 | ✅ Owner-confirmed 2026-10-31 | Minimal Performance GUI: one PyQt6 window for mutation, live autotune, loop transport/length, and status. Stage 7.1 adds Drone/Arp switches. |
-| 8 | 🟡 In progress (iterative) | Performance expansion. 8.1 (rhythm foundation + drum engine) and 8.2 (groove + beat-quantized state) are owner-confirmed; 8.3a (monophonic bass, `/ji/bass/*`, Bass GUI group) is owner-confirmed; 8.3b (arp parameters + one-entry startup), 8.3c (beat-synced arp + self-evolution) and 8.3d (lead/melody + drone pad modes) are implemented and agent-verified, awaiting human; 8.4–8.7 remain. |
+| 8 | 🟡 In progress (iterative) | Performance expansion. 8.1 (rhythm foundation + drum engine) and 8.2 (groove + beat-quantized state) are owner-confirmed; 8.3a (monophonic bass, `/ji/bass/*`, Bass GUI group) is owner-confirmed; 8.3b (arp parameters + one-entry startup), 8.3c (beat-synced arp + self-evolution) and 8.3d (lead/melody + drone pad modes) are implemented and agent-verified, awaiting human; 8.4 (home sets + smooth return) is implemented and agent-verified, awaiting human; 8.5–8.7 remain. |
 | 8.1 | ✅ Owner-confirmed 2026-10-31 | Tempo/meter/transport, free/beat loops with per-loop lengths, drum MIDI on Bus 3, 16 lane toggles, half/normal/double time. |
 | 8.2 | ✅ Owner-confirmed 2026-10-31 | Groove presets/density/syncopation/swing/probability/seed, 16-lane step grid (32-column cap), and a next-quarter-beat state queue for mutation/octave/MIDI/drum enables, rate, lanes, and groove edits. Immediate while transport is stopped. Beat-mode loop scheduling fixed in 8.2.2. |
 | 8.3 | 🟡 8.3a owner-confirmed; 8.3b/8.3c/8.3d awaiting human | 8.3a: monophonic transport-synced JI bass on Bus 4, pulse/techno/chaos presets, pitch/rhythm controls, seeded line, optional sub channel, `/ji/bass/*` + Bass GUI group. 8.3b: mutable arp parameters (step/gate/velocity/octaves/shared mode/order/seed) with `/ji/arp/*` + `/ji/arp/state` + a compact Arp GUI group on `PHASE_ARP`, plus the one-sclang/one-Python startup path (`ji_start.scd`, `run/ji_station.py`, `docs/START_HERE.md`). 8.3c: `Sync free/beat` with `1/4`–`1/8T` divisions snapped to the bridge BPM, and `Evolve` every N beats with a depth control (both off by default). 8.3d: lead/melody voice on optional Bus 5 (set-relative motif + ratio hint so mutations keep the line, eight seeded variations, `Vary`/`variation_bars`, groove-linked swing, transport-gated) and drone pad modes `hold`/`pulse`/`bend` (derived bend cycle), with `/ji/lead/*`, `/ji/drone/*`, two state messages, and compact Lead + Drone modes GUI groups (`--lead` ships off). |
+| 8.4 | 🟡 Built — awaiting human | Home sets: four slots, deterministic seeded journeys, optional drift cap, Back, and a beat-spaced return that lands exactly home in `ceil(distance/max_changes)` beats. `/ji/home/*`, 13-value `/ji/home/state`, compact Home GUI group, `config/home_config.json`, `--home-config`. `PHASE_HOME` inserted first. |
 | 9 | ⬜ Planned | Granular & glitch FX in SC, pitch-quantized to the set, with GUI controls. |
 | 10 | ⬜ Planned | GUI UX & aesthetics after the feature set stabilizes. |
 | 11 | ⬜ Deferred | Visual-half groundwork: OSC event broadcast for an external visual process. |
@@ -2813,14 +2960,14 @@ channels, more than 12 simultaneous frequency classes, Windows/Linux support,
 and more than 16 SC output channels.
 
 **Deferred but planned:** polyphonic MPE voices and extra MIDI voices (Stage 8),
-sequencing/pattern mutation beyond the 8.2 groove model (Stage 8.4), state
-save/recall and whole-session seed reproduction (Stage 8.5), more loops/options
+MIDI pattern recall and whole-session state save/recall with seed reproduction
+(Stage 8.5; the frequency-set half of 8.4 is built), more loops/options
 (Stage 8.6), loop-player autotune controls (Stage 8), granular/glitch FX
 (Stage 9), GUI UX/aesthetics (Stage 10), and the visual half (Stage 11). The
 Stage 8.1 rhythm/drum foundation and the Stage 8.2 groove + beat-quantized state
 layer are owner-confirmed (2026-10-31). Stage 8.3a (monophonic bass) is
-implemented and owner-confirmed (2026-10-31); Stage 8.3b (arp parameters +
-one-entry startup) is next.
+owner-confirmed (2026-10-31); 8.3b/8.3c/8.3d and 8.4 are implemented and await
+the human checklists.
 
 Auto-clocked or audio-reactive mutation remains out of scope: the musician still
 triggers mutation manually. Stage 8 rhythm controls apply to MIDI generation,
@@ -2869,6 +3016,8 @@ not to automatic mutation.
 
 
 ---
+
+| 8.4.0 | 2026-11-01 | **Stage 8.4 home sets, deterministic journeys and smooth return implemented — awaiting human acceptance.** `control/mutation.py` gained the immutable `SetSnapshot` and exactly three additive methods: `reseed(seed)` (journey start), `snapshot()` (public immutable copy) and `apply_snapshot(snapshot)` (validated exact restore for Back/jump/landing; `ValueError` with the state untouched on bad input). `propose_mutation()`/`mutate_many()` are unchanged; `tests/test_mutation.py` passes unmodified and `tests/test_home.py` pins a recorded seed-5 sequence, so the owner's "will likely require modifications to the mutation algorithm" concern is answered with policy, not algorithm. Added `control/home.py` (`HomeConfig` with clamps, `HomeState`, pure `HomePlanner`/`plan_return` with exact `ceil(distance/max_changes)` batches, voice-led nearest pairing, size-safe ordering and the home anchor added last, and `HomeManager` with four slots, active home, journey counter, bounded history/redo and a planner cache). `control/quantize.py` inserts `PHASE_HOME = 0` and shifts the older phases up one (`home, mutation, octave, groove, drums, bass, arp, lead, drone, midi`). `control/ji_bridge.py` owns the manager and the 13-value `/ji/home/state`, queues capture/clear/go/return/jump/back on `PHASE_HOME` (immediate while stopped, where the whole return collapses to one set change and one update), plays a running return as exactly one `send_set(return_glide)` batch per quarter beat self-scheduled from inside the previous batch, implements the 8-try drift cap, the journey counter/auto return, Back/jump/history, and cancels a pending return on mutation/octave/go/back/transport stop with one log line. `control/osc_server.py` gained the eleven `/ji/home/*` handlers and the additive `apply_trigger()`/`announce()` split that lets the drift policy apply, inspect and roll back before announcing; `trigger()` is exactly that pair. `ui/osc_control.py` gained the builders/validators, `HomeStatus`/`parse_home_state`, the store field and controller methods; `ui/ji_ui.py` gained a one-row **Home** group (slot, Set home/Go/Clear, Return/Back/Jump, Auto/Every/Drift/Seed, status line, disabled states, signal-blocked sync). Added `config/home_config.json` (`auto: false`, `every: 8`, `seed: 1`, `max_drift: 0`, `return_glide: 0.06`, `history_depth: 64`) and `run/ji_station.py --home-config` plus `--check` output. Added `tests/test_home.py`; additive `tests/test_quantize.py` (home before mutation at one beat), `tests/test_ui.py` (builders/parser/store/controller + Qt Home group) and `tests/test_startup.py` (`--home-config`, `--check`); `tests/test_lead.py` only updated its pinned `PHASE_LEAD` number (6 → 7) because the renumber is mandated. Added `docs/README_stage8_4.md`; updated `docs/START_HERE.md`, the root README, `docs/README_stage8_3d.md`, and this document. No sclang file, SynthDef, audio DSP, `/ji/freqset/update` contract, MIDI voice, or Stage 5.5 audio map changed; the shipped `auto: false` keeps the accepted rig byte-identical until a home is captured. Agent verification: every pure harness passes (`test_mutation`, `test_mutation_controls`, `test_rhythm`, `test_groove`, `test_quantize`, `test_bass`, `test_arp`, `test_lead`, `test_drone`, `test_home`, `test_startup`, `test_mpe --pure`, `test_ui --pure`); the Qt test skipped (no Qt system libraries); sclang/audio/MIDI/Ableton/IAC/live GUI were unavailable. 8.4 awaits the human checklist. |
 
 ## 15. Appendix
 

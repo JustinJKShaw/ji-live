@@ -24,9 +24,14 @@ things** and changes no audio DSP, no SynthDef, and no sclang file:
 > legato with a ~10 ms gap). At 120 BPM in 4/4 one note = 2 s, so the shipped
 > 5-note figure takes 10 s. The state field order is unchanged.
 
-Status: implemented and covered by pure tests. **Audio, MIDI, Ableton, IAC,
-sclang timing and the live GUI are human-only checks**; 8.3d awaits the owner's
-acceptance (see §8).
+Status: implemented and covered by pure tests, **human-approved 2026-11-01**
+(the owner used the lead and the drone modes live and confirmed them). Audio,
+MIDI, Ableton, IAC, sclang timing and the live GUI remain human-only checks; the
+checklist stays in §8 for future regression runs. **The next stage — Stage 8.4
+home sets, deterministic journeys and smooth return — is built and awaits its own
+human checklist:** [README_stage8_4.md](README_stage8_4.md) (prompt:
+[prompts/PROMPT_stage8_4_home_return.md](prompts/PROMPT_stage8_4_home_return.md)).
+8.4 adds no lead/drone control and leaves the 8.3d contracts untouched.
 
 ---
 

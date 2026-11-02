@@ -190,6 +190,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="bass config path (default: config/bass_config.json)",
     )
     parser.add_argument(
+        "--home-config",
+        default=None,
+        help=(
+            "Stage 8.4 home config path (default: config/home_config.json: "
+            "slots, auto, every, seed, max_drift, return_glide, history_depth)"
+        ),
+    )
+    parser.add_argument(
         "--bridge-args",
         default="",
         metavar="ARGS",
@@ -273,6 +281,8 @@ def build_bridge_argv(args: argparse.Namespace) -> list[str]:
         argv.extend(["--rhythm-config", str(args.rhythm_config)])
     if args.bass_config:
         argv.extend(["--bass-config", str(args.bass_config)])
+    if args.home_config:
+        argv.extend(["--home-config", str(args.home_config)])
     if args.lead_config:
         argv.extend(["--lead-config", str(args.lead_config)])
     if args.drone_config:
@@ -473,6 +483,23 @@ def run_checks(args: argparse.Namespace) -> int:
         )
     except (OSError, TypeError, ValueError) as exc:
         problems.append(f"drone config: {exc}")
+
+    try:
+        from control.home import HomeConfig
+
+        home = (
+            HomeConfig.load(args.home_config)
+            if args.home_config
+            else HomeConfig.load()
+        )
+        print(
+            f"[CHECK] home config ok: slots={home.slots} "
+            f"auto={int(home.auto)} every={home.every} seed={home.seed} "
+            f"drift={home.max_drift} glide={home.return_glide:g} "
+            f"history={home.history_depth}"
+        )
+    except (OSError, TypeError, ValueError) as exc:
+        problems.append(f"home config: {exc}")
 
     if importlib.util.find_spec("mido") is not None:
         try:

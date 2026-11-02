@@ -53,6 +53,16 @@ Stage 8.3d adds the optional lead/melody voice (``--lead``, default
 existing Bus 1).  ``/ji/lead/set_*``, ``/ji/lead/vary``, ``/ji/drone/set_*`` and
 the two state messages use ``PHASE_LEAD`` and ``PHASE_DRONE`` (between arp and
 the MIDI enables).  The lead degrades alone when Bus 5 is missing.
+
+Stage 8.4 adds home sets: four captured snapshots (``A``-``D``), a deterministic
+journey (``reseed`` + a mutation counter), an optional drift cap, **Back**, and a
+beat-spaced **return** that lands exactly on the home set in
+``ceil(distance / max_changes)`` quarter beats.  All five home requests are
+queued on ``PHASE_HOME`` (the first phase, so a return batch lands before a
+mutation requested for the same beat) and apply immediately while the transport
+is stopped (the whole return then becomes one set change).  Every batch reuses
+:meth:`JIBridge.send_set`, so sclang, MIDI, the UI and the history all see it.
+``/ji/home/state`` is the 13-value status message.
 """
 
 from __future__ import annotations
@@ -70,6 +80,7 @@ try:  # Support both ``python -m control.ji_bridge`` and direct execution.
     from . import arp as arp_module
     from . import bass as bass_module
     from . import drone as drone_module
+    from . import home as home_module
     from . import lead as lead_module
     from .drums import DEFAULT_LANE_MASK, DRUM_RATE_DEFAULT
     from .groove import Groove, validate_preset
@@ -81,6 +92,7 @@ try:  # Support both ``python -m control.ji_bridge`` and direct execution.
         PHASE_DRONE,
         PHASE_DRUMS,
         PHASE_GROOVE,
+        PHASE_HOME,
         PHASE_LEAD,
         PHASE_MIDI,
         PHASE_MUTATION,
@@ -92,6 +104,7 @@ except ImportError:  # pragma: no cover - exercised only by direct execution
     import arp as arp_module  # type: ignore[no-redef]
     import bass as bass_module  # type: ignore[no-redef]
     import drone as drone_module  # type: ignore[no-redef]
+    import home as home_module  # type: ignore[no-redef]
     import lead as lead_module  # type: ignore[no-redef]
     from drums import DEFAULT_LANE_MASK, DRUM_RATE_DEFAULT  # type: ignore[no-redef]
     from groove import Groove, validate_preset  # type: ignore[no-redef]
@@ -108,6 +121,7 @@ except ImportError:  # pragma: no cover - exercised only by direct execution
         PHASE_DRONE,
         PHASE_DRUMS,
         PHASE_GROOVE,
+        PHASE_HOME,
         PHASE_LEAD,
         PHASE_MIDI,
         PHASE_MUTATION,
@@ -135,6 +149,7 @@ ARP_STATE_ADDRESS = "/ji/arp/state"
 LEAD_STATE_ADDRESS = "/ji/lead/state"
 LEAD_NOTE_ADDRESS = "/ji/lead/note"
 DRONE_STATE_ADDRESS = "/ji/drone/state"
+HOME_STATE_ADDRESS = "/ji/home/state"
 MAX_RATIOS = 12
 
 
@@ -198,6 +213,7 @@ class JIBridge:
         lead: bool = False,
         lead_config: str | None = None,
         drone_config: str | None = None,
+        home_config: str | None = None,
     ) -> None:
         self.sc_host = str(sc_host)
         self.sc_port = int(sc_port)
@@ -230,6 +246,14 @@ class JIBridge:
         self.quantizer = BeatQuantizer(
             self.rhythm, on_change=self._on_quantize_change
         )
+        # Stage 8.4: home slots, journeys, history and the return planner.  The
+        # manager is always constructed; empty slots cost nothing and the
+        # accepted rig is unchanged until the player captures a home.
+        self.home_config_path = home_config
+        self.home = home_module.HomeManager(self._load_home_config(home_config))
+        # The initial set is the first history entry, so Back works from the
+        # very first mutation even before a home is captured.
+        self.home.record(self.engine.snapshot())
         self.server = MutationOSCServer(
             self.engine,
             listen_host=self.listen_host,
@@ -260,6 +284,13 @@ class JIBridge:
             on_lead_change=self._on_lead_change,
             on_lead_vary=self._on_lead_vary,
             on_drone_change=self._on_drone_change,
+            on_home_capture=self.request_home_capture,
+            on_home_clear=self.request_home_clear,
+            on_home_go=self.request_home_go,
+            on_home_return=self.request_home_return,
+            on_home_jump=self.request_home_jump,
+            on_home_back=self.request_back,
+            on_home_setting=self._on_home_setting,
         )
         # Stage 2 API: this is the glide carried by every subsequent event.
         self.server.set_glide_time(glide_time)
@@ -348,6 +379,28 @@ class JIBridge:
     # Lifecycle / transport
     # ------------------------------------------------------------------
 
+    def _load_home_config(
+        self, path: str | None
+    ) -> home_module.HomeConfig:
+        """Load the home config; a bad/missing file falls back to defaults."""
+
+        try:
+            return home_module.HomeConfig.load(path) if path else home_module.HomeConfig.load()
+        except (OSError, TypeError, ValueError) as exc:
+            print(
+                f"[HOME] config: {exc}; using the shipped defaults",
+                file=sys.stderr,
+            )
+            return home_module.HomeConfig()
+
+    def _print_home_config(self) -> None:
+        config = self.home.config
+        print(
+            f"[HOME] slots={config.slots} auto={int(config.auto)} "
+            f"every={config.every} seed={config.seed} drift={config.max_drift} "
+            f"glide={config.return_glide:.3f} history={config.history_depth}"
+        )
+
     def start(self) -> None:
         """Start the listener, send the initial set, and print status."""
 
@@ -358,6 +411,7 @@ class JIBridge:
         )
         print_set(self.engine, "initial set")
         print_controls(self.server)
+        self._print_home_config()
         # Send the initial OSC set first.  If MIDI is enabled, its on_set is
         # stored as a snapshot and MIDIRig.start applies it immediately, so the
         # drone starts and the arp has a pattern before its thread begins.
@@ -383,6 +437,7 @@ class JIBridge:
         self._send_arp_state()
         self._send_lead_state()
         self._send_drone_state()
+        self._send_home_state()
         if self._bass_rig() is None:
             print(
                 "[BASS] not configured; start the bridge with --bass "
@@ -603,6 +658,7 @@ class JIBridge:
         self._send_arp_state()
         self._send_lead_state()
         self._send_drone_state()
+        self._send_home_state()
         self._send_quantize_state()
 
     def _drums_snapshot(self) -> tuple[bool, bool, float, int]:
@@ -1055,11 +1111,21 @@ class JIBridge:
         self._print_rhythm()
 
     def _on_rhythm_transport(self, running: bool) -> None:
+        cancelled_return = False
         if not running:
+            # A pending return is cancelled before the flush, so the stop does
+            # not machine-gun the remaining batches (one per queue tick).
+            cancelled_return = self._cancel_return(silent=True)
             # Flush before stopping: the last command is not lost, and the
             # queue cannot carry stale state into the next start.
             self.quantizer.flush("transport stop")
         state = self.rhythm.set_running(bool(running))
+        if not running:
+            # A flushed go/return may have started a return while the transport
+            # was still running; drop its next step now.
+            cancelled_return = self._cancel_return(silent=True) or cancelled_return
+            if cancelled_return:
+                print("[HOME] return cancelled by transport stop")
         self.quantizer.transport_changed()
         # Stopping the scheduler sends note-offs + CC 123; starting it resets
         # to step 0.  Drums run only while the transport is running.
@@ -1078,6 +1144,7 @@ class JIBridge:
         self._send_bass_state()
         self._send_lead_state()
         self._send_drone_state()
+        self._send_home_state()
         self._send_quantize_state()
         self._print_rhythm()
 
@@ -1093,9 +1160,10 @@ class JIBridge:
     def request_mutation(self) -> None:
         """UI/OSC/console mutation request: next beat or immediate if stopped."""
 
+        self._cancel_return("mutation")
         self.quantizer.schedule(
             ("mutation",),
-            self.server.trigger,
+            self._mutate,
             phase=PHASE_MUTATION,
             label="mutation",
         )
@@ -1103,12 +1171,398 @@ class JIBridge:
     def request_octave(self) -> None:
         """UI/OSC/console octave request: next beat or immediate if stopped."""
 
+        self._cancel_return("octave")
         self.quantizer.schedule(
             ("octave",),
-            self.server.octave,
+            self._apply_octave,
             phase=PHASE_OCTAVE,
             label="octave",
         )
+
+    def _apply_octave(self) -> None:
+        # A go()/return queued for the same beat may have started a return in
+        # the home phase; a manual octave move always cancels it.
+        self._cancel_return("octave")
+        self.server.octave()
+
+    # ------------------------------------------------------------------
+    # Stage 8.4 home sets, journeys, smooth return
+    # ------------------------------------------------------------------
+
+    def _send_home_state(self) -> None:
+        """One ``/ji/home/state`` (13 values); never per note."""
+
+        state = self.home.state(self.engine.snapshot())
+        self._send_ui_message(HOME_STATE_ADDRESS, state.as_state_args())
+
+    def _record_set(self) -> None:
+        """Record the applied set in the bounded Back history."""
+
+        self.home.record(self.engine.snapshot())
+
+    def _cancel_return(
+        self, reason: str | None = None, *, silent: bool = False
+    ) -> bool:
+        """Drop a pending return (state + queued step); log once when asked."""
+
+        cancelled = self.home.cancel_return()
+        if self.quantizer.cancel(("home", "step")):
+            cancelled = True
+        if self.quantizer.cancel(("home", "return")):
+            cancelled = True
+        if cancelled and not silent and reason:
+            print(f"[HOME] return cancelled by {reason}")
+        return cancelled
+
+    # -- capture / clear / go ------------------------------------------
+
+    def request_home_capture(self, slot: int) -> None:
+        name = home_module.slot_name(slot)
+        self.quantizer.schedule(
+            ("home", "capture", int(slot)),
+            lambda: self._capture_home(int(slot)),
+            phase=PHASE_HOME,
+            label=f"home capture {name}",
+        )
+
+    def _capture_home(self, slot: int) -> None:
+        name = home_module.slot_name(slot)
+        snapshot = self.home.capture(slot, self.engine.snapshot())
+        print(
+            f"[HOME] slot={name} captured classes={len(snapshot.ratios)} "
+            f"anchor={_fmt_ratio(snapshot.anchor)}"
+        )
+        # A capture starts a reproducible journey from the configured seed.
+        self.start_journey()
+        self._send_home_state()
+
+    def request_home_clear(self, slot: int) -> None:
+        name = home_module.slot_name(slot)
+        self.quantizer.schedule(
+            ("home", "clear", int(slot)),
+            lambda: self._clear_home(int(slot)),
+            phase=PHASE_HOME,
+            label=f"home clear {name}",
+        )
+
+    def _clear_home(self, slot: int) -> None:
+        name = home_module.slot_name(slot)
+        if self.home.clear(slot):
+            print(f"[HOME] slot={name} cleared")
+        else:
+            print(f"[HOME] gap: slot={name} is empty")
+        self._send_home_state()
+
+    def request_home_go(self, slot: int) -> None:
+        name = home_module.slot_name(slot)
+        self.quantizer.schedule(
+            ("home", "go", int(slot)),
+            lambda: self._begin_return(int(slot), reason="go"),
+            phase=PHASE_HOME,
+            label=f"home go {name}",
+        )
+
+    def request_home_return(self) -> None:
+        self.quantizer.schedule(
+            ("home", "return"),
+            lambda: self._begin_return(None, reason="return"),
+            phase=PHASE_HOME,
+            label="home return",
+        )
+
+    def request_home_jump(self) -> None:
+        self.quantizer.schedule(
+            ("home", "jump"),
+            self._jump_home,
+            phase=PHASE_HOME,
+            label="home jump",
+        )
+
+    def request_back(self) -> None:
+        self._cancel_return("back")
+        self.quantizer.schedule(
+            ("home", "back"),
+            self._back_home,
+            phase=PHASE_HOME,
+            label="home back",
+        )
+
+    # -- journeys -------------------------------------------------------
+
+    def start_journey(self, seed: int | None = None) -> bool:
+        """Reseed the engine and reset the mutation counter for a journey."""
+
+        if not self.home.start_journey(seed):
+            print("[HOME] journey needs an active home (Set home first)")
+            return False
+        value = self.home.journey_seed
+        self.engine.reseed(value)
+        config = self.home.config
+        print(
+            f"[HOME] journey seed={value} every={config.every} "
+            f"drift={config.max_drift} mutations=0/{config.every}"
+        )
+        return True
+
+    def _after_mutation(self) -> None:
+        """Bookkeeping after one announced mutation (history/journey/auto)."""
+
+        self._record_set()
+        if self.home.home is None:
+            self._send_home_state()
+            return
+        self.home.note_mutation()
+        config = self.home.config
+        print(
+            f"[HOME] journey seed={self.home.journey_seed} "
+            f"every={config.every} drift={config.max_drift} "
+            f"mutations={self.home.journey_mutations}/{config.every}"
+        )
+        self._send_home_state()
+        if self.home.journey_due():
+            self._queue_auto_return()
+
+    def _queue_auto_return(self) -> None:
+        """Queue the automatic return on the next beat (never mid-beat)."""
+
+        self.quantizer.schedule(
+            ("home", "return"),
+            lambda: self._begin_return(None, reason="auto"),
+            phase=PHASE_HOME,
+            label="home return (auto)",
+        )
+
+    def _mutate(self) -> None:
+        """Apply one mutation, honoring the optional drift cap.
+
+        The cap is a bridge-layer policy: the engine's ``propose_mutation`` is
+        untouched.  Each rejected proposal rolls the *state* back (the RNG keeps
+        advancing, so the retries differ) and only the accepted trigger is
+        announced.
+        """
+
+        self._cancel_return("mutation")
+        config = self.home.config
+        home = self.home.home
+        if config.max_drift <= 0 or home is None:
+            self.server.trigger()
+            return
+
+        before = self.engine.snapshot()
+        accepted: MutationEvent | MutationBatch | None = None
+        for attempt in range(home_module.MAX_DRIFT_TRIES):
+            if attempt:
+                self.engine.apply_snapshot(before)
+            accepted = self.server.apply_trigger()
+            if accepted is None:
+                return
+            if self.home.distance(self.engine.snapshot()) <= config.max_drift:
+                self.server.announce(accepted)
+                return
+        self.server.announce(accepted)
+        print(
+            f"[HOME] drift cap exceeded "
+            f"({home_module.MAX_DRIFT_TRIES} tries)"
+        )
+
+    # -- return / jump / back ------------------------------------------
+
+    def _begin_return(self, slot: int | None = None, reason: str = "return") -> bool:
+        """Plan and start a smooth return (or apply it whole while stopped)."""
+
+        target_slot = self.home.active_slot if slot is None else int(slot)
+        if target_slot < 0:
+            print("[HOME] gap: no active home (Set home to capture)")
+            self._send_home_state()
+            return False
+        name = home_module.slot_name(target_slot)
+        target = self.home.slot_snapshot(target_slot)
+        if target is None:
+            print(f"[HOME] gap: slot={name} is empty")
+            self._send_home_state()
+            return False
+
+        if self.home.returning:
+            self._cancel_return(reason if reason == "go" else None)
+        self.home.go(target_slot)
+        current = self.engine.snapshot()
+        plan = self.home.plan(
+            current, target, self.engine.max_changes, self.home.journey_seed
+        )
+        distance = self.home.distance(current)
+        print(
+            f"[HOME] return {name} distance={distance} batches={len(plan)} "
+            f"changes={self.engine.max_changes}"
+        )
+
+        if not plan:
+            self._set_home_anchor(target)
+            if self.engine.snapshot() != current:
+                self.send_set(self.home.config.return_glide)
+                self._record_set()
+            print(f"[HOME] already at {name} (distance 0)")
+            self.home.reset_journey()
+            self._send_home_state()
+            return True
+
+        if not self.rhythm.running:
+            # Compatibility rule: the whole return is one set change.
+            for batch in plan:
+                self._apply_return_batch(batch)
+            self._set_home_anchor(target)
+            self.send_set(self.home.config.return_glide)
+            self._record_set()
+            print(
+                f"[HOME] returned to {name} immediately "
+                f"({len(plan)} batches, transport stopped)"
+            )
+            self.home.reset_journey()
+            self._send_home_state()
+            return True
+
+        # Running: batch 0 lands now (the request already sat on a beat); each
+        # later batch reschedules itself on the following quarter beat.
+        self.home.begin_return(target_slot, len(plan))
+        self._send_home_state()
+        self._apply_return_step(plan, 0, target, target_slot)
+        return True
+
+    def _apply_return_batch(
+        self, batch: list[tuple[float | None, float | None]]
+    ) -> None:
+        for removed, added in batch:
+            if removed is not None and added is not None:
+                reason = "replaced"
+            elif removed is not None:
+                reason = "removed"
+            else:
+                reason = "added"
+            self.engine.apply(
+                MutationEvent(
+                    removed_ratio=removed,
+                    new_ratio=added,
+                    glide_time=0.0,
+                    reason=reason,
+                )
+            )
+
+    def _set_home_anchor(self, target: Any) -> None:
+        anchor = getattr(target, "anchor", None)
+        if anchor is None:
+            return
+        try:
+            self.engine.set_anchor(anchor)
+        except (TypeError, ValueError):
+            pass
+
+    def _apply_return_step(
+        self,
+        plan: list[list[tuple[float | None, float | None]]],
+        index: int,
+        target: Any,
+        slot: int,
+    ) -> None:
+        if not self.home.returning:
+            return
+        self._apply_return_batch(plan[index])
+        last = index + 1 >= len(plan)
+        if last:
+            self._set_home_anchor(target)
+        self.send_set(self.home.config.return_glide)
+        self._record_set()
+        self.home.note_return_step()
+        name = home_module.slot_name(slot)
+        if last:
+            self.home.reset_journey()
+            print(
+                f"[HOME] returned to {name} in {len(plan)} beats "
+                f"({len(plan)} batches)"
+            )
+            self._send_home_state()
+            return
+        self._send_home_state()
+        self.quantizer.schedule(
+            ("home", "step"),
+            lambda: self._apply_return_step(plan, index + 1, target, slot),
+            phase=PHASE_HOME,
+            label=f"home return {index + 2}/{len(plan)}",
+        )
+
+    def _jump_home(self) -> None:
+        """Instant exact set swap to the active home (not a smooth return)."""
+
+        self._cancel_return("jump")
+        slot = self.home.active_slot
+        target = self.home.home
+        if target is None or slot < 0:
+            print("[HOME] gap: no active home (Set home to capture)")
+            self._send_home_state()
+            return
+        self.engine.apply_snapshot(target)
+        self.send_set(self.server.glide_time)
+        self._record_set()
+        print(
+            f"[HOME] jumped to {home_module.slot_name(slot)} "
+            f"classes={len(target.ratios)} anchor={_fmt_ratio(target.anchor)}"
+        )
+        self.home.reset_journey()
+        self._send_home_state()
+
+    def _back_home(self) -> None:
+        """Restore the immediately previous snapshot (repeated Back walks back)."""
+
+        # A go()/return queued for the same beat may have started a return in
+        # the home phase; Back always cancels it first.
+        self._cancel_return("back")
+        target = self.home.back()
+        if target is None:
+            print("[HOME] back: already at the oldest snapshot")
+            self._send_home_state()
+            return
+        self.engine.apply_snapshot(target)
+        self.send_set(self.server.glide_time)
+        print(
+            f"[HOME] back -> classes={len(target.ratios)} "
+            f"anchor={_fmt_ratio(target.anchor)} "
+            f"(history {self.home.history_depth})"
+        )
+        self._send_home_state()
+
+    # -- settings -------------------------------------------------------
+
+    def _on_home_setting(self, name: str, value: Any) -> None:
+        """Apply one validated home setting (immediate, not beat-quantized)."""
+
+        try:
+            if name == "auto":
+                self.home.update_config(auto=bool(value))
+                config = self.home.config
+                print(
+                    f"[HOME] auto={int(config.auto)} every={config.every} "
+                    f"drift={config.max_drift}"
+                )
+                if config.auto and self.home.journey_due():
+                    self._queue_auto_return()
+            elif name == "every":
+                self.home.update_config(every=value)
+                print(f"[HOME] every={self.home.config.every}")
+            elif name == "seed":
+                self.home.update_config(seed=value)
+                if self.home.home is not None:
+                    self.start_journey(self.home.config.seed)
+                else:
+                    print(f"[HOME] seed={self.home.config.seed}")
+            elif name == "max_drift":
+                self.home.update_config(max_drift=value)
+                print(f"[HOME] drift={self.home.config.max_drift}")
+            elif name == "return_glide":
+                self.home.update_config(return_glide=value)
+                print(f"[HOME] glide={self.home.config.return_glide:.3f}")
+            else:
+                print(f"[HOME] unknown setting {name!r}", file=sys.stderr)
+        except (TypeError, ValueError) as exc:
+            print(f"[HOME] invalid {name}: {exc}", file=sys.stderr)
+        self._send_home_state()
 
     def _on_drums_enabled(self, enabled: bool) -> None:
         _current, port_ok, _rate, _mask = self._drums_snapshot()
@@ -1376,16 +1830,17 @@ class JIBridge:
                     f"new={_fmt_ratio(edit.new_ratio)} "
                     f"reason={edit.reason}"
                 )
-            return
-
-        print(
-            "[BRIDGE] "
-            f"removed={_fmt_ratio(event.removed_ratio)} "
-            f"new={_fmt_ratio(event.new_ratio)} "
-            f"reason={event.reason} "
-            f"size={len(self.engine.current_ratios)} "
-            f"anchor={_fmt_ratio(self.engine.anchor_ratio)}"
-        )
+        else:
+            print(
+                "[BRIDGE] "
+                f"removed={_fmt_ratio(event.removed_ratio)} "
+                f"new={_fmt_ratio(event.new_ratio)} "
+                f"reason={event.reason} "
+                f"size={len(self.engine.current_ratios)} "
+                f"anchor={_fmt_ratio(self.engine.anchor_ratio)}"
+            )
+        # Stage 8.4: history, journey counter, /ji/home/state, auto return.
+        self._after_mutation()
 
     def _on_octave(self, event: OctaveEvent) -> None:
         # Octave events move the analysis voicing only; live autotune uses the
@@ -1501,9 +1956,10 @@ def run_interactive(bridge: JIBridge) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Stage 3/6/7/8.1/8.3a/8.3b/8.3d bridge: mutation engine -> sclang "
-            "/ji/freqset/update, optional MPE MIDI rig (drone/arp parameters), "
-            "drum and bass outputs, rhythm state, and UI status"
+            "Stage 3/6/7/8.1/8.3a/8.3b/8.3d/8.4 bridge: mutation engine -> "
+            "sclang /ji/freqset/update, optional MPE MIDI rig (drone/arp "
+            "parameters), drum and bass outputs, rhythm state, home sets and "
+            "smooth return, and UI status"
         )
     )
     parser.add_argument("--sc-host", default="127.0.0.1")
@@ -1624,6 +2080,15 @@ def build_parser() -> argparse.ArgumentParser:
             "stays --mpe-config's drone_port)"
         ),
     )
+    parser.add_argument(
+        "--home-config",
+        default=None,
+        help=(
+            "Stage 8.4 home config path "
+            "(default: config/home_config.json next to the project: slots, "
+            "auto, every, seed, max_drift, return_glide, history_depth)"
+        ),
+    )
     return parser
 
 
@@ -1671,6 +2136,7 @@ def main(argv: list[str] | None = None) -> int:
         lead=args.lead,
         lead_config=args.lead_config,
         drone_config=args.drone_config,
+        home_config=args.home_config,
         ui_host=args.ui_host,
         ui_port=args.ui_port,
     )

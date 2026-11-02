@@ -152,6 +152,36 @@ their fallback degree). `hold` sounds exactly as before. The top-row `Drone`
 switch is still the only drone mute. Details:
 [docs/README_stage8_3d.md](README_stage8_3d.md).
 
+### Home sets + smooth return (Stage 8.4, runtime, no command)
+
+The **Home** group captures a frequency set you can return to. It needs no flag
+and no new bus; it reuses `/ji/freqset/update`.
+
+| Control | What it does |
+|---|---|
+| `Slot` + `Set home` | capture the current set into `A`–`D` and make it the active home |
+| `Go` | smooth return to the selected slot: one batch per quarter beat |
+| `Clear` | forget the selected slot |
+| `Return` | return to the active home in `ceil(distance / max_changes)` beats |
+| `Back` | restore the immediately previous set; press again to walk further back |
+| `Jump` | instant set swap (not a smooth return) |
+| `Auto` + `Every` | after N mutations, return automatically on the next beat |
+| `Drift` | maximum distance from home during a journey (`0` = unlimited) |
+| `Seed` | journey seed; same home + seed + mutation count reproduces the journey |
+
+The status line reads `Home: A · 7 cl | dist 2 | auto 8 | drift 3 | back 12`
+(or `Home: returning to A · 2/3 beats`, or `Home: none (Set home to capture)`).
+
+**Procedure.** Set `Slot` = `A`, press `Set home`, then mutate. `dist` grows;
+press `Return` while the transport runs and the set walks home one batch per
+quarter beat. With the transport stopped the whole return applies at once (the
+Stage 7/8.1 compatibility rule). While a return is running, a manual `Mutate` /
+`Octave` / `Back` / `Go` or a transport stop cancels it (one `[HOME]` line).
+**Back** restores the previous set and keeps walking back. `Auto` is off by
+default; the shipped `config/home_config.json` is `every: 8`, `seed: 1`,
+`drift: 0`, `return_glide: 0.06`, `history_depth: 64`. Details:
+[docs/README_stage8_4.md](README_stage8_4.md).
+
 ### Order matters
 
 1. Ableton up (or at least reachable) → 2. `ji_start.scd` → 3. `ji_station.py`.
@@ -181,6 +211,7 @@ canonical tempo/meter/transport when it installs.
 | `--mpe-config <path>` | package default | alternative `config/mpe_config.json` |
 | `--rhythm-config <path>` | package default | alternative `config/rhythm_config.json` |
 | `--bass-config <path>` | package default | alternative `config/bass_config.json` |
+| `--home-config <path>` | package default | alternative `config/home_config.json` (slots, auto/every/seed/drift, return glide, history depth) |
 | `--lead-config <path>` | package default | alternative `config/lead_config.json` |
 | `--drone-config <path>` | package default | alternative `config/drone_config.json` (mode + pad parameters; the bus stays `--mpe-config`'s `drone_port`) |
 | `--bridge-args "<flags>"` | empty | extra bridge flags, quoted: `--bridge-args "--change-count 2 --temperature 0.2"` |
@@ -207,7 +238,7 @@ uv run --with python-osc --with mido --with python-rtmidi --with PyQt6 \
 | `--listen-host` / `--listen-port` | `127.0.0.1` / `9000` | OSC control listen socket |
 | `--ui-host` / `--ui-port` | `127.0.0.1` / `9001` | UI status destination |
 | `--sc-host` / `--sc-port` | `127.0.0.1` / `57120` | sclang destination for `/ji/freqset/update` and `/ji/rhythm/tempo` |
-| `--mpe-config` / `--rhythm-config` / `--bass-config` / `--lead-config` / `--drone-config` | package defaults | config overrides |
+| `--mpe-config` / `--rhythm-config` / `--bass-config` / `--home-config` / `--lead-config` / `--drone-config` | package defaults | config overrides |
 | `--seed`, `--max-changes`, `--change-count`, `--temperature`, `--anchor-mobility` | see `--help` | mutation-engine defaults |
 
 ### 3.3 GUI — `ui/ji_ui.py` (started by the launcher)
@@ -275,7 +306,12 @@ without restarting the interpreter changes the control-bus numbering — re-run
 | `Address already in use` / bridge exits immediately | Another bridge still holds port 9000/9001. Quit the old one, or pass `--listen-port 9010 --ui-port 9011` to both sides (the launcher does both) |
 | GUI shows `waiting for bridge` | The bridge is not running, or ports differ. Compare `[LAUNCH] bridge:`/`[LAUNCH] gui:` lines (they must use the same ports) |
 | GUI controls greyed out | Correct: the arp/bass groups stay disabled until the bridge reports `port_ok = 1` for that bus |
-| Controls react late (up to one beat) | Expected: while the transport runs, mutation/octave/drums/groove/bass/arp changes wait for the next quarter beat. Stop the transport to apply immediately |
+| Controls react late (up to one beat) | Expected: while the transport runs, mutation/octave/home/drums/groove/bass/arp changes wait for the next quarter beat. Stop the transport to apply immediately |
+| `Return` takes one more beat than expected | Check `dist` and `--max-changes`: the return is exactly `ceil(dist / max_changes)` beats. If a manual `Mutate`/`Octave`/`Back`/`Go` arrived, the return was cancelled (look for `[HOME] return cancelled by ...`) |
+| `Go`/`Return`/`Back` greyed out | Correct: `Go`/`Clear` need a captured selected slot, `Return`/`Jump` need `dist > 0`, `Back` needs at least two history snapshots, and all set actions disable while a return is in flight |
+| `Auto` greyed out | Correct until a slot is captured (`Set home`) |
+| Home line shows `waiting for bridge` | The bridge is not running, or an old bridge without `/ji/home/state` still holds port 9000. Quit it and restart `run/ji_station.py` |
+| The set stops moving near home with a high `Drift` value | Expected: the drift cap rejects proposals that would exceed `Drift`; `0` = unlimited |
 | Arp does not sit on the grid | `Sync` must be `beat`; press Play once so the arp snaps to the transport origin, or change `Div` (both re-snap). With the transport stopped the arp still runs at the BPM but has no beat to lock to |
 | Stale behaviour after editing a `.scd` file | The editor buffer, not the file, is what gets evaluated. Re-evaluate `ji_start.scd` (it re-installs everything cleanly) |
 | Bus numbering warnings | scsynth was rebooted without restarting sclang. Language → Restart Interpreter, then re-evaluate `ji_start.scd` |

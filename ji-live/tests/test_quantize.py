@@ -28,6 +28,7 @@ import control.ji_bridge as bridge_module
 from control.quantize import (
     PHASE_DRUMS,
     PHASE_GROOVE,
+    PHASE_HOME,
     PHASE_MIDI,
     PHASE_MUTATION,
     PHASE_OCTAVE,
@@ -201,6 +202,26 @@ def test_deterministic_order() -> None:
     queue.tick(300.5)
     assert applied == ["mutation", "octave", "groove", "drums", "midi"], applied
     print("  mutation, octave, groove, drums, midi")
+
+    # Stage 8.4: a home return batch lands before a mutation requested for the
+    # same beat, so the mutation composes on top of the returned set.
+    applied.clear()
+    clock.now = 301.0
+    queue.schedule(
+        ("mutation",),
+        lambda: applied.append("mutation"),
+        phase=PHASE_MUTATION,
+        label="mutation",
+    )
+    queue.schedule(
+        ("home", "step"),
+        lambda: applied.append("home"),
+        phase=PHASE_HOME,
+        label="home return 1/1",
+    )
+    queue.tick(301.5)
+    assert applied == ["home", "mutation"], applied
+    print("  home lands before mutation at the same beat")
 
 
 def test_tempo_change_reschedules() -> None:

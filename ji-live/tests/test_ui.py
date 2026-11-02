@@ -106,6 +106,20 @@ from ui.osc_control import (
     MidiToggleState,
     OSCController,
     QuantizeStatus,
+    HOME_SLOT_NAMES,
+    build_home_back,
+    build_home_capture,
+    build_home_clear,
+    build_home_go,
+    build_home_jump,
+    build_home_return,
+    build_set_home_auto,
+    build_set_home_drift,
+    build_set_home_every,
+    build_set_home_glide,
+    build_set_home_seed,
+    build_set_home_setting,
+    parse_home_state,
     RhythmStatus,
     StatusStore,
     build_loop_clear,
@@ -1314,6 +1328,7 @@ def test_bridge_ui_status() -> None:
             "/ji/arp/state",
             "/ji/lead/state",
             "/ji/drone/state",
+            "/ji/home/state",
             "/ji/quantize/state",
         ]
         assert len(client.sent) == 1
@@ -1364,7 +1379,9 @@ def test_bridge_ui_status() -> None:
         assert osc_control.parse_drone_state(
             [1, "hold", 90, 4, "1/4", 0.5, 1, "down", 2, 0.4, 2.5, 4.0, 1, 0]
         ).gated is False
-        assert ui_client.sent[12][1] == [0, -1.0]
+        assert ui_client.sent[12][1][0] == 0  # /ji/home/state (no home yet)
+        assert len(ui_client.sent[12][1]) == 13
+        assert ui_client.sent[13][1] == [0, -1.0]
 
         # Rhythm commands: state changes go to sclang and the UI.
         client.sent.clear()
@@ -1906,6 +1923,29 @@ class FakeController:
     def set_drone_param(self, name, value) -> None:
         self.calls.append(("set_drone_param", name, value))
 
+    # -- Stage 8.4 home sets ---------------------------------------------
+
+    def home_capture(self, slot) -> None:
+        self.calls.append(("home_capture", slot))
+
+    def home_clear(self, slot) -> None:
+        self.calls.append(("home_clear", slot))
+
+    def home_go(self, slot) -> None:
+        self.calls.append(("home_go", slot))
+
+    def home_return(self) -> None:
+        self.calls.append(("home_return",))
+
+    def home_jump(self) -> None:
+        self.calls.append(("home_jump",))
+
+    def home_back(self) -> None:
+        self.calls.append(("home_back",))
+
+    def set_home_setting(self, name, value) -> None:
+        self.calls.append(("set_home_setting", name, value))
+
 
 def run_qt_tests() -> int:
     print("\n=== Qt smoke test: one window, widgets, signals, close ===")
@@ -1940,6 +1980,7 @@ def run_qt_tests() -> int:
         "Drone modes",
         "Lead",
         "MIDI",
+        "Home",
         "Status",
     ):
         assert expected in titles, f"missing {expected} group: {titles}"
@@ -2681,18 +2722,250 @@ def run_qt_tests() -> int:
     assert not window.lane_checkboxes[36].isEnabled()
     assert "not available" in window.drum_label.text()
 
+    # --- Stage 8.4 Home group ------------------------------------------
+    assert window.home_slot_combo.currentText() == "A"
+    assert window.home_every_spin.value() == 8
+    assert window.home_drift_spin.value() == 0
+    assert window.home_seed_spin.value() == 1
+    assert not window.home_auto_checkbox.isChecked()
+    assert not window.home_auto_checkbox.isEnabled(), "needs a captured slot"
+    assert not window.home_go_button.isEnabled()
+    assert not window.home_return_button.isEnabled()
+    assert not window.home_back_button.isEnabled()
+    assert not window.home_jump_button.isEnabled()
+    assert "waiting" in window.home_label.text()
+
+    fake.calls.clear()
+    window.home_set_button.click()
+    assert ("home_capture", 0) in fake.calls, fake.calls
+
+    # Incoming state syncs every control with signals blocked (no feedback).
+    fake.calls.clear()
+    window._on_status_message(
+        "/ji/home/state", [1, 0, 7, 2, 0, 5, 0, 8, 1, 0, 0, 3, 1]
+    )
+    assert not [
+        call for call in fake.calls
+        if call[0] in ("home_capture", "home_go", "home_return", "home_back",
+                       "home_jump", "set_home_setting")
+    ], fake.calls
+    assert "Home: A · 7 cl" in window.home_label.text()
+    assert "dist 2" in window.home_label.text()
+    assert "back 5" in window.home_label.text()
+    assert window.home_go_button.isEnabled()
+    assert window.home_return_button.isEnabled()
+    assert window.home_back_button.isEnabled()
+    assert window.home_jump_button.isEnabled()
+    assert window.home_auto_checkbox.isEnabled()
+
+    # The selected slot drives Go/Clear availability.
+    window.home_slot_combo.setCurrentIndex(1)  # B is empty in this state
+    assert not window.home_go_button.isEnabled()
+    assert not window.home_clear_button.isEnabled()
+    window.home_slot_combo.setCurrentIndex(0)
+    assert window.home_go_button.isEnabled()
+
+    # Buttons send immediately; the Status line reports the queue rule.
+    window._on_status_message("/ji/rhythm/state", [120, 4, 4, 1, 1, 1.0])
+    fake.calls.clear()
+    window.home_go_button.click()
+    assert ("home_go", 0) in fake.calls, fake.calls
+    assert "queued" in window.message_label.text().lower()
+    window._on_status_message("/ji/rhythm/state", [120, 4, 4, 0, 1, 1.0])
+    fake.calls.clear()
+    window.home_return_button.click()
+    assert ("home_return",) in fake.calls, fake.calls
+    assert "immediately" in window.message_label.text().lower()
+    window.home_back_button.click()
+    window.home_jump_button.click()
+    window.home_clear_button.click()
+    assert ("home_back",) in fake.calls
+    assert ("home_jump",) in fake.calls
+    assert ("home_clear", 0) in fake.calls
+
+    # Settings: Auto is immediate; the spins coalesce through the 30 Hz flush.
+    fake.calls.clear()
+    window.home_auto_checkbox.setChecked(True)
+    assert ("set_home_setting", "auto", True) in fake.calls, fake.calls
+    window.home_every_spin.setValue(4)
+    window.home_drift_spin.setValue(3)
+    window.home_seed_spin.setValue(9)
+    window._flush_pending()
+    assert ("set_home_setting", "every", 4) in fake.calls
+    assert ("set_home_setting", "max_drift", 3) in fake.calls
+    assert ("set_home_setting", "seed", 9) in fake.calls
+
+    # Returning state: the line shows progress; Go/Return/Back disable.
+    window._on_status_message(
+        "/ji/home/state", [1, 0, 7, 1, 2, 6, 1, 4, 9, 3, 1, 5, 1]
+    )
+    assert "returning to A" in window.home_label.text()
+    assert "1/3 beats" in window.home_label.text(), window.home_label.text()
+    assert not window.home_go_button.isEnabled()
+    assert not window.home_return_button.isEnabled()
+    assert not window.home_back_button.isEnabled()
+    assert window.home_jump_button.isEnabled()
+
+    # Back to the idle state; Auto can be turned off again.
+    window._on_status_message(
+        "/ji/home/state", [1, 0, 7, 1, 0, 6, 1, 4, 9, 3, 0, 0, 1]
+    )
+    assert "Home: A ·" in window.home_label.text()
+    fake.calls.clear()
+    window.home_auto_checkbox.setChecked(False)
+    assert ("set_home_setting", "auto", False) in fake.calls
+
+    # No home at all: the documented empty line and a disabled Auto.
+    window._on_status_message(
+        "/ji/home/state", [0, -1, 0, 0, 0, 1, 0, 8, 1, 0, 0, 0, 0]
+    )
+    assert window.home_label.text() == "Home: none (Set home to capture)"
+    assert not window.home_auto_checkbox.isEnabled()
+
     window.close()
     app.processEvents()
     assert fake.stopped is True
     window.deleteLater()
     app.processEvents()
-    print("  seven groups, groove/grid sync, pending status, and close succeeded")
+    print("  home group, groove/grid sync, pending status, close")
     return 0
 
 
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
+
+
+def test_home_builders_and_state() -> None:
+    print("\n=== Test 10: Stage 8.4 home builders, parser, store, controller ===")
+    assert osc_control.HOME_CAPTURE == "/ji/home/capture"
+    assert osc_control.HOME_STATE == "/ji/home/state"
+    assert osc_control.HOME_SLOT_NAMES == ("A", "B", "C", "D")
+
+    assert build_home_capture(0) == ("/ji/home/capture", [0])
+    assert build_home_clear(3) == ("/ji/home/clear", [3])
+    assert build_home_go(2) == ("/ji/home/go", [2])
+    assert build_home_return() == ("/ji/home/return", [])
+    assert build_home_jump() == ("/ji/home/jump", [])
+    assert build_home_back() == ("/ji/home/back", [])
+    # Slots clamp into 0..3 instead of raising (a knob can overshoot).
+    assert build_home_capture(9) == ("/ji/home/capture", [3])
+    assert build_home_capture(-2) == ("/ji/home/capture", [0])
+
+    assert build_set_home_auto(True) == ("/ji/home/set_auto", [1])
+    assert build_set_home_every(99) == ("/ji/home/set_every", [32])
+    assert build_set_home_every(0) == ("/ji/home/set_every", [1])
+    assert build_set_home_seed(2**40) == ("/ji/home/set_seed", [2**31 - 1])
+    assert build_set_home_drift(99) == ("/ji/home/set_drift", [12])
+    assert build_set_home_glide(0.5) == ("/ji/home/set_glide", [0.3])
+    assert build_set_home_glide(0.0) == ("/ji/home/set_glide", [0.02])
+    assert build_set_home_setting("drift", 3) == ("/ji/home/set_drift", [3])
+    assert build_set_home_setting("glide", 0.1) == (
+        "/ji/home/set_glide",
+        [0.1],
+    )
+    try:
+        build_set_home_setting("nope", 1)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("unknown home setting was accepted")
+
+    empty = parse_home_state([0, -1, 0, 0, 0, 0, 0, 8, 1, 0, 0, 0, 0])
+    assert empty.status_line() == "Home: none (Set home to capture)"
+    assert not empty.has_home and empty.active_slot == -1
+
+    state = parse_home_state([1, 0, 7, 2, 0, 12, 0, 8, 1, 3, 0, 4, 0b0101])
+    assert state.has_home and state.active_name == "A"
+    assert state.slot_captured(0) and state.slot_captured(2)
+    assert not state.slot_captured(1)
+    assert state.status_line() == (
+        "Home: A · 7 cl | dist 2 | auto 8 | drift 3 | back 12"
+    )
+    orphan = parse_home_state([1, -1, 0, 0, 0, 0, 0, 8, 1, 0, 0, 0, 0b0010])
+    assert orphan.status_line() == "Home: no active home (Go or Set home)"
+    returning = parse_home_state([1, 1, 7, 2, 2, 12, 0, 8, 1, 3, 1, 4, 0b0011])
+    assert returning.status_line(3) == "Home: returning to B · 1/3 beats"
+    assert returning.status_line() == "Home: returning to B · 1/3 beats"
+    # The 13-value contract is enforced.
+    try:
+        parse_home_state([1, 0, 7])
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("short home state was accepted")
+
+    store = StatusStore()
+    assert store.home is None
+    assert store.apply("/ji/home/state", [1, 2, 5, 1, 0, 3, 1, 4, 7, 2, 0, 1, 4])
+    assert store.home is not None and store.bridge_seen
+    assert store.home.active_name == "C"
+    assert store.home.auto and store.home.every == 4
+
+    bridge_client = FakeClient("127.0.0.1", 9000)
+    sc_client = FakeClient("127.0.0.1", 57120)
+    listener = FakeListener("127.0.0.1", 9001, lambda address, args: None)
+    controller = OSCController(
+        bridge_client=bridge_client,
+        sc_client=sc_client,
+        listener=listener,
+    )
+    controller.start()
+    bridge_client.sent.clear()
+    controller.home_capture(0)
+    controller.home_go(1)
+    controller.home_clear(2)
+    controller.home_return()
+    controller.home_jump()
+    controller.home_back()
+    controller.set_home_setting("auto", True)
+    controller.set_home_setting("every", 4)
+    controller.set_home_setting("seed", 9)
+    controller.set_home_setting("drift", 2)
+    controller.set_home_setting("glide", 0.1)
+    assert bridge_client.addresses() == [
+        "/ji/home/capture",
+        "/ji/home/go",
+        "/ji/home/clear",
+        "/ji/home/return",
+        "/ji/home/jump",
+        "/ji/home/back",
+        "/ji/home/set_auto",
+        "/ji/home/set_every",
+        "/ji/home/set_seed",
+        "/ji/home/set_drift",
+        "/ji/home/set_glide",
+    ]
+    assert bridge_client.sent[0][1] == [0]
+    assert bridge_client.sent[1][1] == [1]
+    assert bridge_client.sent[2][1] == [2]
+    assert bridge_client.sent[3][1] == []
+    assert bridge_client.sent[6][1] == [1]
+    assert bridge_client.sent[10][1] == [0.1]
+    controller.stop()
+
+    # The bridge publishes one /ji/home/state on capture (never per note).
+    original = bridge_module.SimpleUDPClient
+    FakeClient.instances = []
+    bridge_module.SimpleUDPClient = FakeClient
+    try:
+        bridge = bridge_module.JIBridge(seed=3)
+        client, ui_client = FakeClient.instances
+        bridge.request_home_capture(0)
+        home_args = [
+            args for address, args in ui_client.sent if address == "/ji/home/state"
+        ]
+        assert home_args, "capture must publish /ji/home/state"
+        assert len(home_args[-1]) == 13
+        parsed = osc_control.parse_home_state(home_args[-1])
+        assert parsed.has_home and parsed.active_slot == 0
+        assert parsed.slot_mask == 1
+        # Capture is not a set change: still exactly the initial update.
+        assert client.addresses() == []
+        bridge.stop()
+    finally:
+        bridge_module.SimpleUDPClient = original
+    print("  builders/clamps, 13-value parser, store, controller, bridge state")
 
 
 def run_pure_tests() -> None:
@@ -2709,6 +2982,7 @@ def run_pure_tests() -> None:
     test_bridge_ui_status()
     test_osc_controller()
     test_controller_startup_send_failure_is_nonfatal()
+    test_home_builders_and_state()
 
 
 def build_parser() -> argparse.ArgumentParser:

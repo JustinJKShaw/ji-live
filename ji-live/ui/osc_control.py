@@ -151,6 +151,20 @@ DRONE_SET_SEQ_BARS = "/ji/drone/set_seq_bars"
 DRONE_SET_SEQ_GATE = "/ji/drone/set_seq_gate"
 DRONE_STATE = "/ji/drone/state"
 
+# Stage 8.4 home sets (UI -> Bridge) and the 13-value state message.
+HOME_CAPTURE = "/ji/home/capture"
+HOME_CLEAR = "/ji/home/clear"
+HOME_GO = "/ji/home/go"
+HOME_RETURN = "/ji/home/return"
+HOME_JUMP = "/ji/home/jump"
+HOME_BACK = "/ji/home/back"
+HOME_SET_AUTO = "/ji/home/set_auto"
+HOME_SET_EVERY = "/ji/home/set_every"
+HOME_SET_SEED = "/ji/home/set_seed"
+HOME_SET_DRIFT = "/ji/home/set_drift"
+HOME_SET_GLIDE = "/ji/home/set_glide"
+HOME_STATE = "/ji/home/state"
+
 AUTOTUNE_SET = "/ji/autotune/set"
 AUTOTUNE_STATE = "/ji/autotune/state"
 
@@ -187,6 +201,7 @@ STATUS_ADDRESSES = (
     LEAD_STATE,
     LEAD_NOTE,
     DRONE_STATE,
+    HOME_STATE,
     CPU,
     LOOP_STATE,
     LOOP_CONFIG,
@@ -439,6 +454,24 @@ DRONE_DEFAULT_SEQ_BARS = "1"
 DRONE_SEQ_GATE_MIN = 0.1
 DRONE_SEQ_GATE_MAX = 1.0
 DRONE_DEFAULT_SEQ_GATE = 1.0
+
+# Stage 8.4 home sets.  Kept here (no control-package import) so the pure UI
+# layer and the Qt window share one source of truth.
+HOME_SLOTS = 4
+HOME_SLOT_NAMES: tuple[str, ...] = ("A", "B", "C", "D")
+HOME_EVERY_MIN = 1
+HOME_EVERY_MAX = 32
+HOME_EVERY_DEFAULT = 8
+HOME_SEED_MIN = 0
+HOME_SEED_MAX = 2**31 - 1
+HOME_SEED_DEFAULT = 1
+HOME_DRIFT_MIN = 0
+HOME_DRIFT_MAX = 12
+HOME_DRIFT_DEFAULT = 0
+HOME_GLIDE_MIN = 0.02
+HOME_GLIDE_MAX = 0.30
+HOME_GLIDE_DEFAULT = 0.06
+HOME_HISTORY_DEFAULT = 64
 
 
 @dataclass(frozen=True)
@@ -1805,6 +1838,89 @@ def build_set_drone_setting(name: Any, value: Any) -> tuple[str, list[Any]]:
     return DRONE_SETTING_ADDRESSES[key], [_DRONE_COERCE[key](value)]
 
 
+# -- Stage 8.4 home sets ---------------------------------------------------
+
+HOME_SETTING_ADDRESSES: dict[str, str] = {
+    "auto": HOME_SET_AUTO,
+    "every": HOME_SET_EVERY,
+    "seed": HOME_SET_SEED,
+    "max_drift": HOME_SET_DRIFT,
+    "return_glide": HOME_SET_GLIDE,
+}
+
+HOME_SETTING_ALIASES: dict[str, str] = {
+    "drift": "max_drift",
+    "glide": "return_glide",
+    "return_glide_seconds": "return_glide",
+}
+
+_HOME_COERCE: dict[str, Callable[[Any], Any]] = {
+    "auto": lambda value: 1 if _to_bool(value, "home auto") else 0,
+    "every": lambda value: clamp_int(value, HOME_EVERY_MIN, HOME_EVERY_MAX),
+    "seed": lambda value: clamp_int(value, HOME_SEED_MIN, HOME_SEED_MAX),
+    "max_drift": lambda value: clamp_int(value, HOME_DRIFT_MIN, HOME_DRIFT_MAX),
+    "return_glide": lambda value: clamp(value, HOME_GLIDE_MIN, HOME_GLIDE_MAX),
+}
+
+
+def _validate_home_slot(slot: Any) -> int:
+    return clamp_int(slot, 0, HOME_SLOTS - 1)
+
+
+def build_home_capture(slot: Any) -> tuple[str, list[Any]]:
+    return HOME_CAPTURE, [_validate_home_slot(slot)]
+
+
+def build_home_clear(slot: Any) -> tuple[str, list[Any]]:
+    return HOME_CLEAR, [_validate_home_slot(slot)]
+
+
+def build_home_go(slot: Any) -> tuple[str, list[Any]]:
+    return HOME_GO, [_validate_home_slot(slot)]
+
+
+def build_home_return() -> tuple[str, list[Any]]:
+    return HOME_RETURN, []
+
+
+def build_home_jump() -> tuple[str, list[Any]]:
+    return HOME_JUMP, []
+
+
+def build_home_back() -> tuple[str, list[Any]]:
+    return HOME_BACK, []
+
+
+def build_set_home_setting(name: Any, value: Any) -> tuple[str, list[Any]]:
+    """Build one validated ``/ji/home/set_*`` message."""
+
+    key = str(name).strip().lower()
+    key = HOME_SETTING_ALIASES.get(key, key)
+    if key not in HOME_SETTING_ADDRESSES:
+        raise ValueError(f"unknown home setting {name!r}")
+    return HOME_SETTING_ADDRESSES[key], [_HOME_COERCE[key](value)]
+
+
+def build_set_home_auto(enabled: Any) -> tuple[str, list[Any]]:
+    return build_set_home_setting("auto", enabled)
+
+
+def build_set_home_every(every: Any) -> tuple[str, list[Any]]:
+    return build_set_home_setting("every", every)
+
+
+def build_set_home_seed(seed: Any) -> tuple[str, list[Any]]:
+    return build_set_home_setting("seed", seed)
+
+
+def build_set_home_drift(drift: Any) -> tuple[str, list[Any]]:
+    return build_set_home_setting("max_drift", drift)
+
+
+def build_set_home_glide(seconds: Any) -> tuple[str, list[Any]]:
+    return build_set_home_setting("return_glide", seconds)
+
+
 def build_loop_set_mode(index: Any, mode: Any) -> tuple[str, list[Any]]:
     return LOOP_SET_MODE, [_validate_index(index), str(_validate_loop_mode(mode))]
 
@@ -2134,6 +2250,68 @@ class DroneStatus:
             )
         anchor = f" | anchor {anchor_label}" if anchor_label else ""
         return f"hold | {self.velocity}{anchor}"
+
+
+@dataclass(frozen=True)
+class HomeStatus:
+    """``/ji/home/state`` snapshot (13 fields, Stage 8.4 order)."""
+
+    has_home: bool
+    active_slot: int
+    home_classes: int
+    distance: int
+    pending_batches: int
+    history_depth: int
+    auto: bool
+    every: int
+    seed: int
+    drift: int
+    returning: bool
+    journey_mutations: int
+    slot_mask: int
+
+    @property
+    def active_name(self) -> str:
+        if 0 <= self.active_slot < len(HOME_SLOT_NAMES):
+            return HOME_SLOT_NAMES[self.active_slot]
+        return "-"
+
+    def slot_captured(self, slot: Any) -> bool:
+        index = clamp_int(slot, 0, HOME_SLOTS - 1)
+        return bool(self.slot_mask & (1 << index))
+
+    def status_line(self, return_total: int | None = None) -> str:
+        """``Home: A · 7 cl | dist 2 | auto 8 | drift 3 | back 12``.
+
+        While returning it reads ``Home: returning to A · 2/3 beats``; with no
+        captured slot it reads ``Home: none (Set home to capture)``.  The
+        ``/ji/home/state`` payload carries the *pending* count only, so the GUI
+        passes the total it tracked when the return started (``return_total``);
+        without it the line falls back to ``pending + 1``, the value right
+        after the first batch landed.
+        """
+
+        if not self.has_home:
+            return "Home: none (Set home to capture)"
+        if self.active_slot < 0:
+            return "Home: no active home (Go or Set home)"
+        if self.returning:
+            total = max(
+                1,
+                int(return_total)
+                if return_total is not None
+                else self.pending_batches + 1,
+            )
+            done = max(0, min(total, total - self.pending_batches))
+            return (
+                f"Home: returning to {self.active_name} · "
+                f"{done}/{total} beats"
+            )
+        return (
+            f"Home: {self.active_name} · {self.home_classes} cl | "
+            f"dist {self.distance} | auto {self.every} | "
+            f"drift {self.drift} | back {self.history_depth}"
+        )
 
 
 @dataclass(frozen=True)
@@ -2519,6 +2697,38 @@ def parse_drone_state(args: Sequence[Any]) -> DroneStatus:
     )
 
 
+def parse_home_state(args: Sequence[Any]) -> "HomeStatus":
+    """Parse the 13-value ``/ji/home/state`` payload."""
+
+    if len(args) != 13:
+        raise ValueError(
+            "home state needs has_home, active_slot, home_classes, distance, "
+            "pending_batches, history_depth, auto, every, seed, drift, "
+            "returning, journey_mutations, slot_mask"
+        )
+    return HomeStatus(
+        has_home=_to_bool(args[0], "home has_home"),
+        active_slot=clamp_int(args[1], -1, HOME_SLOTS - 1),
+        home_classes=max(0, int(round(_as_finite_float(args[2], "home_classes")))),
+        distance=max(0, int(round(_as_finite_float(args[3], "home distance")))),
+        pending_batches=max(
+            0, int(round(_as_finite_float(args[4], "home pending_batches")))
+        ),
+        history_depth=max(
+            0, int(round(_as_finite_float(args[5], "home history_depth")))
+        ),
+        auto=_to_bool(args[6], "home auto"),
+        every=clamp_int(args[7], HOME_EVERY_MIN, HOME_EVERY_MAX),
+        seed=clamp_int(args[8], HOME_SEED_MIN, HOME_SEED_MAX),
+        drift=clamp_int(args[9], HOME_DRIFT_MIN, HOME_DRIFT_MAX),
+        returning=_to_bool(args[10], "home returning"),
+        journey_mutations=max(
+            0, int(round(_as_finite_float(args[11], "home journey_mutations")))
+        ),
+        slot_mask=clamp_int(args[12], 0, (1 << HOME_SLOTS) - 1),
+    )
+
+
 def parse_loop_config(args: Sequence[Any]) -> tuple[int, LoopConfig]:
     """Parse ``[index, mode, beats, seconds]``."""
 
@@ -2585,6 +2795,7 @@ STATUS_PARSERS: dict[str, Callable[[Sequence[Any]], Any]] = {
     LEAD_STATE: parse_lead_state,
     LEAD_NOTE: parse_lead_note,
     DRONE_STATE: parse_drone_state,
+    HOME_STATE: parse_home_state,
     CPU: parse_cpu,
     LOOP_STATE: parse_loop_state,
     LOOP_CONFIG: parse_loop_config,
@@ -2615,6 +2826,7 @@ class StatusStore:
         self.lead: LeadStatus | None = None
         self.lead_note: LeadNoteStatus | None = None
         self.drone: DroneStatus | None = None
+        self.home: HomeStatus | None = None
         self.cpu: float | None = None
         self.loop_states: dict[int, str] = {
             index: "waiting" for index in range(LOOP_INDEX_MIN, LOOP_INDEX_MAX + 1)
@@ -2700,6 +2912,9 @@ class StatusStore:
             self.bridge_seen = True
         elif address == DRONE_STATE:
             self.drone = parsed
+            self.bridge_seen = True
+        elif address == HOME_STATE:
+            self.home = parsed
             self.bridge_seen = True
         elif address == CPU:
             self.cpu = parsed
@@ -3226,6 +3441,60 @@ class OSCController:
     def set_drone_param(self, name: Any, value: Any) -> tuple[str, list[Any]]:
         return self.set_drone_setting(name, value)
 
+    # -- Stage 8.4 home sets --------------------------------------------
+
+    def home_capture(self, slot: Any) -> tuple[str, list[Any]]:
+        message = build_home_capture(slot)
+        self._send_bridge(*message)
+        return message
+
+    def home_clear(self, slot: Any) -> tuple[str, list[Any]]:
+        message = build_home_clear(slot)
+        self._send_bridge(*message)
+        return message
+
+    def home_go(self, slot: Any) -> tuple[str, list[Any]]:
+        message = build_home_go(slot)
+        self._send_bridge(*message)
+        return message
+
+    def home_return(self) -> tuple[str, list[Any]]:
+        message = build_home_return()
+        self._send_bridge(*message)
+        return message
+
+    def home_jump(self) -> tuple[str, list[Any]]:
+        message = build_home_jump()
+        self._send_bridge(*message)
+        return message
+
+    def home_back(self) -> tuple[str, list[Any]]:
+        message = build_home_back()
+        self._send_bridge(*message)
+        return message
+
+    def set_home_setting(
+        self, name: Any, value: Any
+    ) -> tuple[str, list[Any]]:
+        message = build_set_home_setting(name, value)
+        self._send_bridge(*message)
+        return message
+
+    def set_home_auto(self, enabled: Any) -> tuple[str, list[Any]]:
+        return self.set_home_setting("auto", enabled)
+
+    def set_home_every(self, every: Any) -> tuple[str, list[Any]]:
+        return self.set_home_setting("every", every)
+
+    def set_home_seed(self, seed: Any) -> tuple[str, list[Any]]:
+        return self.set_home_setting("seed", seed)
+
+    def set_home_drift(self, drift: Any) -> tuple[str, list[Any]]:
+        return self.set_home_setting("max_drift", drift)
+
+    def set_home_glide(self, seconds: Any) -> tuple[str, list[Any]]:
+        return self.set_home_setting("return_glide", seconds)
+
     def loop_record(
         self, index: Any, seconds: float | None = None
     ) -> tuple[str, list[Any]]:
@@ -3491,4 +3760,46 @@ __all__ = ["AUTOTUNE_PARAMS",
     "build_set_bass_sub_octaves",
     "parse_bass_note",
     "parse_bass_state",
+    "HOME_BACK",
+    "HOME_CAPTURE",
+    "HOME_CLEAR",
+    "HOME_DRIFT_DEFAULT",
+    "HOME_DRIFT_MAX",
+    "HOME_DRIFT_MIN",
+    "HOME_EVERY_DEFAULT",
+    "HOME_EVERY_MAX",
+    "HOME_EVERY_MIN",
+    "HOME_GLIDE_DEFAULT",
+    "HOME_GLIDE_MAX",
+    "HOME_GLIDE_MIN",
+    "HOME_GO",
+    "HOME_HISTORY_DEFAULT",
+    "HOME_JUMP",
+    "HOME_RETURN",
+    "HOME_SEED_DEFAULT",
+    "HOME_SEED_MAX",
+    "HOME_SEED_MIN",
+    "HOME_SET_AUTO",
+    "HOME_SET_DRIFT",
+    "HOME_SET_EVERY",
+    "HOME_SET_GLIDE",
+    "HOME_SET_SEED",
+    "HOME_SETTING_ADDRESSES",
+    "HOME_SLOT_NAMES",
+    "HOME_SLOTS",
+    "HOME_STATE",
+    "HomeStatus",
+    "build_home_back",
+    "build_home_capture",
+    "build_home_clear",
+    "build_home_go",
+    "build_home_jump",
+    "build_home_return",
+    "build_set_home_auto",
+    "build_set_home_drift",
+    "build_set_home_every",
+    "build_set_home_glide",
+    "build_set_home_seed",
+    "build_set_home_setting",
+    "parse_home_state",
 ]

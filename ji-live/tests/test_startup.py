@@ -148,6 +148,8 @@ def test_extra_args() -> None:
             "cfg/rhythm.json",
             "--bass-config",
             "cfg/bass.json",
+            "--home-config",
+            "cfg/home.json",
             "--bridge-args",
             "--change-count 2 --temperature 0.2",
         ]
@@ -160,6 +162,7 @@ def test_extra_args() -> None:
     assert _option(bridge, "--mpe-config") == "cfg/mpe.json"
     assert _option(bridge, "--rhythm-config") == "cfg/rhythm.json"
     assert _option(bridge, "--bass-config") == "cfg/bass.json"
+    assert _option(bridge, "--home-config") == "cfg/home.json"
     # --bridge-args is split, not passed as one token.
     assert "--change-count" in bridge and "2" in bridge
     assert "--temperature" in bridge and "0.2" in bridge
@@ -224,6 +227,7 @@ def test_check_mode_is_side_effect_free() -> None:
     assert "bass config ok" in text, text
     assert "lead config ok" in text, text
     assert "drone config ok" in text, text
+    assert "home config ok" in text, text
     assert "target ports" in text, text
     print(f"  --check exit={code}; config parsing exercised without children")
 
@@ -318,6 +322,7 @@ def test_start_here_docs() -> None:
         "--no-lead",
         "--lead-config",
         "--drone-config",
+        "--home-config",
     ):
         assert flag in text, f"START_HERE.md must document {flag}"
     # One-time setup facts the owner asked for.
@@ -353,6 +358,7 @@ def test_readme_links() -> None:
     assert "ji_start.scd" in text
     assert "run/ji_station.py" in text
     assert "docs/README_stage8_3d.md" in text
+    assert "docs/README_stage8_4.md" in text
     assert STAGE_DOC.exists(), STAGE_DOC
     assert OLD_STAGE_DOC.exists(), OLD_STAGE_DOC
     stage = STAGE_DOC.read_text(encoding="utf-8")

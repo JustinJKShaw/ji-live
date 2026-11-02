@@ -51,7 +51,7 @@ import random
 from dataclasses import dataclass
 from fractions import Fraction
 from numbers import Real
-from typing import Iterable, Sequence
+from typing import Iterable, Mapping, Sequence
 
 MAX_SET_SIZE = 12
 DEFAULT_TARGET_SIZE = 7
@@ -228,6 +228,100 @@ class OctaveEvent:
     new_octave: int
     glide_time: float
     reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class SetSnapshot:
+    """Immutable copy of the engine's class field (Stage 8.4).
+
+    ``ratios`` are octave-reduced pitch classes, sorted ascending and unique;
+    ``anchor`` is the protected drone class (``None`` only for an empty set);
+    ``octaves`` is the analysis voicing as a sorted tuple of ``(ratio, octave)``
+    pairs.  Snapshots are the currency of ``control/home.py``: a home slot, a
+    history entry, and a return target are all one of these.
+
+    The tuple is canonical (sorted), so two engines holding the same classes
+    produce equal snapshots even if the classes were inserted in a different
+    order.
+    """
+
+    ratios: tuple[float, ...]
+    anchor: float | None = None
+    octaves: tuple[tuple[float, int], ...] = ()
+
+    @classmethod
+    def create(
+        cls,
+        ratios: Sequence[float],
+        anchor: float | None = None,
+        octaves: Sequence[tuple[float, int]] | Mapping[float, int] | None = None,
+    ) -> "SetSnapshot":
+        """Build a canonical snapshot from loose values (folds and sorts)."""
+
+        if isinstance(ratios, (str, bytes)):
+            raise TypeError("ratios must be an iterable of real numbers")
+        classes: list[float] = []
+        for raw in ratios:
+            folded = fold_ratio(raw)
+            if folded not in classes:
+                classes.append(folded)
+        classes.sort()
+
+        folded_anchor: float | None = None
+        if anchor is not None:
+            folded_anchor = fold_ratio(anchor)
+            if folded_anchor not in classes:
+                raise ValueError("snapshot anchor is not in the class set")
+
+        pairs: dict[float, int] = {}
+        if octaves is not None:
+            items = octaves.items() if isinstance(octaves, Mapping) else octaves
+            for ratio, octave in items:
+                folded = fold_ratio(ratio)
+                if folded not in classes:
+                    raise ValueError("snapshot octave class is not in the set")
+                if isinstance(octave, bool) or not isinstance(octave, int):
+                    raise TypeError("snapshot octaves must be integers")
+                pairs[folded] = int(octave)
+        return cls(
+            ratios=tuple(classes),
+            anchor=folded_anchor,
+            octaves=tuple(sorted(pairs.items())),
+        )
+
+    @property
+    def classes(self) -> tuple[float, ...]:
+        """The pitch classes, sorted (alias of :attr:`ratios`)."""
+
+        return self.ratios
+
+    @property
+    def class_set(self) -> frozenset[float]:
+        """The pitch classes as a set, for membership/distance tests."""
+
+        return frozenset(self.ratios)
+
+    @property
+    def size(self) -> int:
+        return len(self.ratios)
+
+    def octave_map(self) -> dict[float, int]:
+        """Copy of the analysis voicing as a ``ratio -> octave`` dict."""
+
+        return dict(self.octaves)
+
+    def octave_of(self, ratio: float, default: int = 0) -> int:
+        """The analysis octave stored for ``ratio`` (``default`` when absent)."""
+
+        folded = fold_ratio(ratio)
+        for candidate, octave in self.octaves:
+            if candidate == folded:
+                return octave
+        return int(default)
+
+    def __str__(self) -> str:  # pragma: no cover - diagnostics only
+        anchor = "none" if self.anchor is None else f"{self.anchor:.6f}"
+        return f"SetSnapshot({len(self.ratios)} classes, anchor={anchor})"
 
 
 class MutationEngine:
@@ -437,6 +531,104 @@ class MutationEngine:
         """Deprecated alias for :meth:`set_analysis_octave`."""
 
         self.set_analysis_octave(ratio, octave)
+
+    # ------------------------------------------------------------------
+    # Stage 8.4: snapshots and reseeding (additive, no algorithm change)
+    # ------------------------------------------------------------------
+
+    def reseed(self, seed: int | None) -> None:
+        """Replace the engine RNG (used when a journey starts).
+
+        The class field and voicing are untouched; only the next random draw
+        changes.  ``None`` reseeds from system entropy, matching
+        ``random.Random(None)``.
+        """
+
+        if seed is not None and (isinstance(seed, bool) or not isinstance(seed, int)):
+            raise TypeError("seed must be an integer or None")
+        self._rng = random.Random(seed)
+
+    def snapshot(self) -> SetSnapshot:
+        """Public, immutable copy of ``(ratios, anchor, octaves)``."""
+
+        return SetSnapshot(
+            ratios=tuple(sorted(self._ratios)),
+            anchor=self._anchor_ratio,
+            octaves=tuple(sorted(self._octaves.items())),
+        )
+
+    def apply_snapshot(self, snapshot: SetSnapshot | Sequence[float] | object) -> None:
+        """Set ratios, anchor and voicing octaves exactly (used by Back).
+
+        ``snapshot`` may be a :class:`SetSnapshot`, any object exposing
+        ``ratios``/``anchor``/``octaves`` attributes, or a
+        ``(ratios, anchor, octaves)`` tuple.  Ratios are octave-folded,
+        deduplicated and sorted; the anchor (when not ``None``) must survive;
+        octaves must lie in ``octave_min..octave_max``.  Classes with no stored
+        octave default to 0.
+
+        Invalid input raises ``ValueError`` and leaves the engine untouched.
+        This deliberately does not reuse the private ``_snapshot()/_restore()``
+        rollback pair used by :meth:`mutate_many`.
+        """
+
+        ratios_raw, anchor_raw, octaves_raw = _snapshot_parts(snapshot)
+        try:
+            if isinstance(ratios_raw, (str, bytes)):
+                raise TypeError("ratios must be an iterable of real numbers")
+            cleaned: list[float] = []
+            for raw in ratios_raw:
+                folded = fold_ratio(raw)
+                if folded not in cleaned:
+                    cleaned.append(folded)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"invalid snapshot ratios: {exc}") from None
+        if not cleaned:
+            raise ValueError("snapshot must contain at least one class")
+        if len(cleaned) > self.max_size:
+            raise ValueError(
+                f"snapshot has {len(cleaned)} classes; max_size is {self.max_size}"
+            )
+        cleaned.sort()
+
+        anchor: float | None = None
+        if anchor_raw is not None:
+            try:
+                anchor = fold_ratio(anchor_raw)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"invalid snapshot anchor: {exc}") from None
+            if anchor not in cleaned:
+                raise ValueError("snapshot anchor is not in the class set")
+
+        octaves: dict[float, int] = {}
+        try:
+            items = (
+                octaves_raw.items()
+                if isinstance(octaves_raw, Mapping)
+                else (octaves_raw or ())
+            )
+            for entry in items:
+                ratio, octave = entry
+                folded = fold_ratio(ratio)
+                if folded not in cleaned:
+                    raise ValueError(
+                        "snapshot octave class is not in the class set"
+                    )
+                if isinstance(octave, bool) or not isinstance(octave, int):
+                    raise TypeError("snapshot octaves must be integers")
+                if not self.octave_min <= octave <= self.octave_max:
+                    raise ValueError("snapshot octave is outside the allowed range")
+                octaves[folded] = int(octave)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"invalid snapshot octaves: {exc}") from None
+        for ratio in cleaned:
+            octaves.setdefault(ratio, 0)
+
+        # Everything validated: commit in one step.
+        self._ratios = cleaned
+        self._octaves = octaves
+        self._anchor_ratio = anchor
+        self._last_removed_ratio = None
 
     # ------------------------------------------------------------------
     # Mutation
@@ -1066,6 +1258,24 @@ class MutationEngine:
 def _within_stepwise_window(candidate: float, reference: float) -> bool:
     relative = candidate / reference
     return STEPWISE_LOW <= relative <= STEPWISE_HIGH
+
+
+def _snapshot_parts(
+    snapshot: SetSnapshot | Sequence[float] | object,
+) -> tuple[Iterable[float], float | None, Iterable[tuple[float, int]] | Mapping[float, int]]:
+    """Return ``(ratios, anchor, octaves)`` from a snapshot-like object."""
+
+    if isinstance(snapshot, SetSnapshot):
+        return snapshot.ratios, snapshot.anchor, snapshot.octaves
+    if isinstance(snapshot, tuple) and len(snapshot) == 3:
+        return snapshot[0], snapshot[1], snapshot[2]
+    try:
+        return snapshot.ratios, snapshot.anchor, snapshot.octaves  # type: ignore[attr-defined]
+    except AttributeError:
+        raise ValueError(
+            "snapshot must provide ratios, anchor and octaves"
+        ) from None
+
 
 
 def _as_positive_float(value: Real, label: str) -> float:
