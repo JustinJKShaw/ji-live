@@ -132,12 +132,18 @@ class AnchorDrone:
         ratios: list[float] | tuple[float, ...],
         anchor: float | None,
         fundamental: float,
+        *,
+        transient: bool = False,
     ) -> MPEPitch | None:
         """Follow one snapshot of the mutation engine.
 
         The snapshot is taken by the bridge; the drone never reads the engine.
         Returns the pitch that is now sounding, or ``None`` if the snapshot was
         empty.
+
+        ``transient=True`` is one step of a class glide (Stage 8.4.1): the
+        drone retunes/bends exactly as usual, but the per-set log line is
+        suppressed so a melt prints one line instead of one per 30 Hz step.
         """
 
         with self._lock:
@@ -179,10 +185,11 @@ class AnchorDrone:
             self._pitch = pitch
             self._sounding = True
 
-        print(
-            f"[DRONE] anchor={_fmt_ratio(ratio)} freq={frequency:.2f} "
-            f"note={pitch.note} bend={pitch.bend} ({action})"
-        )
+        if not transient:
+            print(
+                f"[DRONE] anchor={_fmt_ratio(ratio)} freq={frequency:.2f} "
+                f"note={pitch.note} bend={pitch.bend} ({action})"
+            )
         return pitch
 
     # Alias used by callers that think in set-update terms.
@@ -1379,15 +1386,24 @@ class DroneRig:
         ratios: Sequence[float],
         anchor: float | None,
         fundamental: float,
+        *,
+        transient: bool = False,
     ) -> MPEPitch | None:
-        """Store the snapshot; ``hold`` forwards to :class:`AnchorDrone` exactly."""
+        """Store the snapshot; ``hold`` forwards to :class:`AnchorDrone` exactly.
+
+        ``transient=True`` marks one step of a Stage 8.4.1 class glide; the
+        snapshot is stored and (in ``hold`` mode) followed, but the per-set log
+        line is suppressed.
+        """
 
         with self._lock:
             self._snapshot = (list(ratios), anchor, float(fundamental))
             self._version += 1
             mode = self._settings.mode
         if mode == "hold":
-            return self.anchor.on_set(ratios, anchor, fundamental)
+            return self.anchor.on_set(
+                ratios, anchor, fundamental, transient=transient
+            )
         # pulse/bend read the snapshot at their next note/cycle; a mutation
         # during a slide is deferred to the next cycle (documented).
         return None

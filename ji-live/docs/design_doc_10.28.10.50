@@ -616,7 +616,19 @@ Given set `S` (3 ≤ |S| ≤ 12, target 7) and parameters `randomness ∈ [0,1]`
 
 **Action selection:** add/remove/replace are weighted by distance from `targetSize`; no action is forced except when at a boundary (add below 3, remove/replace at 12). The set does not fill to 12.
 
-**Batch width:** `changeCount` selects how many sequential edits one trigger applies. `MutationEngine.mutate_many()` generates each edit against the evolving set, applies all of them, and rolls the engine back if any step fails. The bridge sends one final `/ji/freqset/update`, so a batch is one audible retune, not several intermediate sets. `maxChanges` is a constructor/CLI ceiling (default 3, maximum 12); the OSC change-count is clamped to it. Action policy still keeps the set at 3–12.
+**Batch width:** `changeCount` selects how many sequential edits one trigger applies. `MutationEngine.mutate_many()` generates each edit against the evolving set, applies all of them, and rolls the engine back if any step fails. The bridge broadcasts one set change, so a batch is one audible event, not several unrelated ones. `maxChanges` is a constructor/CLI ceiling (default 3, maximum 12); the OSC change-count is clamped to it. Action policy still keeps the set at 3–12.
+
+**Stage 8.4.1 — the replacement melt.** The engine still applies the batch
+atomically; only the *broadcast* of a replacement is intermediate. An event with
+both `removedRatio` and `newRatio` (`stepwise` or `replaced`) makes the class
+itself travel from the old ratio to the new one over the Glide knob time, cents-
+linearly and at 30 Hz; pure adds/removes still snap. `control/glide.py` builds
+the intermediate `SetSnapshot`s (`build_glide_plan`) and `JIBridge.send_snapshot`
+fans each one out to sclang, the drone/arp/bass/lead and (only at the final
+step) the UI. The engine's state, history, home distance and journey counter are
+final from the moment the mutation lands. `propose_mutation()` /
+`mutate_many()` are untouched; `tests/test_mutation.py` passes unmodified. See
+§6.19 and `docs/README_stage8_4.md` §6.1 for the contract.
 
 **Candidate generation:**
 - For each current class `r` and each interval in a rational vocabulary, generate `foldOctave(r * q)`.
@@ -659,7 +671,7 @@ reason ∈ {"added", "removed", "replaced", "stepwise"}
 
 MutationBatch(events: tuple[MutationEvent, ...], glideTime)
 ```
-`newRatio=None` for pure removal; `removedRatio=None` for pure addition. A single-change trigger still returns a `MutationEvent`; a batch trigger returns `MutationBatch` with the already-applied edits.
+`newRatio=None` for pure removal; `removedRatio=None` for pure addition. A single-change trigger still returns a `MutationEvent`; a batch trigger returns `MutationBatch` with the already-applied edits. Since Stage 8.4.1 `glideTime` is the **replacement melt** time (the Glide knob), not a retune of the whole set; an event with both ratios set glides, a pure add/remove ignores it and snaps.
 
 **Manual trigger only.** No auto-clocking. MIDI mapping in Stage 8.
 
@@ -1472,6 +1484,15 @@ slot, `back`, or a transport stop cancels a pending return with one log line.
 Every batch reuses `JIBridge.send_set`, so sclang, MIDI (drone/arp/bass/lead),
 the UI and the history all see it.
 
+**Class glide interaction (Stage 8.4.1).** A return batch is a *planned* set
+swap, not a mutation, so it uses `return_glide` / the Glide knob on `send_set`
+and never the intermediate 30 Hz stream. Any overlap goes the other way: a new
+mutation, `Return`/`Go`, `Back` or `Jump` cancels an active class glide first
+with `[GLIDE] cancelled by …` and one final snap, then does its normal work. A
+transport stop does not cancel a glide (it is a set morph, not a note). The
+Stage 8.5 state load must call `JIBridge.cancel_glide("load")` before restoring
+a snapshot; that is the only cross-feature hook.
+
 **Surface.** `/ji/home/capture|clear|go` (slot), `/ji/home/return|jump|back`
 (none), `/ji/home/set_auto|set_every|set_seed|set_drift|set_glide`, all on
 `PHASE_HOME` (stopped → immediate). `/ji/home/state` is 13 values: has_home,
@@ -1497,8 +1518,9 @@ returns, anchor rules, journey determinism, auto return, all four cancellations,
 drift cap + fallback, Back/redo, OSC handlers and state shape, phase order, no
 mido import), `tests/test_quantize.py` (home before mutation at one beat),
 `tests/test_ui.py` (builders/parser/store/controller + Qt Home group),
-`tests/test_startup.py` (`--home-config`, `--check`). Human acceptance stays in
-`docs/README_stage8_4.md`.
+`tests/test_startup.py` (`--home-config`, `--check`), and `tests/test_glide.py`
+(planner/scheduler plus the bridge cancel and fan-out rules of §6.5). Human
+acceptance stays in `docs/README_stage8_4.md`.
 
 ---
 
@@ -1513,7 +1535,7 @@ mido import), `tests/test_quantize.py` (home before mutation at one beat),
 | `/ji/mutation/set_randomness` | float [0,1] | Control → Bridge | 2 ✅ |
 | `/ji/mutation/set_dissonance_bias` | float [-1,1] | Control → Bridge | 2 ✅ |
 | `/ji/mutation/set_stepwise_bias` | float [0,1] | Control → Bridge | 2 ✅ |
-| `/ji/mutation/set_glide_time` | float ≥0 | Control → Bridge | 2 ✅ |
+| `/ji/mutation/set_glide_time` | float ≥0 | Control → Bridge | 2 ✅ (8.4.1: stepwise/replaced class-melt time; pure add/remove snaps at 0.005 s) |
 | `/ji/mutation/set_change_count` | number (clamped 1..max_changes) | Control → Bridge | 3.5 ✅ |
 | `/ji/mutation/set_temperature` | float [0,1] | Control → Bridge | 3.5 ✅ |
 | `/ji/mutation/set_anchor_mobility` | float [0,1] | Control → Bridge | 3.5 ✅ |
@@ -1646,7 +1668,7 @@ mido import), `tests/test_quantize.py` (home before mutation at one beat),
 | `/ji/event/loop` | [int, string] | Bridge → Visual | 11 |
 | `/ji/event/drone` | float (Hz) | Bridge → Visual | 11 |
 
-Stage 3 does **not** send `/ji/mutation/apply` or any message directly to scsynth. The complete set is sent on `/ji/freqset/update`; sclang applies it to the verified nearest-class lookup. A multi-edit batch sends one `/ji/freqset/update` with the final set and one glide time, not intermediate sets. **Stage 7 adds the UI control/status addresses above**: the GUI sends mutation controls to the bridge (9000), autotune/loop controls directly to sclang (57120), and listens for status on 9001. The Stage 3 `/ji/freqset/update` contract and Stage 6 MIDI path are unchanged. **Stage 8.2 adds the groove and quantize rows above**: UI groove edits and the existing mutation/MIDI/drum-toggle requests are queued to the next Python quarter beat while the transport runs, and applied immediately while it is stopped.
+Stage 3 does **not** send `/ji/mutation/apply` or any message directly to scsynth. The complete set is sent on `/ji/freqset/update`; sclang applies it to the verified nearest-class lookup. A multi-edit batch is one broadcast of the final set and one glide time, not unrelated intermediate sets. **Stage 8.4.1 refines this**: a stepwise/replaced event deliberately streams the moving class over the Glide knob time (30 Hz, `steps+1` bounded updates, `GLIDE_RATE_HZ`); pure add/remove edits still send exactly one update. **Stage 7 adds the UI control/status addresses above**: the GUI sends mutation controls to the bridge (9000), autotune/loop controls directly to sclang (57120), and listens for status on 9001. The Stage 3 `/ji/freqset/update` contract and Stage 6 MIDI path are unchanged. **Stage 8.2 adds the groove and quantize rows above**: UI groove edits and the existing mutation/MIDI/drum-toggle requests are queued to the next Python quarter beat while the transport runs, and applied immediately while it is stopped.
 
 **Stage 8.3c adds the sync/evolve rows above and widens `/ji/arp/state` to 17
 values**; the phase snap is triggered by the bridge when those settings apply,
@@ -2136,6 +2158,7 @@ subphases between increments.
 | 8.2 | Groove generation: pattern presets, density, syncopation, swing, probability, per-step lane grid — plus beat-quantized state changes (mutation, toggles, drum rate, groove edits land on the next quarter beat) | ✅ Owner-confirmed 2026-10-31 |
 | 8.3 | More MIDI voices: bass first (monophonic + optional sub channel), then arp parameters, a one-entry startup, a beat-synced/self-evolving arp, and the lead/melody engine + drone pad options; further buses later | 🟡 8.3a owner-confirmed; 8.3b/8.3c built, awaiting human acceptance; 8.3d built, awaiting human acceptance |
 | 8.4 | Home sets + deterministic journeys + smooth return: four slots, seeded journeys, optional drift cap, Back, beat-spaced minimal return (the frequency-set half of pattern/sequencing mutation) | 🟡 Built, awaiting human; MIDI pattern recall moved to 8.5 |
+| 8.4.1 | Stepwise/replaced class glide: the replaced class melts from its old ratio to its new one over the Glide knob time, for every voice (MIDI included); pure add/remove snaps | ✅ Owner-confirmed 2026-11-02 |
 | 8.5 | State save/recall + seeded reproduction: JSON snapshot of frequency set, mutation controls, rhythm, drums, MIDI voices, loop settings; restore without restart | ⬜ Planned |
 | 8.6 | Loop options: more loops, per-loop routing/gain/overdub, loop-player autotune controls, loop-file persistence | ⬜ Planned |
 | 8.7 | Optional: MIDI-triggered mutation mapping and SC-side VST hosting | ⬜ Optional |
@@ -2518,11 +2541,12 @@ unchanged when no visual subscriber is present.
 | 5.5 | ✅ Complete | Live rig: two autotuned inputs + two loops on SC 0/1/2/3, Python mutation bridge; `tests/sc/test_live_rig.scd`, `config/live_rig_routing.json`, `README_live_rig.md`. Four mono tracks in Ableton. Owner reported all sound checks passed (2026-10-30), including the adjustable loop length (8 s default). |
 | 6 | ✅ Complete — owner-confirmed 2026-10-30 | Two monophonic MPE buses: anchor drone (Bus 1) + set arp (Bus 2). Owner confirmed ports, calibration, drone/arp, and no stuck notes; existing audio unchanged. Pure Python tests pass. |
 | 7 | ✅ Owner-confirmed 2026-10-31 | Minimal Performance GUI: one PyQt6 window for mutation, live autotune, loop transport/length, and status. Stage 7.1 adds Drone/Arp switches. |
-| 8 | 🟡 In progress (iterative) | Performance expansion. 8.1 (rhythm foundation + drum engine) and 8.2 (groove + beat-quantized state) are owner-confirmed; 8.3a (monophonic bass, `/ji/bass/*`, Bass GUI group) is owner-confirmed; 8.3b (arp parameters + one-entry startup), 8.3c (beat-synced arp + self-evolution) and 8.3d (lead/melody + drone pad modes) are implemented and agent-verified, awaiting human; 8.4 (home sets + smooth return) is implemented and agent-verified, awaiting human; 8.5–8.7 remain. |
+| 8 | 🟡 In progress (iterative) | Performance expansion. 8.1 (rhythm foundation + drum engine) and 8.2 (groove + beat-quantized state) are owner-confirmed; 8.3a (monophonic bass, `/ji/bass/*`, Bass GUI group) is owner-confirmed; 8.3b (arp parameters + one-entry startup), 8.3c (beat-synced arp + self-evolution) and 8.3d (lead/melody + drone pad modes) are implemented and agent-verified, awaiting human; 8.4 (home sets + smooth return) is implemented and agent-verified, awaiting human; 8.4.1 (stepwise/replaced class glide) is owner-confirmed (2026-11-02); 8.5–8.7 remain. |
 | 8.1 | ✅ Owner-confirmed 2026-10-31 | Tempo/meter/transport, free/beat loops with per-loop lengths, drum MIDI on Bus 3, 16 lane toggles, half/normal/double time. |
 | 8.2 | ✅ Owner-confirmed 2026-10-31 | Groove presets/density/syncopation/swing/probability/seed, 16-lane step grid (32-column cap), and a next-quarter-beat state queue for mutation/octave/MIDI/drum enables, rate, lanes, and groove edits. Immediate while transport is stopped. Beat-mode loop scheduling fixed in 8.2.2. |
 | 8.3 | 🟡 8.3a owner-confirmed; 8.3b/8.3c/8.3d awaiting human | 8.3a: monophonic transport-synced JI bass on Bus 4, pulse/techno/chaos presets, pitch/rhythm controls, seeded line, optional sub channel, `/ji/bass/*` + Bass GUI group. 8.3b: mutable arp parameters (step/gate/velocity/octaves/shared mode/order/seed) with `/ji/arp/*` + `/ji/arp/state` + a compact Arp GUI group on `PHASE_ARP`, plus the one-sclang/one-Python startup path (`ji_start.scd`, `run/ji_station.py`, `docs/START_HERE.md`). 8.3c: `Sync free/beat` with `1/4`–`1/8T` divisions snapped to the bridge BPM, and `Evolve` every N beats with a depth control (both off by default). 8.3d: lead/melody voice on optional Bus 5 (set-relative motif + ratio hint so mutations keep the line, eight seeded variations, `Vary`/`variation_bars`, groove-linked swing, transport-gated) and drone pad modes `hold`/`pulse`/`bend` (derived bend cycle), with `/ji/lead/*`, `/ji/drone/*`, two state messages, and compact Lead + Drone modes GUI groups (`--lead` ships off). |
 | 8.4 | 🟡 Built — awaiting human | Home sets: four slots, deterministic seeded journeys, optional drift cap, Back, and a beat-spaced return that lands exactly home in `ceil(distance/max_changes)` beats. `/ji/home/*`, 13-value `/ji/home/state`, compact Home GUI group, `config/home_config.json`, `--home-config`. `PHASE_HOME` inserted first. |
+| 8.4.1 | ✅ Owner-confirmed 2026-11-02 | Stepwise/replaced **class glide**: the Glide knob is the replacement melt time, not a global retune. `control/glide.py` (`GlidePlan`, `build_glide_plan`, `GlideScheduler`), `JIBridge.send_snapshot` transient fan-out, `ArpEngine.on_set(rebuild=…)` + trigger-time `resolve_note`, additive transient logging suppression in drone/bass, Glide tooltip/status. Pure add/remove snaps at 0.005 s; a new mutation/Return/Go/Back/Jump cancels a melt. `tests/test_glide.py`. |
 | 9 | ⬜ Planned | Granular & glitch FX in SC, pitch-quantized to the set, with GUI controls. |
 | 10 | ⬜ Planned | GUI UX & aesthetics after the feature set stabilizes. |
 | 11 | ⬜ Deferred | Visual-half groundwork: OSC event broadcast for an external visual process. |
@@ -3018,6 +3042,8 @@ not to automatic mutation.
 ---
 
 | 8.4.0 | 2026-11-01 | **Stage 8.4 home sets, deterministic journeys and smooth return implemented — awaiting human acceptance.** `control/mutation.py` gained the immutable `SetSnapshot` and exactly three additive methods: `reseed(seed)` (journey start), `snapshot()` (public immutable copy) and `apply_snapshot(snapshot)` (validated exact restore for Back/jump/landing; `ValueError` with the state untouched on bad input). `propose_mutation()`/`mutate_many()` are unchanged; `tests/test_mutation.py` passes unmodified and `tests/test_home.py` pins a recorded seed-5 sequence, so the owner's "will likely require modifications to the mutation algorithm" concern is answered with policy, not algorithm. Added `control/home.py` (`HomeConfig` with clamps, `HomeState`, pure `HomePlanner`/`plan_return` with exact `ceil(distance/max_changes)` batches, voice-led nearest pairing, size-safe ordering and the home anchor added last, and `HomeManager` with four slots, active home, journey counter, bounded history/redo and a planner cache). `control/quantize.py` inserts `PHASE_HOME = 0` and shifts the older phases up one (`home, mutation, octave, groove, drums, bass, arp, lead, drone, midi`). `control/ji_bridge.py` owns the manager and the 13-value `/ji/home/state`, queues capture/clear/go/return/jump/back on `PHASE_HOME` (immediate while stopped, where the whole return collapses to one set change and one update), plays a running return as exactly one `send_set(return_glide)` batch per quarter beat self-scheduled from inside the previous batch, implements the 8-try drift cap, the journey counter/auto return, Back/jump/history, and cancels a pending return on mutation/octave/go/back/transport stop with one log line. `control/osc_server.py` gained the eleven `/ji/home/*` handlers and the additive `apply_trigger()`/`announce()` split that lets the drift policy apply, inspect and roll back before announcing; `trigger()` is exactly that pair. `ui/osc_control.py` gained the builders/validators, `HomeStatus`/`parse_home_state`, the store field and controller methods; `ui/ji_ui.py` gained a one-row **Home** group (slot, Set home/Go/Clear, Return/Back/Jump, Auto/Every/Drift/Seed, status line, disabled states, signal-blocked sync). Added `config/home_config.json` (`auto: false`, `every: 8`, `seed: 1`, `max_drift: 0`, `return_glide: 0.06`, `history_depth: 64`) and `run/ji_station.py --home-config` plus `--check` output. Added `tests/test_home.py`; additive `tests/test_quantize.py` (home before mutation at one beat), `tests/test_ui.py` (builders/parser/store/controller + Qt Home group) and `tests/test_startup.py` (`--home-config`, `--check`); `tests/test_lead.py` only updated its pinned `PHASE_LEAD` number (6 → 7) because the renumber is mandated. Added `docs/README_stage8_4.md`; updated `docs/START_HERE.md`, the root README, `docs/README_stage8_3d.md`, and this document. No sclang file, SynthDef, audio DSP, `/ji/freqset/update` contract, MIDI voice, or Stage 5.5 audio map changed; the shipped `auto: false` keeps the accepted rig byte-identical until a home is captured. Agent verification: every pure harness passes (`test_mutation`, `test_mutation_controls`, `test_rhythm`, `test_groove`, `test_quantize`, `test_bass`, `test_arp`, `test_lead`, `test_drone`, `test_home`, `test_startup`, `test_mpe --pure`, `test_ui --pure`); the Qt test skipped (no Qt system libraries); sclang/audio/MIDI/Ableton/IAC/live GUI were unavailable. 8.4 awaits the human checklist. |
+| 8.4.1 | 2026-11-01 | **Stage 8.4.1 stepwise/replaced class glide implemented — awaiting human acceptance.** The Mutation Glide knob is now the replacement melt time (owner, 2026-11-01; follow-up "replaced events are included"), not a global autotune retune. Added `control/glide.py` (pure `GlidePlan` / `build_glide_plan` / `GlideScheduler`: cents-linear log-ratio interpolation, pure edits applied at t=0, anchor travel/fallback, dedupe on a class collision, `steps+1` snapshots at exact `k*T/steps`, 30 Hz clamped 5..60, lazy daemon worker, injectable clock, idempotent cancel). `control/ji_bridge.py` gained `send_snapshot()` (one sclang update, transient MIDI fan-out, final-only UI mirror and log), a byte-identical `send_set` wrapper, the pre-change capture in `_mutate`, the `_on_event` glide/final/snap paths, one `[GLIDE]` line per glide, cancel-first in `_mutate` / `_begin_return` / `_jump_home` / `_back_home`, the public `cancel_glide()` hook for 8.5, and a glide stopped by `bridge.stop()`. Pure adds/removes now use the 0.005 s sclang minimum instead of the knob. `control/midi_rig.py` threads a `transient` flag; `control/arp.py` gained `on_set(rebuild=...)` and trigger-time `resolve_note` (nearest current ratio in cents, same octave offset); drone/bass gained additive transient log suppression. `ui/ji_ui.py` gained the Glide tooltip and a `stepwise glide 0.150 s` status line. Added `tests/test_glide.py` and additive arp transient tests. No sclang, SynthDef, audio DSP, MIDI voice, config key or OSC address changed; the Glide range (0..2 s, default 0.15) is unchanged. Agent verification: every pure harness passes, including unmodified `tests/test_mutation.py`. Audio/MIDI/Ableton/IAC/sclang/live GUI were unavailable; 8.4.1 awaits the human checklist. |
+| 8.4.2 | 2026-11-02 | **Stage 8.4.1 owner-confirmed.** The owner ran the live rig and approved the stepwise/replaced class glide: the replaced class melts on the autotuned audio and the MIDI voices, pure add/remove still snaps, Glide 0 is effectively instant, and a second mutation / Return / Go / Back / Jump cancels a melt cleanly. `docs/README_stage8_4.md`, the root `README.md`, and the status tables now record the human acceptance. No code changed in this entry; Stage 8.4's own home/return checklist remains separately pending. |
 
 ## 15. Appendix
 

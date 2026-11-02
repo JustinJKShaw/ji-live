@@ -80,11 +80,18 @@ try:  # Support both ``python -m control.ji_bridge`` and direct execution.
     from . import arp as arp_module
     from . import bass as bass_module
     from . import drone as drone_module
+    from . import glide as glide_module
     from . import home as home_module
     from . import lead as lead_module
     from .drums import DEFAULT_LANE_MASK, DRUM_RATE_DEFAULT
     from .groove import Groove, validate_preset
-    from .mutation import MutationBatch, MutationEngine, MutationEvent, OctaveEvent
+    from .mutation import (
+        MutationBatch,
+        MutationEngine,
+        MutationEvent,
+        OctaveEvent,
+        SetSnapshot,
+    )
     from .osc_server import MutationOSCServer
     from .quantize import (
         PHASE_ARP,
@@ -104,6 +111,7 @@ except ImportError:  # pragma: no cover - exercised only by direct execution
     import arp as arp_module  # type: ignore[no-redef]
     import bass as bass_module  # type: ignore[no-redef]
     import drone as drone_module  # type: ignore[no-redef]
+    import glide as glide_module  # type: ignore[no-redef]
     import home as home_module  # type: ignore[no-redef]
     import lead as lead_module  # type: ignore[no-redef]
     from drums import DEFAULT_LANE_MASK, DRUM_RATE_DEFAULT  # type: ignore[no-redef]
@@ -113,6 +121,7 @@ except ImportError:  # pragma: no cover - exercised only by direct execution
         MutationEngine,
         MutationEvent,
         OctaveEvent,
+        SetSnapshot,
     )
     from osc_server import MutationOSCServer  # type: ignore[no-redef]
     from quantize import (  # type: ignore[no-redef]
@@ -153,11 +162,50 @@ HOME_STATE_ADDRESS = "/ji/home/state"
 MAX_RATIOS = 12
 
 
+def build_snapshot_args(
+    snapshot: SetSnapshot, fundamental: float, glide_time: float
+) -> list[float]:
+    """Return ``[fundamental, glide_time, ratio_1, ..., ratio_N]`` for a snapshot.
+
+    Pure helper: no sockets, no engine mutation.  Raises ``ValueError`` if the
+    snapshot or glide cannot be represented by the Stage 3 OSC contract.
+    """
+
+    ratios = tuple(snapshot.ratios)
+    if not 1 <= len(ratios) <= MAX_RATIOS:
+        raise ValueError(
+            f"frequency set has {len(ratios)} classes; expected 1..{MAX_RATIOS}"
+        )
+
+    try:
+        fundamental = float(fundamental)
+        glide = float(glide_time)
+        payload = [float(ratio) for ratio in ratios]
+    except (TypeError, ValueError):
+        raise ValueError(
+            "fundamental, glide_time and ratios must be real numbers"
+        ) from None
+
+    if not math.isfinite(fundamental) or fundamental <= 0.0:
+        raise ValueError("fundamental must be finite and strictly positive")
+    if not math.isfinite(glide) or glide < 0.0:
+        raise ValueError("glide_time must be finite and non-negative")
+    if not all(math.isfinite(ratio) and ratio > 0.0 for ratio in payload):
+        raise ValueError("every ratio must be finite and strictly positive")
+    if not all(1.0 <= ratio < 2.0 for ratio in payload):
+        raise ValueError("every ratio must be octave-reduced into [1, 2)")
+
+    return [fundamental, glide, *payload]
+
+
 def build_freqset_args(engine: MutationEngine, glide_time: float) -> list[float]:
     """Return ``[fundamental, glide_time, ratio_1, ..., ratio_N]``.
 
     Pure helper: no sockets, no engine mutation.  Raises ``ValueError`` if the
     engine state or glide cannot be represented by the Stage 3 OSC contract.
+
+    The payload keeps the engine's insertion order (``current_ratios``), so the
+    accepted Stage 3/8.4 byte stream is unchanged.
     """
 
     ratios = engine.current_ratios
@@ -246,6 +294,19 @@ class JIBridge:
         self.quantizer = BeatQuantizer(
             self.rhythm, on_change=self._on_quantize_change
         )
+        # Stage 8.4.1: one bounded class glide at a time.  Constructing the
+        # scheduler creates no thread (like the quantizer); the worker starts
+        # lazily on the first plan.  The stage-8.5 state load calls
+        # ``cancel_glide()`` before restoring a snapshot.
+        self.glide = glide_module.GlideScheduler(self._on_glide_step)
+        self._started = False
+        # ``_mutate`` captures the pre-change snapshot here; ``_on_event``
+        # consumes and clears it, so a direct ``server.trigger()`` outside the
+        # bridge never glides.
+        self._pending_before: SetSnapshot | None = None
+        self._glide_duration = 0.0
+        self._glide_step_seconds = 1.0 / glide_module.GLIDE_RATE_HZ
+        self._glide_cancelling = False
         # Stage 8.4: home slots, journeys, history and the return planner.  The
         # manager is always constructed; empty slots cost nothing and the
         # accepted rig is unchanged until the player captures a home.
@@ -405,6 +466,7 @@ class JIBridge:
         """Start the listener, send the initial set, and print status."""
 
         self.server.start()
+        self._started = True
         print(
             f"[BRIDGE] listening on {self.listen_host}:{self.listen_port}; "
             f"sending to sclang {self.sc_host}:{self.sc_port}"
@@ -455,6 +517,10 @@ class JIBridge:
         # Stop the queue first so no action fires while the server/MIDI rig is
         # shutting down.  (Pending actions are dropped and logged.)
         self.quantizer.stop()
+        # Stage 8.4.1: a class glide never outlives the bridge.  No snap here:
+        # the audio/MIDI rigs are closing too.
+        self._started = False
+        self.glide.stop()
         try:
             self.server.stop()
         finally:
@@ -462,9 +528,65 @@ class JIBridge:
                 self.midi.stop()
 
     def send_set(self, glide_time: float) -> bool:
-        """Send the full current set to sclang.  Returns ``True`` on success."""
+        """Send the full current set to sclang.  Returns ``True`` on success.
+
+        Byte-identical to the Stage 3/8.4 behavior: the payload keeps the
+        engine's insertion order (``current_ratios``), the UI mirror and the
+        single ``[BRIDGE] ->`` log line are unchanged.
+        """
 
         args = build_freqset_args(self.engine, glide_time)
+        return self._send_args(
+            args,
+            self.engine.snapshot(),
+            ui=True,
+            transient=False,
+            log=True,
+        )
+
+    def send_snapshot(
+        self,
+        snapshot: SetSnapshot,
+        glide_time: float,
+        *,
+        ui: bool = True,
+        transient: bool = False,
+        log: bool = True,
+    ) -> bool:
+        """Send one snapshot to every voice.
+
+        The snapshot-aware sibling of :meth:`send_set` (Stage 8.4.1):
+
+        * sclang: one ``/ji/freqset/update [fundamental, glide_time, *ratios]``;
+        * MIDI: ``on_set(ratios, anchor, fundamental, transient=transient)``;
+        * UI: the final set only (``ui=True``), using the engine's final state;
+        * log: one ``[BRIDGE] ->`` line only for a non-transient/final update.
+
+        A transient call is one step of a class glide: the arp keeps its
+        pattern and cursor, the voices follow the moving set, and no per-step
+        Python log line is printed.
+        """
+
+        args = build_snapshot_args(snapshot, self.engine.fundamental, glide_time)
+        return self._send_args(
+            args,
+            snapshot,
+            ui=ui,
+            transient=transient,
+            log=log,
+        )
+
+    def _send_args(
+        self,
+        args: list[float],
+        snapshot: SetSnapshot,
+        *,
+        ui: bool,
+        transient: bool,
+        log: bool,
+    ) -> bool:
+        """Shared send path for :meth:`send_set` and :meth:`send_snapshot`."""
+
         sent = True
         try:
             self.client.send_message(FREQSET_ADDRESS, args)
@@ -475,32 +597,91 @@ class JIBridge:
         # The MIDI rig receives the same snapshot, whether or not the sclang UDP
         # send succeeded.  Before MIDIRig.start it stores the initial snapshot;
         # start applies it so the drone and arp begin from the initial set.
-        self._notify_midi()
+        self._notify_midi(snapshot, transient=transient)
 
         # Stage 7: mirror the resulting state to any listening UI.  This is
         # best-effort and deliberately independent of the sclang send result.
-        self._send_ui_state()
+        if ui:
+            self._send_ui_state()
 
-        if sent:
+        if log and sent:
             print(
                 f"[BRIDGE] -> {FREQSET_ADDRESS} classes={len(args) - 2} "
                 f"glide={args[1]:.3f} fundamental={args[0]:.1f}"
             )
         return sent
 
-    def _notify_midi(self) -> None:
+    def _notify_midi(
+        self, snapshot: SetSnapshot | None = None, *, transient: bool = False
+    ) -> None:
         """Hand a snapshot to the MIDI rig; MIDI errors never break the bridge."""
 
         if self.midi is None:
             return
+        snap = self.engine.snapshot() if snapshot is None else snapshot
         try:
             self.midi.on_set(
-                ratios=list(self.engine.current_ratios),
-                anchor=self.engine.anchor_ratio,
+                ratios=list(snap.ratios),
+                anchor=snap.anchor,
                 fundamental=self.engine.fundamental,
+                transient=transient,
             )
         except Exception as exc:  # deliberately broad: MIDI is non-critical
             print(f"[MIDI] set update failed: {exc}", file=sys.stderr)
+
+    # ------------------------------------------------------------------
+    # Stage 8.4.1: class glide
+    # ------------------------------------------------------------------
+
+    def _on_glide_step(self, snapshot: SetSnapshot, final: bool) -> None:
+        """Scheduler callback: broadcast one intermediate or the final set."""
+
+        if final:
+            # ``cancel(snap=True)`` delivers the final set too; that is a snap,
+            # not a completed melt, so it uses the 5 ms minimum and logs the
+            # cancel line instead of "[GLIDE] done".  ``send_set`` keeps the
+            # final broadcast byte-identical to a normal one-update change.
+            cancelling = self._glide_cancelling
+            self.send_set(
+                glide_module.SNAP_GLIDE_SECONDS
+                if cancelling
+                else self._glide_duration
+            )
+            if not cancelling:
+                print(f"[GLIDE] done ({self._glide_duration:.3f} s)")
+            return
+        # Intermediate step: the same fan-out, but silent and UI-free.  A
+        # retune of one step interval keeps each 30 Hz step reachable without
+        # lagging the whole melt.
+        self.send_snapshot(
+            snapshot,
+            self._glide_step_seconds,
+            ui=False,
+            transient=True,
+            log=False,
+        )
+
+    def _cancel_glide(self, reason: str) -> bool:
+        """Snap an active glide to its final set and log one line.
+
+        Called first by every overlapping set change (a new mutation, a return,
+        a jump, Back).  A transport stop deliberately does not cancel a glide:
+        it is a set morph, not a note.
+        """
+
+        self._glide_cancelling = True
+        try:
+            cancelled = self.glide.cancel(snap=True)
+        finally:
+            self._glide_cancelling = False
+        if cancelled:
+            print(f"[GLIDE] cancelled by {reason}")
+        return cancelled
+
+    def cancel_glide(self, reason: str = "load") -> bool:
+        """Public hook for the Stage 8.5 state load (cancels with a snap)."""
+
+        return self._cancel_glide(reason)
 
     # ------------------------------------------------------------------
     # Stage 7 UI status
@@ -1342,34 +1523,46 @@ class JIBridge:
         """
 
         self._cancel_return("mutation")
-        config = self.home.config
-        home = self.home.home
-        if config.max_drift <= 0 or home is None:
-            self.server.trigger()
-            return
-
+        # A new set change cancels an active class melt first: it snaps to the
+        # previous change's final set, then this mutation starts its own glide.
+        self._cancel_glide("mutation")
         before = self.engine.snapshot()
-        accepted: MutationEvent | MutationBatch | None = None
-        for attempt in range(home_module.MAX_DRIFT_TRIES):
-            if attempt:
-                self.engine.apply_snapshot(before)
-            accepted = self.server.apply_trigger()
-            if accepted is None:
+        self._pending_before = before
+        try:
+            config = self.home.config
+            home = self.home.home
+            if config.max_drift <= 0 or home is None:
+                self.server.trigger()
                 return
-            if self.home.distance(self.engine.snapshot()) <= config.max_drift:
-                self.server.announce(accepted)
-                return
-        self.server.announce(accepted)
-        print(
-            f"[HOME] drift cap exceeded "
-            f"({home_module.MAX_DRIFT_TRIES} tries)"
-        )
+
+            accepted: MutationEvent | MutationBatch | None = None
+            for attempt in range(home_module.MAX_DRIFT_TRIES):
+                if attempt:
+                    self.engine.apply_snapshot(before)
+                accepted = self.server.apply_trigger()
+                if accepted is None:
+                    return
+                if self.home.distance(self.engine.snapshot()) <= config.max_drift:
+                    self.server.announce(accepted)
+                    return
+            self.server.announce(accepted)
+            print(
+                f"[HOME] drift cap exceeded "
+                f"({home_module.MAX_DRIFT_TRIES} tries)"
+            )
+        finally:
+            # ``_on_event`` consumes it on every announced path; clear it so a
+            # failed apply can never glide against a stale snapshot.
+            self._pending_before = None
 
     # -- return / jump / back ------------------------------------------
 
     def _begin_return(self, slot: int | None = None, reason: str = "return") -> bool:
         """Plan and start a smooth return (or apply it whole while stopped)."""
 
+        # A return (or Go) is a new set change: cancel an active class melt
+        # first.  Return/Go share the same log reason.
+        self._cancel_glide("return")
         target_slot = self.home.active_slot if slot is None else int(slot)
         if target_slot < 0:
             print("[HOME] gap: no active home (Set home to capture)")
@@ -1492,6 +1685,7 @@ class JIBridge:
         """Instant exact set swap to the active home (not a smooth return)."""
 
         self._cancel_return("jump")
+        self._cancel_glide("jump")
         slot = self.home.active_slot
         target = self.home.home
         if target is None or slot < 0:
@@ -1512,8 +1706,10 @@ class JIBridge:
         """Restore the immediately previous snapshot (repeated Back walks back)."""
 
         # A go()/return queued for the same beat may have started a return in
-        # the home phase; Back always cancels it first.
+        # the home phase; Back always cancels it first, and an active class
+        # melt is a set change too.
         self._cancel_return("back")
+        self._cancel_glide("back")
         target = self.home.back()
         if target is None:
             print("[HOME] back: already at the oldest snapshot")
@@ -1815,7 +2011,64 @@ class JIBridge:
     # ------------------------------------------------------------------
 
     def _on_event(self, event: MutationEvent | MutationBatch) -> None:
-        self.send_set(event.glide_time)
+        before = self._pending_before
+        self._pending_before = None
+
+        if before is not None and self._started:
+            plan: glide_module.GlidePlan | None
+            try:
+                plan = glide_module.build_glide_plan(
+                    before,
+                    self.engine.snapshot(),
+                    event,
+                    float(event.glide_time),
+                )
+            except (TypeError, ValueError) as exc:
+                print(f"[GLIDE] plan skipped: {exc}", file=sys.stderr)
+                plan = None
+            if plan is not None:
+                self._start_glide(plan)
+                self._print_event(event)
+                # Stage 8.4: history, journey counter, /ji/home/state, auto
+                # return.  The engine is already final; only the broadcast is
+                # intermediate.  This runs once, immediately.
+                self._after_mutation()
+                return
+
+        # No glide: one final set update.  Without a captured ``before`` (a
+        # direct MutationOSCServer.trigger() outside the bridge) or before
+        # bridge.start(), keep the accepted Stage 3 one-update path
+        # byte-identical and drop any pending plan.
+        if before is None or not self._started:
+            self.glide.cancel(snap=False)
+            self.send_set(float(event.glide_time))
+            self._print_event(event)
+            self._after_mutation()
+            return
+
+        # A pure add/remove snaps: the Glide knob is the replacement melt only,
+        # so this update uses sclang's 5 ms minimum instead.
+        self.glide.cancel(snap=False)
+        self.send_set(glide_module.SNAP_GLIDE_SECONDS)
+        self._print_event(event)
+        # Stage 8.4: history, journey counter, /ji/home/state, auto return.
+        self._after_mutation()
+
+    def _start_glide(self, plan: glide_module.GlidePlan) -> None:
+        """Log one line per glide, then start its bounded 30 Hz stream."""
+
+        pairs = ", ".join(
+            f"{old:.6f} -> {new:.6f}" for old, new in plan.pairs
+        )
+        print(
+            f"[GLIDE] replaced {pairs} over {plan.duration:.3f} s "
+            f"({plan.steps} steps)"
+        )
+        self._glide_duration = plan.duration
+        self._glide_step_seconds = min(plan.duration, 1.0 / plan.rate)
+        self.glide.start(plan)
+
+    def _print_event(self, event: MutationEvent | MutationBatch) -> None:
         if isinstance(event, MutationBatch):
             print(
                 f"[BRIDGE] batch changes={event.count} "
@@ -1839,8 +2092,6 @@ class JIBridge:
                 f"size={len(self.engine.current_ratios)} "
                 f"anchor={_fmt_ratio(self.engine.anchor_ratio)}"
             )
-        # Stage 8.4: history, journey counter, /ji/home/state, auto return.
-        self._after_mutation()
 
     def _on_octave(self, event: OctaveEvent) -> None:
         # Octave events move the analysis voicing only; live autotune uses the
@@ -1978,7 +2229,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Stage 7 UI status destination port (default 9001)",
     )
     parser.add_argument("--seed", type=int, default=1)
-    parser.add_argument("--glide-time", type=float, default=0.15)
+    parser.add_argument(
+        "--glide-time",
+        type=float,
+        default=0.15,
+        help=(
+            "stepwise/replaced class melt time in seconds (0 = instant); "
+            "pure add/remove edits snap at 0.005 s"
+        ),
+    )
     parser.add_argument(
         "--max-changes",
         type=int,

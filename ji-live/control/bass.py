@@ -1852,8 +1852,18 @@ class BassRig:
         ratios: Sequence[float],
         anchor: float | None,
         fundamental: float,
+        *,
+        transient: bool = False,
     ) -> None:
+        """Store one snapshot; the next bass step picks from the new pool.
+
+        ``transient=True`` is one step of a Stage 8.4.1 class glide: the pool
+        follows the moving class and only the per-set log line is suppressed.
+        """
+
         self.engine.on_set(ratios, anchor, fundamental)
+        if transient:
+            return
         print(
             f"[BASS] set updated root={1.0:.3f} "
             f"hz={self.engine.fundamental:.3f} pool={len(self.engine.ratios)}"

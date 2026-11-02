@@ -4,6 +4,9 @@
 Every future stage updates it *and* the `--help` text in the same change.
 The old `START_HERE_stage*.txt` files are archival only.
 
+Every GUI control (range, default, what it does) is in
+[docs/GUI_PARAMETERS.md](GUI_PARAMETERS.md).
+
 Two actions start everything:
 
 | # | Where | Action |
@@ -182,6 +185,30 @@ default; the shipped `config/home_config.json` is `every: 8`, `seed: 1`,
 `drift: 0`, `return_glide: 0.06`, `history_depth: 64`. Details:
 [docs/README_stage8_4.md](README_stage8_4.md).
 
+### Stepwise class glide (Stage 8.4.1, runtime, no command)
+
+The Mutation group's **Glide** knob is the **replacement melt** time, not a
+global autotune retune. When a `Mutate` produces a stepwise/replaced event (one
+class disappears and another appears), the class itself travels from its old
+ratio to the new ratio over the knob time (30 Hz, cents-linear) and **every**
+voice follows: live autotune, loops, drone, bass, lead and the arp. The arp keeps
+its pattern shape and plays the nearest current class until the final rebuild;
+the UI updates once at the end.
+
+* `Glide = 0` is effectively instant.
+* A **pure add/remove** has no old→new pair, so it snaps immediately with a
+  0.005 s update glide; the knob does not apply. This is a deliberate change from
+  the older "every mutation retunes over Glide" behavior. The Live Autotune
+  `Retune` knob is still the persistent retune setting for the rest of the rig.
+* A new `Mutate`, `Return`/`Go`, `Back` or `Jump` during a melt cancels it
+  (one `[GLIDE] cancelled by …` line) and snaps to the previous final set; a
+  transport stop does **not** cancel it.
+* Expected log: one `[GLIDE] replaced 1.500000 -> 1.400000 over 0.150 s
+  (5 steps)` line, the sclang receiver's per-update lines, then one
+  `[GLIDE] done (0.150 s)`.
+* No new flag, OSC address or config key: the knob stays 0–2 s, default 0.15.
+  Details: [docs/README_stage8_4.md](README_stage8_4.md) §6.1.
+
 ### Order matters
 
 1. Ableton up (or at least reachable) → 2. `ji_start.scd` → 3. `ji_station.py`.
@@ -202,8 +229,8 @@ canonical tempo/meter/transport when it installs.
 | `--lead` / `--no-lead` | **off** | Stage 8.3d lead on Bus 5. Off by default: without it the bridge never opens Bus 5 and the Lead group shows `disabled`. A missing Bus 5 disables the lead only |
 | `--gui` / `--no-gui` | on | `--no-gui` runs headless (bridge only), e.g. over SSH |
 | `--bridge` / `--no-bridge` | on | `--no-bridge` starts only the GUI (bridge already running elsewhere) |
-| `--interactive` | off | forwards stdin commands to the bridge: `m`/Enter mutate, `o` octave, `c <n>` changes, `t <0..1>` temperature, `a <0..1>` anchor mobility, `g <s>` glide, `s` show, `q` quit |
-| `--glide-time <s>` | `0.15` | autotune glide carried by every mutation event (0 = instant) |
+| `--interactive` | off | forwards stdin commands to the bridge: `m`/Enter mutate, `o` octave, `c <n>` changes, `t <0..1>` temperature, `a <0..1>` anchor mobility, `g <s>` glide melt time, `s` show, `q` quit |
+| `--glide-time <s>` | `0.15` | stepwise/replaced class melt time: the replaced class travels to its new ratio over this time, for every voice (0 = instant). Pure add/remove mutations snap at 0.005 s and ignore it |
 | `--listen-port <n>` | `9000` | bridge UDP listen port; the GUI sends its controls here |
 | `--ui-port <n>` | `9001` | bridge → GUI status port; the GUI listens here |
 | `--sc-port <n>` | `57120` | sclang language port (printed by `ji_start.scd`; change only if it warns) |
@@ -234,7 +261,7 @@ uv run --with python-osc --with mido --with python-rtmidi --with PyQt6 \
 | `--bass` | off | build the bass output (works with or without `--midi`/`--drums`) |
 | `--lead` / `--no-lead` | off | build the lead output on Bus 5 (works with or without `--midi`/`--drums`/`--bass`; a bad config or a missing bus disables the lead only) |
 | `--interactive` | off | stdin command line (see `--interactive` above) |
-| `--glide-time <s>` | `0.15` | same as the launcher flag |
+| `--glide-time <s>` | `0.15` | same as the launcher flag: the stepwise/replaced class melt time |
 | `--listen-host` / `--listen-port` | `127.0.0.1` / `9000` | OSC control listen socket |
 | `--ui-host` / `--ui-port` | `127.0.0.1` / `9001` | UI status destination |
 | `--sc-host` / `--sc-port` | `127.0.0.1` / `57120` | sclang destination for `/ji/freqset/update` and `/ji/rhythm/tempo` |

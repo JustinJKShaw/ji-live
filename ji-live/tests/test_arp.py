@@ -55,7 +55,7 @@ from control.arp import (
 )
 from control.midi_rig import MIDIRig, load_config
 from control.mpe_output import MPEOutput
-from control.mutation import MutationEngine
+from control.mutation import MutationEngine, fold_ratio
 from control.osc_server import MutationOSCServer
 from control.quantize import PHASE_ARP, PHASE_MIDI
 
@@ -739,6 +739,51 @@ def test_pattern_regeneration() -> None:
     print("  octave/shared/seed rebuild from the snapshot; pre-set changes kept")
 
 
+def test_transient_set_update() -> None:
+    print("\n=== Test 7b: a class-glide step keeps the pattern and cursor ===")
+    arp = _arp()
+    pattern = arp.pattern
+    assert pattern is not None
+    order = arp.order_sequence
+    arp._step_index = 3
+    moving = [1.0, 1.2, 1.333333333333, 1.5, 1.6, 1.875]
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        result = arp.on_set(moving, 1.0, FUNDAMENTAL, rebuild=False)
+    assert result is pattern, "a transient call returns the unchanged pattern"
+    assert arp.pattern is pattern, "no rebuild"
+    assert arp.order_sequence == order, "the order is untouched"
+    assert arp._step_index == 3, "the cursor is not reset"
+    assert out.getvalue() == "", "no pattern is printed"
+    snapshot = arp.snapshot
+    assert snapshot is not None and snapshot[0] == moving
+
+    # A pattern note whose ratio is absent plays the nearest current class in
+    # cents, with the same octave offset.
+    by_ratio = {round(note.ratio, 12): note for note in pattern.steps}
+    gone = by_ratio[round(fold_ratio(1.25), 12)]
+    assert not any(abs(gone.ratio - ratio) <= 1e-12 for ratio in moving)
+    resolved = arp.resolve_note(gone)
+    assert abs(resolved.ratio - fold_ratio(1.2)) <= 1e-12, resolved
+    assert resolved.octave == gone.octave
+    assert abs(
+        resolved.frequency
+        - fold_ratio(1.2) * FUNDAMENTAL * (2.0 ** gone.octave)
+    ) <= 1e-9, resolved
+
+    # A surviving ratio is returned unchanged (pattern shape is preserved).
+    survives = by_ratio[round(fold_ratio(1.0), 12)]
+    assert arp.resolve_note(survives) is survives
+
+    # The final non-transient update rebuilds once and resets the cursor.
+    with contextlib.redirect_stdout(io.StringIO()):
+        rebuilt = arp.on_set(moving, 1.0, FUNDAMENTAL)
+    assert rebuilt is arp.pattern
+    assert rebuilt is not pattern
+    assert arp._step_index == 0
+    print("  transient stores silently; nearest-ratio projection; final rebuild")
+
+
 def test_rig_and_missing_bus() -> None:
     print("\n=== Test 8: MIDIRig arp state/setters, midi=False, missing Bus 2 ===")
     config = replace(
@@ -1107,6 +1152,7 @@ def run() -> None:
     test_order_reaches_the_port()
     test_runtime_changes()
     test_pattern_regeneration()
+    test_transient_set_update()
     test_rig_and_missing_bus()
     test_osc_handlers()
     test_bridge_quantization()

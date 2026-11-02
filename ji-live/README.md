@@ -70,6 +70,16 @@ OSC/state surface and the human checklist are in
 [docs/README_stage8_4.md](docs/README_stage8_4.md). The prompt stays at
 [docs/prompts/PROMPT_stage8_4_home_return.md](docs/prompts/PROMPT_stage8_4_home_return.md).
 
+**Stage 8.4.1 is owner-confirmed (2026-11-02).** It makes the Mutation
+**Glide** knob the stepwise/replaced **class melt** time: when a mutation
+replaces one class with another, the class itself travels from the old ratio to
+the new one over the knob time (30 Hz, cents-linear) and every voice follows —
+live autotune, loops, drone, bass, lead and the arp (the arp keeps its pattern
+and plays the nearest current class until the final rebuild). Pure add/remove
+edits snap at 0.005 s and no longer use the knob. No new flag, OSC address or
+config key; no sclang/SynthDef/DSP change. Design and checklist:
+[docs/README_stage8_4.md](docs/README_stage8_4.md) §6.1.
+
 **Start here:** [docs/START_HERE.md](docs/START_HERE.md) is the authoritative
 start/stop/flag sheet. It is updated with every stage. Stage 8.3b details are in
 [docs/README_stage8_3b.md](docs/README_stage8_3b.md); the arp sync/evolution
@@ -96,6 +106,7 @@ ji-live/
 │   ├── bass.py                # Stage 8.3a monophonic JI bass voice
 │   ├── lead.py                # Stage 8.3d lead: motif, variations, scheduler
 │   ├── drone.py               # Stage 6 hold drone + Stage 8.3d pulse/bend
+│   ├── glide.py               # Stage 8.4.1 class-melt planner + scheduler
 │   └── home.py                # Stage 8.4 slots, planner, journeys, history
 ├── ui/                        # PyQt6 GUI, pure OSC layer, sclang UI surface
 ├── config/                    # routing, MPE, rhythm, bass, home, lead, drone JSON
@@ -111,6 +122,7 @@ ji-live/
 │   ├── test_lead.py           # Stage 8.3d lead: motif/consistency/scheduler
 │   ├── test_drone.py          # Stage 8.3d drone: hold/pulse/bend
 │   ├── test_home.py           # Stage 8.4 distance/plan/return/back/drift
+│   ├── test_glide.py          # Stage 8.4.1 class melt + bridge cancel/fan-out
 │   ├── test_startup.py        # launcher/start-file/docs
 │   ├── test_ui.py
 │   └── sc/                    # sclang test scripts
@@ -142,7 +154,8 @@ ji-live/
         ├── PROMPT_stage8_3_bass.md
         ├── PROMPT_stage8_3b_arp_startup.md
         ├── PROMPT_stage8_3d_lead_drone.md
-        └── PROMPT_stage8_4_home_return.md
+        ├── PROMPT_stage8_4_home_return.md
+        └── PROMPT_stage8_5_state_recall.md
 ```
 
 Run all commands from `ji-live/`.
@@ -222,6 +235,7 @@ python -m tests.test_ui --pure
 ## Documentation
 
 - [START HERE — start/stop/flag sheet](docs/START_HERE.md)
+- [GUI parameter reference — every control, one line each](docs/GUI_PARAMETERS.md)
 - [Stage 8.4 home sets / journeys / smooth return](docs/README_stage8_4.md)
 - [Stage 8.3d lead/melody + drone pad modes](docs/README_stage8_3d.md)
 - [Stage 8.3c beat-synced arp + self-evolution](docs/README_stage8_3c.md)
@@ -230,6 +244,8 @@ python -m tests.test_ui --pure
 - [Stage 8.2 groove + beat-quantized state](docs/README_stage8_2.md)
 - [Stage 8.1 rhythm foundation + drum engine](docs/README_stage8.md)
 - [Stage 8.4 home sets / journeys / smooth return prompt](docs/prompts/PROMPT_stage8_4_home_return.md)
+- [Stage 8.4.1 stepwise/replaced class-glide patch prompt](docs/prompts/PROMPT_stage8_4_1_stepwise_glide.md)
+- [Stage 8.5 performance state save/recall prompt](docs/prompts/PROMPT_stage8_5_state_recall.md)
 - [Stage 8.3d lead/melody + drone pad options prompt](docs/prompts/PROMPT_stage8_3d_lead_drone.md)
 - [Stage 8.3b arp + startup prompt](docs/prompts/PROMPT_stage8_3b_arp_startup.md)
 - [Stage 8.3a bass prompt](docs/prompts/PROMPT_stage8_3_bass.md)

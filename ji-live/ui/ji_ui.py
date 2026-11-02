@@ -663,6 +663,13 @@ class MainWindow(QMainWindow):
             knob.valueChanged.connect(
                 lambda value, key=spec.key: self._on_mutation_knob(key, value)
             )
+            if spec.key == "glide_time":
+                # Stage 8.4.1: the knob is the replaced-class melt time, not a
+                # global autotune retune.
+                knob.setToolTip(
+                    "Stepwise/replaced class melt time: the replaced class "
+                    "travels to its new ratio over this time, for every voice."
+                )
             self.mutation_knobs[spec.key] = knob
             layout.addWidget(knob)
 
@@ -3143,6 +3150,8 @@ class MainWindow(QMainWindow):
         for key, value in pending.items():
             if key[0] == "mutation":
                 self._guard(self.controller.set_mutation, key[1], value)
+                if key[1] == "glide_time":
+                    self._set_message(f"stepwise glide {float(value):.3f} s")
             elif key[0] == "autotune":
                 self._guard(
                     self.controller.set_autotune, key[1], key[2], value

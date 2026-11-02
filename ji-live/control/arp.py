@@ -806,15 +806,25 @@ class SetArp:
         ratios: list[float] | tuple[float, ...],
         anchor: float | None,
         fundamental: float,
-    ) -> ArpPattern:
+        *,
+        rebuild: bool = True,
+    ) -> ArpPattern | None:
         """Regenerate the pattern from a snapshot; safe to call before start.
 
         The new pattern is stored immediately but only takes effect at the next
         step boundary.  No MIDI is sent here, so a held note is not cut.
+
+        ``rebuild=False`` is the Stage 8.4.1 transient path used by a class
+        glide: the snapshot is stored (so :meth:`resolve_note` follows the
+        moving class) but the pattern, its order, the cursor and the "first
+        step after change" log are left untouched.  The final non-transient
+        update rebuilds once, exactly as before.
         """
 
         with self._lock:
             self._snapshot = (list(ratios), anchor, float(fundamental))
+            if not rebuild:
+                return self._pattern
             pattern = self._rebuild_pattern_locked()
             if pattern is None:  # defensive: a snapshot was just stored
                 raise RuntimeError("arp pattern regeneration failed")
@@ -828,6 +838,39 @@ class SetArp:
         if changed:
             _print_pattern(pattern)
         return pattern
+
+    def resolve_note(self, note: ArpNote) -> ArpNote:
+        """Project one pattern note onto the current set (Stage 8.4.1).
+
+        While a replacement class melts, a pattern note built from the old
+        ratio is absent from the intermediate snapshot.  Rather than rebuild
+        (which would thrash the pattern), the note is played at the **nearest
+        current ratio in cents**, with the note's own octave offset.  A note
+        whose ratio survives is returned unchanged, so the pattern's shape is
+        preserved for the whole melt.
+        """
+
+        if not isinstance(note, ArpNote):
+            raise TypeError("note must be an ArpNote")
+        with self._lock:
+            snapshot = self._snapshot
+        if snapshot is None:
+            return note
+        ratios, _anchor, fundamental = snapshot
+        if not ratios:
+            return note
+        if any(
+            math.isclose(note.ratio, ratio, rel_tol=0.0, abs_tol=1e-12)
+            for ratio in ratios
+        ):
+            return note
+        nearest = min(
+            ratios,
+            key=lambda ratio: abs(math.log2(ratio / note.ratio)),
+        )
+        if math.isclose(note.ratio, nearest, rel_tol=0.0, abs_tol=1e-12):
+            return note
+        return _make_note(float(nearest), note.octave, float(fundamental))
 
     # Aliases used by callers that think in set-update / regeneration terms.
     update = on_set
@@ -1079,7 +1122,10 @@ class SetArp:
                     else:
                         position = self._step_index % len(order)
                         self._step_index = (position + 1) % len(order)
-                        note = pattern.steps[order[position]]
+                        # Trigger-time projection: during a class melt the
+                        # pattern's ratio may be absent from the intermediate
+                        # snapshot; play the nearest current class instead.
+                        note = self.resolve_note(pattern.steps[order[position]])
                         step_number = position + 1
                         if log_next:
                             self._log_next_step = False

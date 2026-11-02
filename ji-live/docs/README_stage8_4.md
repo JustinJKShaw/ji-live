@@ -21,6 +21,18 @@ acceptance checklist in §9.** The design doc's planned 8.4 was
 "pattern/sequencing mutation"; this stage scopes that idea to the frequency-set
 layer first. MIDI pattern recall and whole-session save/recall stay in 8.5.
 
+**Stage 8.4.1 (stepwise/replaced class glide)** sits on top of 8.4 and changes
+only what the Glide knob broadcasts: a replacement class now melts from its old
+ratio to its new one for every voice (§6.1). The 8.4 home/return contracts,
+engine state and one-update rule are otherwise unchanged; the one-update rule
+gains exactly one exception (the bounded glide stream).
+
+**Owner-confirmed 2026-11-02.** The owner approved the 8.4.1 behavior on the
+live rig: the replaced class melts on the autotuned audio and the MIDI voices,
+pure add/remove still snaps, Glide 0 is effectively instant, and a second
+mutation / Return / Go / Back / Jump cancels a melt cleanly. 8.4's own home/
+return checklist (§9) remains separately human-pending.
+
 ---
 
 ## 1. The model in one page
@@ -223,7 +235,106 @@ The return is **not** a jump and **not** a burst of updates.
   fan-out is never duplicated.
 * A pending return is cancelled by: a manual mutation, a manual octave move,
   `go()` to a different slot, `back()`, or a transport stop that flushes the
-  queue. The cancel is logged once with its cause.
+  queue. The cancel is logged once with its cause. Since Stage 8.4.1 a Return or
+  Go also cancels an active class glide first (see §6.1).
+
+---
+
+## 6.1 Stepwise class glide (Stage 8.4.1)
+
+Stage 8.4.1 fixes what the Mutation group's **Glide** knob means. It is **not** a
+global autotune retune time:
+
+> "the purpose is specifically for only for the stepwise mutations (one frequency
+> moves to another) … the stepwise one should move over time (the actual
+> frequency class of that note shifts over the course of the glide time. so one
+> frequency class kind of melts into the next. therefore it should affect midi
+> too, since the frequency sets are a global property." — owner, 2026-11-01;
+> follow-up: "replaced events are included."
+
+**Definition.** A mutation event with **both** `removed_ratio` and `new_ratio`
+set (`reason == "stepwise"` or `"replaced"`) is a *gliding replacement*. Pure
+`added`/`removed` events are not.
+
+**The melt.** Given the before/after snapshots, the `(old, new)` pairs, the knob
+time `T` and a constant 30 Hz rate (clamped 5–60):
+
+```text
+steps = max(1, floor(T * 30 + 0.5))          # round half up: 0.15 s -> 5
+r(t)  = old * (new / old) ** (t / T)         # cents-linear
+```
+
+`steps + 1` snapshots are broadcast at exactly `t_k = k*T/steps`; `set(0)` is the
+before set with pure edits applied and the replacement still at its old ratio,
+and `set(T)` is the engine's `after` set exactly. Intermediate values are folded
+and rounded through `fold_ratio`, so they match the engine's 12-decimal classes.
+A replaced anchor travels with its pair; a pure-removed anchor falls back to the
+engine's final anchor (or the nearest class). A moving class may momentarily
+collide with another class; the intermediate set is deduplicated (it briefly has
+one fewer class) and the final step restores the exact set.
+
+**Every voice hears it**, because the intermediate snapshots are a global
+property and go through the normal fan-out (`JIBridge.send_snapshot`):
+
+| Voice | During the melt | After the final step |
+|---|---|---|
+| Live autotune / loop players (sclang) | every step via `/ji/freqset/update`; the 20 Hz lookup follows, `retuneTime` smooths each step | final set; `retuneTime` = the Glide knob |
+| Drone (Bus 1) | every step via `on_set`; a held anchor retunes/bends along `r(t)` | final set |
+| Bass (Bus 4) | every step stores the moving pool; the next step picks from it | final set |
+| Lead (Bus 5) | every step re-projects; the next note uses the moving class | final set |
+| Arp (Bus 2) | every step is stored, but the pattern is **not rebuilt and the cursor is not reset**; a pattern note whose ratio is absent plays the nearest current ratio (cents), same octave | one rebuild (today's `on_set`) |
+| UI | no per-step message | one `/ji/freqset/changed` mirror |
+
+**One update per change, with one exception.** The Stage 8.4 rule ("one
+`/ji/freqset/update` per applied change / quarter beat") still holds **outside**
+a glide. A glide is one logical change that intentionally emits a bounded 30 Hz
+stream (5–6 updates for the default 0.15 s, 61 for a 2 s knob); the final step is
+the one `[BRIDGE] ->` log line for the change. Do not treat those intermediate
+updates as separate changes: the engine state, history, home distance, journey
+counter and UI are final from the moment the mutation lands.
+
+**Pure add/remove snaps.** A pure addition or removal has no `(old, new)` pair,
+so the bridge sends exactly one update with the 0.005 s sclang minimum. This is a
+deliberate change from the old "every mutation retunes over the Glide knob"
+behavior; the Live Autotune `Retune` knob remains the persistent retune setting
+for the rest of the rig. Note that every set update (including each glide step)
+rewrites each active synth's `retuneTime`, so the `Retune` knob's displayed value
+can disagree with the synth until it is touched; that already happened before
+8.4.1 and is not changed here. The final step writes the Glide knob so the
+resting value is consistent with the control.
+
+**Cancellation.** A new mutation, Return/Go, Back or Jump cancels an active melt:
+it delivers the previous final set once (a 0.005 s snap), logs
+`[GLIDE] cancelled by …`, and then applies the new change. A transport stop does
+**not** cancel a glide — it is a set morph, not a note. `bridge.stop()` stops the
+scheduler with no snap. The Stage 8.5 state load must call
+`JIBridge.cancel_glide("load")` first (the only cross-feature hook).
+
+**Before `start()`.** A bridge that has not been started (construction-only code,
+tests) and a direct `MutationOSCServer.trigger()` with no captured `before`
+keep the accepted one-update path: no plan is built, no scheduler thread is
+created, and the event's own `glide_time` is used. `JIBridge.__init__` creates no
+glide thread (the worker starts lazily on the first plan).
+
+**Diagnostics.** One line per glide, never per step (the sclang receiver still
+prints its own one line per update, as accepted in Stage 3):
+
+```text
+[GLIDE] replaced 1.500000 -> 1.400000 over 0.150 s (5 steps)
+[GLIDE] replaced 1.333333 -> 1.406250, 1.500000 -> 1.454545 over 0.300 s (9 steps)
+[GLIDE] done (0.150 s)
+[GLIDE] cancelled by mutation
+[GLIDE] cancelled by return
+[GLIDE] cancelled by back
+[GLIDE] cancelled by jump
+```
+
+**Cost.** 30 Hz is enough for the autotune's lag and the drone's bend; a 2 s
+glide is 61 updates and prints 61 sclang receiver lines. No sclang, SynthDef,
+audio DSP, MIDI voice or new config key is added: the existing
+`/ji/freqset/update` receiver already applies intermediate sets. `control/
+glide.py` is the pure planner/scheduler (`GLIDE_RATE_HZ`, `GlidePlan`,
+`build_glide_plan`, `GlideScheduler`); `tests/test_glide.py` covers it.
 
 ---
 
@@ -374,7 +485,12 @@ A one-row **Home** group under the Mutation/MIDI row:
   adds/removes before replacing so it never crosses them; the drone/lead survive
   any size ≥ 3.
 * **Set-update rate.** One update per beat maximum while running; the stopped
-  return deliberately collapses to one update.
+  return deliberately collapses to one update. **Stage 8.4.1 exception:** one
+  gliding replacement is one logical change that emits a bounded 30 Hz stream
+  (5–6 updates at the default 0.15 s, 61 at 2 s); outside a glide the rule
+  stands. The Glide knob no longer retunes pure add/remove updates (they snap at
+  0.005 s) — a deliberate behavior change, documented in `GUI_PARAMETERS.md`
+  and `START_HERE.md`.
 * **History memory.** Bounded (`maxlen`), snapshots are small; 64 is plenty.
 * **Phase numbering.** Inserting `home` first did not reorder the older phases;
   `tests/test_quantize.py` pins home-before-mutation and the full order.
@@ -406,9 +522,14 @@ One line per event, never per note:
 [HOME] jumped to B classes=5 anchor=1.250000
 [HOME] gap: slot=B is empty
 [HOME] drift cap exceeded (8 tries)
+[GLIDE] replaced 1.500000 -> 1.400000 over 0.150 s (5 steps)
+[GLIDE] done (0.150 s)
+[GLIDE] cancelled by mutation
 ```
 
-`[QUANT]`, `[BRIDGE]` and `[MUTATION]` lines are unchanged.
+`[QUANT]`, `[BRIDGE]` and `[MUTATION]` lines are unchanged. A glide prints one
+`[GLIDE]` line (plus `done`/`cancelled`), never one per step; the sclang
+receiver still prints its accepted line per set update.
 
 ---
 
@@ -422,6 +543,7 @@ uv run --with python-osc --with mido --with python-rtmidi --with PyQt6 \
 
 ```bash
 uv run --with python-osc python tests/test_home.py
+uv run --with python-osc python tests/test_glide.py
 uv run --with python-osc python tests/test_quantize.py
 uv run --with python-osc python tests/test_ui.py --pure
 uv run --with python-osc python tests/test_startup.py

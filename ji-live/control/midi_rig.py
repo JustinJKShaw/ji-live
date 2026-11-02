@@ -732,11 +732,18 @@ class MIDIRig:
         ratios: list[float] | tuple[float, ...],
         anchor: float | None,
         fundamental: float,
+        *,
+        transient: bool = False,
     ) -> None:
         """Apply one engine snapshot to the drone and arp.
 
         The bridge takes the snapshot after releasing the engine lock; the MIDI
         threads never read the engine directly.
+
+        ``transient=True`` (Stage 8.4.1) is one step of a class glide: the
+        snapshot is stored and fanned out, but the arp pattern is **not**
+        rebuilt, its cursor is not reset, and the set-update log lines are
+        suppressed.  The final, non-transient call rebuilds exactly as before.
         """
 
         snapshot = (list(ratios), anchor, float(fundamental))
@@ -747,7 +754,9 @@ class MIDIRig:
         # snapshots even in bass-only mode (midi=False).
         if self.bass is not None:
             try:
-                self.bass.on_set(snapshot[0], anchor, snapshot[2])
+                self.bass.on_set(
+                    snapshot[0], anchor, snapshot[2], transient=transient
+                )
             except Exception as exc:  # bass is non-critical
                 print(f"[BASS] set update failed: {exc}", file=sys.stderr)
         if self.lead is not None:
@@ -756,7 +765,7 @@ class MIDIRig:
             except Exception as exc:  # lead is non-critical
                 print(f"[LEAD] set update failed: {exc}", file=sys.stderr)
         if started and self._midi_enabled:
-            self._apply(snapshot)
+            self._apply(snapshot, transient=transient)
 
     update = on_set
 
@@ -986,17 +995,31 @@ class MIDIRig:
     # Internals
     # ------------------------------------------------------------------
 
-    def _apply(self, snapshot: tuple[list[float], float | None, float]) -> None:
+    def _apply(
+        self,
+        snapshot: tuple[list[float], float | None, float],
+        *,
+        transient: bool = False,
+    ) -> None:
         if not self._midi_enabled:
             return
         ratios, anchor, fundamental = snapshot
         if self._drone_enabled:
             if self.drone_rig is not None:
-                self.drone_rig.on_set(ratios, anchor, fundamental)
+                self.drone_rig.on_set(
+                    ratios, anchor, fundamental, transient=transient
+                )
             else:
-                self.drone.on_set(ratios, anchor, fundamental)
+                self.drone.on_set(
+                    ratios, anchor, fundamental, transient=transient
+                )
         if self._arp_enabled:
-            self.arp.on_set(ratios, anchor, fundamental)
+            # During a melt the arp keeps its pattern identity and follows the
+            # moving class at trigger time (resolve_note); only the final
+            # update rebuilds and resets the cursor.
+            self.arp.on_set(
+                ratios, anchor, fundamental, rebuild=not transient
+            )
 
 
 # ----------------------------------------------------------------------

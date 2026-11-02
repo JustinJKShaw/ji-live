@@ -145,7 +145,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--glide-time",
         type=float,
         default=DEFAULT_GLIDE_TIME,
-        help="autotune glide carried by every mutation event, in seconds",
+        help=(
+            "stepwise/replaced class melt time in seconds: the replaced class "
+            "travels to its new ratio for every voice (0 = instant; pure "
+            "add/remove edits snap at 0.005 s)"
+        ),
     )
     parser.add_argument(
         "--listen-port",
