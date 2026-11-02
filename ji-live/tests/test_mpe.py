@@ -91,6 +91,17 @@ class FakePort:
         ]
 
 
+def _wait_for(predicate, timeout: float = 2.0) -> bool:
+    """Poll ``predicate`` for up to ``timeout`` seconds (thread-start jitter)."""
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.005)
+    return False
+
+
 # ----------------------------------------------------------------------
 # Pure tests
 # ----------------------------------------------------------------------
@@ -393,10 +404,13 @@ def test_midi_rig_toggles() -> None:
     try:
         rig.start()
         rig.on_set(INITIAL_RATIOS, 1.0, FUNDAMENTAL)
-        time.sleep(0.05)
         assert rig.drone_enabled and rig.arp_enabled
         assert drone_fake.with_type("note_on")
-        assert arp_fake.with_type("note_on")
+        # The arp thread start is not instant; wait for its first step instead
+        # of racing a fixed sleep.
+        assert _wait_for(lambda: arp_fake.with_type("note_on")), (
+            arp_fake.types()
+        )
 
         rig.set_drone_enabled(False)
         assert not rig.drone_enabled and rig.arp_enabled
@@ -408,8 +422,10 @@ def test_midi_rig_toggles() -> None:
         assert not rig.arp_enabled and rig.drone_enabled
         rig.set_arp_enabled(True)
         assert rig.arp_enabled
-        time.sleep(0.05)
-        assert arp_fake.with_type("note_on")
+        arp_fake.messages.clear()
+        assert _wait_for(lambda: arp_fake.with_type("note_on")), (
+            arp_fake.types()
+        )
     finally:
         rig.stop()
     assert drone_fake.closed and arp_fake.closed

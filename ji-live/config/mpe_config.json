@@ -10,5 +10,11 @@
   "gate_seconds": 0.20,
   "arp_octave_offsets": [0, 1, 2],
   "arp_shared_mode": "anchor",
-  "arp_seed": 1
+  "arp_order": "forward",
+  "arp_seed": 1,
+  "arp_sync": "free",
+  "arp_division": "1/8",
+  "arp_evolve": false,
+  "arp_evolve_beats": 4,
+  "arp_evolve_depth": 0.0
 }

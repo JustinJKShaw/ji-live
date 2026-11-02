@@ -7,6 +7,12 @@ Python harness passes without `mido`, but the human report is the authority.
 **Stage 7/7.1 is implemented** (see `README_stage7.md` and design doc §8.8).
 **Stage 8.1** adds a separate, non-MPE drum output on `IAC Driver Bus 3`,
 channel 10 (see `README_stage8.md`); it does not change either MPE bus.
+**Stage 8.3a** adds the bass on Bus 4 (see `README_stage8_3.md`); **Stage 8.3b**
+makes the arp parameters live (`/ji/arp/*`, a compact GUI group) without changing
+the default sound or either MPE contract (see `README_stage8_3b.md`);
+**Stage 8.3c** adds arp beat sync + self-evolution (see `README_stage8_3c.md`);
+**Stage 8.3d** adds a third MPE bus for the lead/melody voice and pad modes for
+the drone (see `README_stage8_3d.md`).
 
 Stage 6 is MIDI-only. It adds **no SuperCollider SynthDef, no audio bus, and no
 new OSC address**. The existing Stage 5.5 audio rig and the
@@ -16,8 +22,11 @@ new OSC address**. The existing Stage 5.5 audio rig and the
 MutationEngine
   ├─ /ji/freqset/update → sclang (existing Stage 3/5.5 path, unchanged)
   └─ MIDI rig
-       ├─ AnchorDrone → IAC Driver Bus 1 → Ableton MIDI track "Drone"
-       └─ SetArp      → IAC Driver Bus 2 → Ableton MIDI track "Arp"
+       ├─ DroneRig (hold | pulse | bend) → IAC Bus 1 → Ableton "Drone"
+       ├─ SetArp                          → IAC Bus 2 → Ableton "Arp"
+       ├─ DrumRig (optional)              → IAC Bus 3 → Ableton "Drums"
+       ├─ BassRig (optional)              → IAC Bus 4 → Ableton "Bass"/"Sub"
+       └─ LeadRig (optional, --lead)      → IAC Bus 5 → Ableton "Lead"
 ```
 
 The two MIDI outputs are **IAC buses/ports**, not audio buses or MIDI channels.
@@ -111,7 +120,99 @@ A regeneration logs, for example:
 [ARP] shared=3/2 (329.63 Hz)  A=[3/2, 1/1, 5/4]  B=[3/2, 5/3, 15/8]
 ```
 
+### 2.3 Live arp parameters (Stage 8.3b, awaiting human acceptance)
+
+The Stage 6 defaults above are unchanged, but the following are now editable
+while the rig runs — from the compact **Arp** GUI group, or by OSC
+(`/ji/arp/set_*`) to the bridge:
+
+| Control | Range | Notes |
+|---|---|---|
+| Step seconds | 0.05–2.0 | **free-run**, not tempo-synced (no BPM division, no swing) |
+| Gate seconds | 0.01–2.0 | clamped to ≤ step (logged); does not cut the held note |
+| Velocity | 1–127 | note-on velocity |
+| Octave offsets | three ints −8..+8 | positional `(shared, non_shared_1, non_shared_2)`; the shared offset is identical in A and B |
+| Shared mode | `anchor` / `random` | the Stage 6 shared-note rule |
+| Order | `forward` / `reverse` / `pingpong` / `random` | `0,1,2,3,4,5` / `5,4,3,2,1,0` / `0,1,2,3,4,5,4,3,2,1` / seeded permutation |
+| Seed | 0..2³¹−1 | same seed + same pattern reproduces the pattern and the random order |
+
+`config/mpe_config.json` gains one additive key, `"arp_order": "forward"`; a
+config without it loads as `forward`. Changing step/gate/velocity applies from
+the next trigger; octave/shared/seed rebuild the pattern from the last set
+snapshot (no mutation needed) and order rebuilds the sequence; every change
+resets the cursor to the first element of the order and never cuts the held
+note.
+
+While the transport runs, arp edits wait for the next quarter beat
+(`PHASE_ARP`, after bass and before the MIDI enables); while it is stopped they
+apply immediately. The Stage 7.1 Drone/Arp switches remain the only
+enable/disable controls. `/ji/arp/state` carries `enabled, port_ok, step, gate,
+velocity, three octaves, shared mode, order, seed`.
+
+### 2.4 Beat sync and self-evolution (Stage 8.3c, awaiting human acceptance)
+
+Two optional behaviors, both **off by default** so the free-running arp above is
+unchanged:
+
+- **Beat sync.** `sync_mode` is `free` (Stage 6/8.3b) or `beat`. In `beat` the
+  step is a division of the bridge's quarter-note BPM — `1/4`, `1/8`, `1/16` or
+  `1/8T` — and the next step snaps to that division boundary on the transport
+  grid. `1/8` at 120 BPM is exactly the free default of 0.25 s. The gate stays
+  in seconds and is clamped to the derived step. The bridge owns the phase: it
+  snaps on sync-on, division change, transport start, and when the Drone/Arp
+  switch re-enables the arp. A tempo change keeps the phase and only changes the
+  step duration. With the transport stopped, beat mode keeps running at the
+  current BPM (the Drone/Arp switch is still the only mute).
+- **Self-evolution.** `evolve` regenerates the pattern from the current set
+  every `evolve_beats` quarter beats (1–64), with no mutation. `evolve_depth`
+  0 re-picks only the four non-shared notes; higher depth may also let the
+  shared note move (probability = depth) and nudge one octave offset by ±1
+  (probability = depth/2). The frequency set itself never changes. The seed
+  reproduces the evolution sequence.
+
+Config keys (additive, all optional): `arp_sync`, `arp_division`, `arp_evolve`,
+`arp_evolve_beats`, `arp_evolve_depth`. Runtime: `/ji/arp/set_sync`,
+`set_division`, `set_evolve`, `set_evolve_beats`, `set_evolve_depth`, and the
+`/ji/arp/state` payload grows to 17 values (effective step, sync mode,
+division, evolve, evolve beats, evolve depth). See `README_stage8_3c.md`.
+
+Swing, rests/probability, a different group size, polyphony, and any change to
+the 48-semitone bend range stay out of scope.
+
 ---
+
+### 2.3 Stage 8.3d: the lead bus and the drone modes
+
+**Lead (`IAC Driver Bus 5`, optional).** A monophonic JI melody voice using the
+same MPE contract as the drone/arp: member channel 2, 48-semitone bend range.
+It has its own config (`config/lead_config.json`) and its own flag (`--lead`,
+**off** by default), so `--midi` without `--lead` never opens Bus 5. A missing
+Bus 5 prints one `[LEAD] disabled: ...; drone/arp/drums/bass continue` line and
+leaves everything else running.
+
+Because Bus 5 is a separate port, it is a ready FX insert point: route it to an
+Ableton **Lead** track with any instrument and any chain. The lead is
+transport-gated (starts on a transport start at phrase step 0, stops with
+note-off + CC 123) and groove-linked (the drum groove's swing is pushed once per
+change).
+
+**Drone modes (same Bus 1, same member channel 2, 48 st).**
+
+| Mode | Behavior |
+|---|---|
+| `hold` | Stage 6, unchanged: one sustained anchor note, pitch-bend-only retunes, no retrigger while the frequency is unchanged |
+| `pulse` | a repeating pattern of N notes on the anchor pitch class, seeded octave offsets within the chosen span, `1/4`/`1/8`/`1/16` grid + gate; monophonic, transport-gated |
+| `sequence` | a repeating figure that walks the current set from the anchor and back (`0,+1,…,peak,…,0` in set steps, octave-wrapping past the top), N = 2–8, each note held for 1/4, 1/2, 1, 2 or 4 **bars** with a gate as a fraction of the note; it follows mutations, tempo and meter; monophonic, transport-gated |
+| `bend` | one held note, then a continuous pitch slide of 1–12 semitones (down or up) after the hold; note-off, rest, repeat. The cycle is `ceil(hold_beats + slide_seconds × bpm / 60)` quarter beats |
+
+`bend` does not retrigger the note to slide — it is one note whose pitch bend is
+interpolated at ~50 updates/s and clamped to the 14-bit range. **The receiving
+instrument must keep the 48-semitone range**; a 12-semitone slide uses a quarter
+of it. `hold` never becomes transport-gated (that would regress Stage 6/7.1).
+
+The drone bus itself is still `mpe_config.json`'s `drone_port`; the new
+`config/drone_config.json` owns only the mode and its parameters, and `hold`
+remains the shipped default, so an old rig behaves exactly as in 8.3c.
 
 ## 3. Configuration
 
@@ -130,6 +231,12 @@ A regeneration logs, for example:
   "gate_seconds": 0.20,
   "arp_octave_offsets": [0, 1, 2],
   "arp_shared_mode": "anchor",
+  "arp_order": "forward",
+  "arp_sync": "free",
+  "arp_division": "1/8",
+  "arp_evolve": false,
+  "arp_evolve_beats": 4,
+  "arp_evolve_depth": 0.0,
   "arp_seed": 1
 }
 ```
@@ -348,6 +455,15 @@ Record the verified value in `config/mpe_config.json`.
 | No sound but MIDI meters move | Synth track muted / instrument not loaded | Check instrument, track volume, master, monitor path |
 
 ---
+
+## 9.1 Failure modes added by 8.3d
+
+| Symptom | Cause / fix |
+|---|---|
+| `[LEAD] disabled: IAC Driver Bus 5 not available ...` | `--lead` is on but Bus 5 (or a valid `config/lead_config.json`) is missing. Everything else keeps running; create the bus or drop `--lead` |
+| Lead group disabled in the GUI | Same: the bridge reports `port_ok = 0` for Bus 5 |
+| Drone modes greyed out | Bus 1 is not open, or the mode is `hold` (both pad rows are inert there by design) |
+| The `bend` slide is wrong by a fixed ratio | The receiving track is not set to the 48-semitone MPE range |
 
 ## 10. Limitations
 

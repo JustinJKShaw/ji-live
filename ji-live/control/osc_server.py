@@ -22,6 +22,28 @@ No audio and no scsynth calls live here.  Addresses:
     Stage 7.1 UI switches for the two MIDI buses.  Calls the optional
     ``on_midi_enabled`` callback; it never touches audio.
 
+``/ji/bass/set_*`` (Stage 8.3a)
+    One validated bass setting each; the bridge queues it to the next quarter
+    beat.  The callback receives ``(setting_name, value)``.
+``/ji/arp/set_step`` (float seconds 0.05..2.0)
+``/ji/arp/set_gate`` (float seconds 0.01..2.0, clamped to <= step)
+``/ji/arp/set_velocity`` (int 1..127)
+``/ji/arp/set_octaves`` (int shared, int non_shared_1, int non_shared_2, -8..8)
+``/ji/arp/set_shared_mode`` (string ``anchor``|``random``)
+``/ji/arp/set_order`` (string ``forward``|``reverse``|``pingpong``|``random``)
+``/ji/arp/set_seed`` (int 0..2**31-1)
+    Stage 8.3b arp parameters.  They never enable/disable the arp: the Stage 7.1
+    Drone/Arp switches on ``/ji/midi/set_enabled`` stay the only enable path.
+
+``/ji/lead/set_*`` (Stage 8.3d)
+    One validated lead setting each, plus ``/ji/lead/vary`` (no argument) which
+    advances one variation.  The callback receives ``(setting_name, value)``;
+    ``vary`` calls ``on_lead_vary``.  Quantization is the bridge's job.
+
+``/ji/drone/set_mode`` and ``/ji/drone/set_*`` (Stage 8.3d)
+    The drone mode (``hold``/``pulse``/``bend``) and its pad parameters.  They
+    never enable/disable the drone: the top-row Drone switch stays the only mute.
+
 The server runs in a daemon thread so ``start()`` returns immediately.  Stage 3
 attaches an outgoing bridge through the optional ``on_event`` / ``on_octave``
 callbacks; this module still sends no audio OSC itself.
@@ -38,11 +60,14 @@ from pythonosc.dispatcher import Dispatcher
 from pythonosc.osc_server import ThreadingOSCUDPServer
 
 try:  # Support both ``python -m control.osc_server`` and direct execution.
-    from . import bass, groove, rhythm
+    from . import arp, bass, drone, groove, lead, rhythm
     from .mutation import MutationBatch, MutationEngine, MutationEvent, OctaveEvent
 except ImportError:  # pragma: no cover - exercised only by direct execution
+    import arp  # type: ignore[no-redef]
     import bass  # type: ignore[no-redef]
+    import drone  # type: ignore[no-redef]
     import groove  # type: ignore[no-redef]
+    import lead  # type: ignore[no-redef]
     import rhythm  # type: ignore[no-redef]
     from mutation import (  # type: ignore[no-redef]
         MutationBatch,
@@ -93,6 +118,52 @@ BASS_SET_BASE_OCTAVE_ADDRESS = "/ji/bass/set_base_octave"
 BASS_SET_SEED_ADDRESS = "/ji/bass/set_seed"
 BASS_SET_SUB_ENABLED_ADDRESS = "/ji/bass/set_sub_enabled"
 BASS_SET_SUB_OCTAVES_ADDRESS = "/ji/bass/set_sub_octaves"
+# Stage 8.3b arp parameters (UI -> Bridge).  The Drone/Arp enable switches stay
+# on /ji/midi/set_enabled; these only change the arp settings.  Quantization is
+# the bridge's job.
+ARP_SET_STEP_ADDRESS = "/ji/arp/set_step"
+ARP_SET_GATE_ADDRESS = "/ji/arp/set_gate"
+ARP_SET_VELOCITY_ADDRESS = "/ji/arp/set_velocity"
+ARP_SET_OCTAVES_ADDRESS = "/ji/arp/set_octaves"
+ARP_SET_SHARED_MODE_ADDRESS = "/ji/arp/set_shared_mode"
+ARP_SET_ORDER_ADDRESS = "/ji/arp/set_order"
+ARP_SET_SEED_ADDRESS = "/ji/arp/set_seed"
+# Stage 8.3c: beat sync + self-evolution.
+ARP_SET_SYNC_ADDRESS = "/ji/arp/set_sync"
+ARP_SET_DIVISION_ADDRESS = "/ji/arp/set_division"
+ARP_SET_EVOLVE_ADDRESS = "/ji/arp/set_evolve"
+ARP_SET_EVOLVE_BEATS_ADDRESS = "/ji/arp/set_evolve_beats"
+ARP_SET_EVOLVE_DEPTH_ADDRESS = "/ji/arp/set_evolve_depth"
+# Stage 8.3d lead controls (UI -> Bridge).  Quantization is the bridge's job.
+LEAD_SET_ENABLED_ADDRESS = "/ji/lead/set_enabled"
+LEAD_SET_GRID_ADDRESS = "/ji/lead/set_grid"
+LEAD_SET_PHRASE_BARS_ADDRESS = "/ji/lead/set_phrase_bars"
+LEAD_SET_DENSITY_ADDRESS = "/ji/lead/set_density"
+LEAD_SET_GATE_ADDRESS = "/ji/lead/set_gate"
+LEAD_SET_VELOCITY_ADDRESS = "/ji/lead/set_velocity"
+LEAD_SET_OCTAVE_RANGE_ADDRESS = "/ji/lead/set_octave_range"
+LEAD_SET_BASE_OCTAVE_ADDRESS = "/ji/lead/set_base_octave"
+LEAD_SET_VARIATION_ADDRESS = "/ji/lead/set_variation"
+LEAD_SET_VARIATION_BARS_ADDRESS = "/ji/lead/set_variation_bars"
+LEAD_SET_SWING_ADDRESS = "/ji/lead/set_swing"
+LEAD_SET_GROOVE_LINK_ADDRESS = "/ji/lead/set_groove_link"
+LEAD_SET_SEED_ADDRESS = "/ji/lead/set_seed"
+LEAD_VARY_ADDRESS = "/ji/lead/vary"
+# Stage 8.3d drone mode/pad controls (UI -> Bridge).
+DRONE_SET_MODE_ADDRESS = "/ji/drone/set_mode"
+DRONE_SET_VELOCITY_ADDRESS = "/ji/drone/set_velocity"
+DRONE_SET_PULSE_NOTES_ADDRESS = "/ji/drone/set_pulse_notes"
+DRONE_SET_PULSE_GRID_ADDRESS = "/ji/drone/set_pulse_grid"
+DRONE_SET_PULSE_GATE_ADDRESS = "/ji/drone/set_pulse_gate"
+DRONE_SET_PULSE_SPAN_ADDRESS = "/ji/drone/set_pulse_span"
+DRONE_SET_SLIDE_DIRECTION_ADDRESS = "/ji/drone/set_slide_direction"
+DRONE_SET_SLIDE_SEMITONES_ADDRESS = "/ji/drone/set_slide_semitones"
+DRONE_SET_SLIDE_SECONDS_ADDRESS = "/ji/drone/set_slide_seconds"
+DRONE_SET_HOLD_BEATS_ADDRESS = "/ji/drone/set_hold_beats"
+DRONE_SET_SEED_ADDRESS = "/ji/drone/set_seed"
+DRONE_SET_SEQ_NOTES_ADDRESS = "/ji/drone/set_seq_notes"
+DRONE_SET_SEQ_BARS_ADDRESS = "/ji/drone/set_seq_bars"
+DRONE_SET_SEQ_GATE_ADDRESS = "/ji/drone/set_seq_gate"
 
 
 class MutationOSCServer:
@@ -142,6 +213,46 @@ class MutationOSCServer:
     BASS_SET_SEED_ADDRESS = BASS_SET_SEED_ADDRESS
     BASS_SET_SUB_ENABLED_ADDRESS = BASS_SET_SUB_ENABLED_ADDRESS
     BASS_SET_SUB_OCTAVES_ADDRESS = BASS_SET_SUB_OCTAVES_ADDRESS
+    ARP_SET_STEP_ADDRESS = ARP_SET_STEP_ADDRESS
+    ARP_SET_GATE_ADDRESS = ARP_SET_GATE_ADDRESS
+    ARP_SET_VELOCITY_ADDRESS = ARP_SET_VELOCITY_ADDRESS
+    ARP_SET_OCTAVES_ADDRESS = ARP_SET_OCTAVES_ADDRESS
+    ARP_SET_SHARED_MODE_ADDRESS = ARP_SET_SHARED_MODE_ADDRESS
+    ARP_SET_ORDER_ADDRESS = ARP_SET_ORDER_ADDRESS
+    ARP_SET_SEED_ADDRESS = ARP_SET_SEED_ADDRESS
+    ARP_SET_SYNC_ADDRESS = ARP_SET_SYNC_ADDRESS
+    ARP_SET_DIVISION_ADDRESS = ARP_SET_DIVISION_ADDRESS
+    ARP_SET_EVOLVE_ADDRESS = ARP_SET_EVOLVE_ADDRESS
+    ARP_SET_EVOLVE_BEATS_ADDRESS = ARP_SET_EVOLVE_BEATS_ADDRESS
+    ARP_SET_EVOLVE_DEPTH_ADDRESS = ARP_SET_EVOLVE_DEPTH_ADDRESS
+    LEAD_SET_ENABLED_ADDRESS = LEAD_SET_ENABLED_ADDRESS
+    LEAD_SET_GRID_ADDRESS = LEAD_SET_GRID_ADDRESS
+    LEAD_SET_PHRASE_BARS_ADDRESS = LEAD_SET_PHRASE_BARS_ADDRESS
+    LEAD_SET_DENSITY_ADDRESS = LEAD_SET_DENSITY_ADDRESS
+    LEAD_SET_GATE_ADDRESS = LEAD_SET_GATE_ADDRESS
+    LEAD_SET_VELOCITY_ADDRESS = LEAD_SET_VELOCITY_ADDRESS
+    LEAD_SET_OCTAVE_RANGE_ADDRESS = LEAD_SET_OCTAVE_RANGE_ADDRESS
+    LEAD_SET_BASE_OCTAVE_ADDRESS = LEAD_SET_BASE_OCTAVE_ADDRESS
+    LEAD_SET_VARIATION_ADDRESS = LEAD_SET_VARIATION_ADDRESS
+    LEAD_SET_VARIATION_BARS_ADDRESS = LEAD_SET_VARIATION_BARS_ADDRESS
+    LEAD_SET_SWING_ADDRESS = LEAD_SET_SWING_ADDRESS
+    LEAD_SET_GROOVE_LINK_ADDRESS = LEAD_SET_GROOVE_LINK_ADDRESS
+    LEAD_SET_SEED_ADDRESS = LEAD_SET_SEED_ADDRESS
+    LEAD_VARY_ADDRESS = LEAD_VARY_ADDRESS
+    DRONE_SET_MODE_ADDRESS = DRONE_SET_MODE_ADDRESS
+    DRONE_SET_VELOCITY_ADDRESS = DRONE_SET_VELOCITY_ADDRESS
+    DRONE_SET_PULSE_NOTES_ADDRESS = DRONE_SET_PULSE_NOTES_ADDRESS
+    DRONE_SET_PULSE_GRID_ADDRESS = DRONE_SET_PULSE_GRID_ADDRESS
+    DRONE_SET_PULSE_GATE_ADDRESS = DRONE_SET_PULSE_GATE_ADDRESS
+    DRONE_SET_PULSE_SPAN_ADDRESS = DRONE_SET_PULSE_SPAN_ADDRESS
+    DRONE_SET_SLIDE_DIRECTION_ADDRESS = DRONE_SET_SLIDE_DIRECTION_ADDRESS
+    DRONE_SET_SLIDE_SEMITONES_ADDRESS = DRONE_SET_SLIDE_SEMITONES_ADDRESS
+    DRONE_SET_SLIDE_SECONDS_ADDRESS = DRONE_SET_SLIDE_SECONDS_ADDRESS
+    DRONE_SET_HOLD_BEATS_ADDRESS = DRONE_SET_HOLD_BEATS_ADDRESS
+    DRONE_SET_SEED_ADDRESS = DRONE_SET_SEED_ADDRESS
+    DRONE_SET_SEQ_NOTES_ADDRESS = DRONE_SET_SEQ_NOTES_ADDRESS
+    DRONE_SET_SEQ_BARS_ADDRESS = DRONE_SET_SEQ_BARS_ADDRESS
+    DRONE_SET_SEQ_GATE_ADDRESS = DRONE_SET_SEQ_GATE_ADDRESS
 
     def __init__(
         self,
@@ -170,6 +281,10 @@ class MutationOSCServer:
         on_drums_seed: Callable[[int], None] | None = None,
         on_drums_reset_grid: Callable[[], None] | None = None,
         on_bass_change: Callable[[str, Any], None] | None = None,
+        on_arp_change: Callable[[str, Any], None] | None = None,
+        on_lead_change: Callable[[str, Any], None] | None = None,
+        on_lead_vary: Callable[[], None] | None = None,
+        on_drone_change: Callable[[str, Any], None] | None = None,
     ) -> None:
         if not isinstance(engine, MutationEngine):
             raise TypeError("engine must be a MutationEngine")
@@ -200,6 +315,10 @@ class MutationOSCServer:
             ("on_drums_seed", on_drums_seed),
             ("on_drums_reset_grid", on_drums_reset_grid),
             ("on_bass_change", on_bass_change),
+            ("on_arp_change", on_arp_change),
+            ("on_lead_change", on_lead_change),
+            ("on_lead_vary", on_lead_vary),
+            ("on_drone_change", on_drone_change),
         ):
             if callback is not None and not callable(callback):
                 raise TypeError(f"{label} must be callable or None")
@@ -229,6 +348,10 @@ class MutationOSCServer:
         self._on_drums_seed = on_drums_seed
         self._on_drums_reset_grid = on_drums_reset_grid
         self._on_bass_change = on_bass_change
+        self._on_arp_change = on_arp_change
+        self._on_lead_change = on_lead_change
+        self._on_lead_vary = on_lead_vary
+        self._on_drone_change = on_drone_change
 
         self._lock = threading.RLock()
         # Serializes apply -> print -> callback so a threaded OSC server cannot
@@ -317,6 +440,82 @@ class MutationOSCServer:
             (self.BASS_SET_SUB_OCTAVES_ADDRESS, self._handle_bass_sub_octaves),
         )
         for address, handler in bass_map:
+            dispatcher.map(address, handler)
+        # Stage 8.3b arp parameters.
+        arp_map = (
+            (self.ARP_SET_STEP_ADDRESS, self._handle_arp_step),
+            (self.ARP_SET_GATE_ADDRESS, self._handle_arp_gate),
+            (self.ARP_SET_VELOCITY_ADDRESS, self._handle_arp_velocity),
+            (self.ARP_SET_OCTAVES_ADDRESS, self._handle_arp_octaves),
+            (self.ARP_SET_SHARED_MODE_ADDRESS, self._handle_arp_shared_mode),
+            (self.ARP_SET_ORDER_ADDRESS, self._handle_arp_order),
+            (self.ARP_SET_SEED_ADDRESS, self._handle_arp_seed),
+            (self.ARP_SET_SYNC_ADDRESS, self._handle_arp_sync),
+            (self.ARP_SET_DIVISION_ADDRESS, self._handle_arp_division),
+            (self.ARP_SET_EVOLVE_ADDRESS, self._handle_arp_evolve),
+            (self.ARP_SET_EVOLVE_BEATS_ADDRESS, self._handle_arp_evolve_beats),
+            (self.ARP_SET_EVOLVE_DEPTH_ADDRESS, self._handle_arp_evolve_depth),
+        )
+        for address, handler in arp_map:
+            dispatcher.map(address, handler)
+        # Stage 8.3d lead parameters and the manual variation trigger.
+        lead_map = (
+            (self.LEAD_SET_ENABLED_ADDRESS, self._handle_lead_enabled),
+            (self.LEAD_SET_GRID_ADDRESS, self._handle_lead_grid),
+            (self.LEAD_SET_PHRASE_BARS_ADDRESS, self._handle_lead_phrase_bars),
+            (self.LEAD_SET_DENSITY_ADDRESS, self._handle_lead_density),
+            (self.LEAD_SET_GATE_ADDRESS, self._handle_lead_gate),
+            (self.LEAD_SET_VELOCITY_ADDRESS, self._handle_lead_velocity),
+            (self.LEAD_SET_OCTAVE_RANGE_ADDRESS, self._handle_lead_octave_range),
+            (self.LEAD_SET_BASE_OCTAVE_ADDRESS, self._handle_lead_base_octave),
+            (self.LEAD_SET_VARIATION_ADDRESS, self._handle_lead_variation),
+            (
+                self.LEAD_SET_VARIATION_BARS_ADDRESS,
+                self._handle_lead_variation_bars,
+            ),
+            (self.LEAD_SET_SWING_ADDRESS, self._handle_lead_swing),
+            (self.LEAD_SET_GROOVE_LINK_ADDRESS, self._handle_lead_groove_link),
+            (self.LEAD_SET_SEED_ADDRESS, self._handle_lead_seed),
+            (self.LEAD_VARY_ADDRESS, self._handle_lead_vary),
+        )
+        for address, handler in lead_map:
+            dispatcher.map(address, handler)
+        # Stage 8.3d drone mode/pad parameters.
+        drone_map = (
+            (self.DRONE_SET_MODE_ADDRESS, self._handle_drone_mode),
+            (self.DRONE_SET_VELOCITY_ADDRESS, self._handle_drone_velocity),
+            (self.DRONE_SET_PULSE_NOTES_ADDRESS, self._handle_drone_pulse_notes),
+            (self.DRONE_SET_PULSE_GRID_ADDRESS, self._handle_drone_pulse_grid),
+            (self.DRONE_SET_PULSE_GATE_ADDRESS, self._handle_drone_pulse_gate),
+            (self.DRONE_SET_PULSE_SPAN_ADDRESS, self._handle_drone_pulse_span),
+            (
+                self.DRONE_SET_SLIDE_DIRECTION_ADDRESS,
+                self._handle_drone_slide_direction,
+            ),
+            (
+                self.DRONE_SET_SLIDE_SEMITONES_ADDRESS,
+                self._handle_drone_slide_semitones,
+            ),
+            (
+                self.DRONE_SET_SLIDE_SECONDS_ADDRESS,
+                self._handle_drone_slide_seconds,
+            ),
+            (self.DRONE_SET_HOLD_BEATS_ADDRESS, self._handle_drone_hold_beats),
+            (self.DRONE_SET_SEED_ADDRESS, self._handle_drone_seed),
+            (
+                self.DRONE_SET_SEQ_NOTES_ADDRESS,
+                self._handle_drone_seq_notes,
+            ),
+            (
+                self.DRONE_SET_SEQ_BARS_ADDRESS,
+                self._handle_drone_seq_bars,
+            ),
+            (
+                self.DRONE_SET_SEQ_GATE_ADDRESS,
+                self._handle_drone_seq_gate,
+            ),
+        )
+        for address, handler in drone_map:
             dispatcher.map(address, handler)
         self._dispatcher = dispatcher
 
@@ -1030,6 +1229,326 @@ class MutationOSCServer:
             lambda value: bass.validate_sub_octaves(
                 _one_int(value, "sub_octaves")
             ),
+        )
+
+    # -- Stage 8.3b arp parameters ----------------------------------------
+
+    def _handle_arp_setting(
+        self,
+        args: tuple[Any, ...],
+        address: str,
+        key: str,
+        parser: Callable[[Any], Any],
+        *,
+        arity: int = 1,
+    ) -> None:
+        if len(args) != arity:
+            _warn(
+                f"{address} expects {arity} value(s); got {len(args)} arguments"
+            )
+            return
+        try:
+            if arity == 1:
+                value = parser(args[0])
+            else:
+                value = parser(*args)
+        except (TypeError, ValueError) as exc:
+            _warn(f"{address}: {exc}")
+            return
+        self._call_callback(self._on_arp_change, "arp change", key, value)
+
+    def _handle_arp_step(self, _address: str, *args: Any) -> None:
+        self._handle_arp_setting(
+            args, self.ARP_SET_STEP_ADDRESS, "step_seconds",
+            arp.validate_step_seconds,
+        )
+
+    def _handle_arp_gate(self, _address: str, *args: Any) -> None:
+        self._handle_arp_setting(
+            args, self.ARP_SET_GATE_ADDRESS, "gate_seconds",
+            arp.validate_gate_seconds,
+        )
+
+    def _handle_arp_velocity(self, _address: str, *args: Any) -> None:
+        self._handle_arp_setting(
+            args, self.ARP_SET_VELOCITY_ADDRESS, "velocity",
+            arp.validate_velocity,
+        )
+
+    def _handle_arp_octaves(self, _address: str, *args: Any) -> None:
+        self._handle_arp_setting(
+            args,
+            self.ARP_SET_OCTAVES_ADDRESS,
+            "octave_offsets",
+            lambda shared, first, second: arp.validate_octave_offsets(
+                [shared, first, second]
+            ),
+            arity=3,
+        )
+
+    def _handle_arp_shared_mode(self, _address: str, *args: Any) -> None:
+        self._handle_arp_setting(
+            args, self.ARP_SET_SHARED_MODE_ADDRESS, "shared_mode",
+            arp.validate_shared_mode,
+        )
+
+    def _handle_arp_order(self, _address: str, *args: Any) -> None:
+        self._handle_arp_setting(
+            args, self.ARP_SET_ORDER_ADDRESS, "order", arp.validate_order
+        )
+
+    def _handle_arp_seed(self, _address: str, *args: Any) -> None:
+        self._handle_arp_setting(
+            args, self.ARP_SET_SEED_ADDRESS, "seed", arp.validate_seed
+        )
+
+    def _handle_arp_sync(self, _address: str, *args: Any) -> None:
+        self._handle_arp_setting(
+            args, self.ARP_SET_SYNC_ADDRESS, "sync_mode", arp.validate_sync_mode
+        )
+
+    def _handle_arp_division(self, _address: str, *args: Any) -> None:
+        self._handle_arp_setting(
+            args,
+            self.ARP_SET_DIVISION_ADDRESS,
+            "division",
+            arp.validate_division,
+        )
+
+    def _handle_arp_evolve(self, _address: str, *args: Any) -> None:
+        self._handle_arp_setting(
+            args, self.ARP_SET_EVOLVE_ADDRESS, "evolve", arp.validate_evolve
+        )
+
+    def _handle_arp_evolve_beats(self, _address: str, *args: Any) -> None:
+        self._handle_arp_setting(
+            args,
+            self.ARP_SET_EVOLVE_BEATS_ADDRESS,
+            "evolve_beats",
+            arp.validate_evolve_beats,
+        )
+
+    def _handle_arp_evolve_depth(self, _address: str, *args: Any) -> None:
+        self._handle_arp_setting(
+            args,
+            self.ARP_SET_EVOLVE_DEPTH_ADDRESS,
+            "evolve_depth",
+            arp.validate_evolve_depth,
+        )
+
+    # -- Stage 8.3d lead --------------------------------------------------
+
+    def _handle_lead_setting(
+        self,
+        args: tuple[Any, ...],
+        address: str,
+        key: str,
+        parser: Callable[[Any], Any],
+    ) -> None:
+        if len(args) != 1:
+            _warn(f"{address} expects one value; got {len(args)} arguments")
+            return
+        try:
+            value = parser(args[0])
+        except (TypeError, ValueError) as exc:
+            _warn(f"{address}: {exc}")
+            return
+        self._call_callback(self._on_lead_change, "lead change", key, value)
+
+    def _handle_lead_enabled(self, _address: str, *args: Any) -> None:
+        self._handle_lead_setting(
+            args, self.LEAD_SET_ENABLED_ADDRESS, "enabled",
+            lambda value: lead.validate_bool(value, "enabled"),
+        )
+
+    def _handle_lead_grid(self, _address: str, *args: Any) -> None:
+        self._handle_lead_setting(
+            args, self.LEAD_SET_GRID_ADDRESS, "grid", lead.validate_grid
+        )
+
+    def _handle_lead_phrase_bars(self, _address: str, *args: Any) -> None:
+        self._handle_lead_setting(
+            args,
+            self.LEAD_SET_PHRASE_BARS_ADDRESS,
+            "phrase_bars",
+            lead.validate_phrase_bars,
+        )
+
+    def _handle_lead_density(self, _address: str, *args: Any) -> None:
+        self._handle_lead_setting(
+            args, self.LEAD_SET_DENSITY_ADDRESS, "density", lead.validate_density
+        )
+
+    def _handle_lead_gate(self, _address: str, *args: Any) -> None:
+        self._handle_lead_setting(
+            args,
+            self.LEAD_SET_GATE_ADDRESS,
+            "gate_beats",
+            lead.validate_gate_beats,
+        )
+
+    def _handle_lead_velocity(self, _address: str, *args: Any) -> None:
+        self._handle_lead_setting(
+            args, self.LEAD_SET_VELOCITY_ADDRESS, "velocity", lead.validate_velocity
+        )
+
+    def _handle_lead_octave_range(self, _address: str, *args: Any) -> None:
+        self._handle_lead_setting(
+            args,
+            self.LEAD_SET_OCTAVE_RANGE_ADDRESS,
+            "octave_range",
+            lead.validate_octave_range,
+        )
+
+    def _handle_lead_base_octave(self, _address: str, *args: Any) -> None:
+        self._handle_lead_setting(
+            args,
+            self.LEAD_SET_BASE_OCTAVE_ADDRESS,
+            "base_octave",
+            lead.validate_base_octave,
+        )
+
+    def _handle_lead_variation(self, _address: str, *args: Any) -> None:
+        self._handle_lead_setting(
+            args,
+            self.LEAD_SET_VARIATION_ADDRESS,
+            "variation",
+            lead.validate_variation,
+        )
+
+    def _handle_lead_variation_bars(self, _address: str, *args: Any) -> None:
+        self._handle_lead_setting(
+            args,
+            self.LEAD_SET_VARIATION_BARS_ADDRESS,
+            "variation_bars",
+            lead.validate_variation_bars,
+        )
+
+    def _handle_lead_swing(self, _address: str, *args: Any) -> None:
+        self._handle_lead_setting(
+            args,
+            self.LEAD_SET_SWING_ADDRESS,
+            "swing",
+            lambda value: lead.clamp_unit(value, "swing"),
+        )
+
+    def _handle_lead_groove_link(self, _address: str, *args: Any) -> None:
+        self._handle_lead_setting(
+            args,
+            self.LEAD_SET_GROOVE_LINK_ADDRESS,
+            "groove_link",
+            lambda value: lead.validate_bool(value, "groove_link"),
+        )
+
+    def _handle_lead_seed(self, _address: str, *args: Any) -> None:
+        self._handle_lead_setting(
+            args, self.LEAD_SET_SEED_ADDRESS, "seed", lead.validate_seed
+        )
+
+    def _handle_lead_vary(self, _address: str, *args: Any) -> None:
+        if args:
+            _warn(f"{self.LEAD_VARY_ADDRESS} takes no arguments; ignoring extras")
+        self._call_callback(self._on_lead_vary, "lead vary")
+
+    # -- Stage 8.3d drone modes -------------------------------------------
+
+    def _handle_drone_setting(
+        self,
+        args: tuple[Any, ...],
+        address: str,
+        key: str,
+        parser: Callable[[Any], Any],
+    ) -> None:
+        if len(args) != 1:
+            _warn(f"{address} expects one value; got {len(args)} arguments")
+            return
+        try:
+            value = parser(args[0])
+        except (TypeError, ValueError) as exc:
+            _warn(f"{address}: {exc}")
+            return
+        self._call_callback(self._on_drone_change, "drone change", key, value)
+
+    def _handle_drone_mode(self, _address: str, *args: Any) -> None:
+        self._handle_drone_setting(
+            args, self.DRONE_SET_MODE_ADDRESS, "mode", drone.validate_mode
+        )
+
+    def _handle_drone_velocity(self, _address: str, *args: Any) -> None:
+        self._handle_drone_setting(
+            args, self.DRONE_SET_VELOCITY_ADDRESS, "velocity",
+            drone.validate_velocity,
+        )
+
+    def _handle_drone_pulse_notes(self, _address: str, *args: Any) -> None:
+        self._handle_drone_setting(
+            args, self.DRONE_SET_PULSE_NOTES_ADDRESS, "pulse_notes",
+            drone.validate_pulse_notes,
+        )
+
+    def _handle_drone_pulse_grid(self, _address: str, *args: Any) -> None:
+        self._handle_drone_setting(
+            args, self.DRONE_SET_PULSE_GRID_ADDRESS, "pulse_grid",
+            drone.validate_pulse_grid,
+        )
+
+    def _handle_drone_pulse_gate(self, _address: str, *args: Any) -> None:
+        self._handle_drone_setting(
+            args, self.DRONE_SET_PULSE_GATE_ADDRESS, "pulse_gate",
+            drone.validate_pulse_gate,
+        )
+
+    def _handle_drone_pulse_span(self, _address: str, *args: Any) -> None:
+        self._handle_drone_setting(
+            args, self.DRONE_SET_PULSE_SPAN_ADDRESS, "pulse_octave_span",
+            drone.validate_pulse_span,
+        )
+
+    def _handle_drone_slide_direction(self, _address: str, *args: Any) -> None:
+        self._handle_drone_setting(
+            args, self.DRONE_SET_SLIDE_DIRECTION_ADDRESS, "slide_direction",
+            drone.validate_slide_direction,
+        )
+
+    def _handle_drone_slide_semitones(self, _address: str, *args: Any) -> None:
+        self._handle_drone_setting(
+            args, self.DRONE_SET_SLIDE_SEMITONES_ADDRESS, "slide_semitones",
+            drone.validate_slide_semitones,
+        )
+
+    def _handle_drone_slide_seconds(self, _address: str, *args: Any) -> None:
+        self._handle_drone_setting(
+            args, self.DRONE_SET_SLIDE_SECONDS_ADDRESS, "slide_seconds",
+            drone.validate_slide_seconds,
+        )
+
+    def _handle_drone_hold_beats(self, _address: str, *args: Any) -> None:
+        self._handle_drone_setting(
+            args, self.DRONE_SET_HOLD_BEATS_ADDRESS, "hold_beats",
+            drone.validate_hold_beats,
+        )
+
+    def _handle_drone_seed(self, _address: str, *args: Any) -> None:
+        self._handle_drone_setting(
+            args, self.DRONE_SET_SEED_ADDRESS, "seed", drone.validate_seed
+        )
+
+    def _handle_drone_seq_notes(self, _address: str, *args: Any) -> None:
+        self._handle_drone_setting(
+            args, self.DRONE_SET_SEQ_NOTES_ADDRESS, "seq_notes",
+            drone.validate_seq_notes,
+        )
+
+    def _handle_drone_seq_bars(self, _address: str, *args: Any) -> None:
+        self._handle_drone_setting(
+            args, self.DRONE_SET_SEQ_BARS_ADDRESS, "seq_bars",
+            drone.validate_seq_bars,
+        )
+
+    def _handle_drone_seq_gate(self, _address: str, *args: Any) -> None:
+        self._handle_drone_setting(
+            args, self.DRONE_SET_SEQ_GATE_ADDRESS, "seq_gate",
+            drone.validate_seq_gate,
         )
 
     @staticmethod

@@ -1,12 +1,16 @@
-"""MIDI rig orchestrator for Stage 6 MPE, Stage 8.1 drums, and 8.3a bass.
+"""MIDI rig orchestrator for Stage 6 MPE, 8.1 drums, 8.3a bass, 8.3d lead.
 
-The rig owns two independent monophonic MPE outputs and, optionally, one plain
-drum output and one plain bass output::
+The rig owns the monophonic MPE outputs and, optionally, one plain drum output
+and one plain bass output::
 
-    AnchorDrone -> IAC Driver Bus 1 -> Ableton "Drone" MIDI track
-    SetArp      -> IAC Driver Bus 2 -> Ableton "Arp"   MIDI track
-    DrumRig     -> IAC Driver Bus 3 -> Ableton "Drums" MIDI track  (optional)
-    BassRig     -> IAC Driver Bus 4 -> Ableton "Bass"/"Sub" tracks (optional)
+    DroneRig (hold/pulse/bend) -> Bus 1 -> Ableton "Drone" MIDI track
+    SetArp                    -> Bus 2 -> Ableton "Arp"   MIDI track
+    DrumRig                   -> Bus 3 -> Ableton "Drums" MIDI track  (optional)
+    BassRig                   -> Bus 4 -> Ableton "Bass"/"Sub" tracks (optional)
+    LeadRig                   -> Bus 5 -> Ableton "Lead"  MIDI track  (optional)
+
+The lead is independent of ``--midi`` exactly like the bass: a missing Bus 5
+disables only the lead, and ``lead=False`` (the default) never opens it.
 
 Both buses use MIDI member channel 2 (mido index 1).  Ableton's MPE pitch-bend
 range is configured to 48 semitones; keep ``bend_range_semitones`` in
@@ -30,21 +34,43 @@ from pathlib import Path
 from typing import Any
 
 try:  # Support both ``python -m control.midi_rig`` and direct execution.
-    from .arp import SetArp
+    from . import arp as arp_module
+    from .arp import DEFAULT_ORDER, ArpSettings, SetArp
     from .bass import BassRig
-    from .drone import AnchorDrone
+    from .drone import DRONE_MODES as _DRONE_MODES
+    from .drone import DroneConfig, DroneRig, DroneSettings
+    from .drone import load_config as load_drone_config
     from .drums import DEFAULT_LANE_MASK, DRUM_RATE_DEFAULT, DrumRig
+    from .lead import LeadRig, LeadSettings
     from .mpe_output import MPEOutput
 except ImportError:  # pragma: no cover - exercised only by direct execution
-    from arp import SetArp
-    from bass import BassRig
-    from drone import AnchorDrone
-    from drums import DEFAULT_LANE_MASK, DRUM_RATE_DEFAULT, DrumRig
-    from mpe_output import MPEOutput
+    import arp as arp_module  # type: ignore[no-redef]
+    from arp import DEFAULT_ORDER, ArpSettings, SetArp  # type: ignore[no-redef]
+    from bass import BassRig  # type: ignore[no-redef]
+    from drone import (  # type: ignore[no-redef]
+        DRONE_MODES as _DRONE_MODES,
+        DroneConfig,
+        DroneRig,
+        DroneSettings,
+    )
+    from drone import load_config as load_drone_config  # type: ignore[no-redef]
+    from drums import (  # type: ignore[no-redef]
+        DEFAULT_LANE_MASK,
+        DRUM_RATE_DEFAULT,
+        DrumRig,
+    )
+    from lead import LeadRig, LeadSettings  # type: ignore[no-redef]
+    from mpe_output import MPEOutput  # type: ignore[no-redef]
 
 DEFAULT_CONFIG_PATH = (
     Path(__file__).resolve().parent.parent / "config" / "mpe_config.json"
 )
+
+
+def drone_member_modes() -> str:
+    """``hold|pulse|bend|sequence`` for the start-up log line."""
+
+    return "|".join(_DRONE_MODES)
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,7 +88,14 @@ class MPEConfig:
     gate_seconds: float
     arp_octave_offsets: tuple[int, int, int]
     arp_shared_mode: str
+    arp_order: str
     arp_seed: int
+    # Stage 8.3c: optional beat sync + self-evolution (older configs default).
+    arp_sync: str = arp_module.DEFAULT_SYNC_MODE
+    arp_division: str = arp_module.DEFAULT_DIVISION
+    arp_evolve: bool = arp_module.DEFAULT_EVOLVE
+    arp_evolve_beats: int = arp_module.DEFAULT_EVOLVE_BEATS
+    arp_evolve_depth: float = arp_module.DEFAULT_EVOLVE_DEPTH
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> MPEConfig:
@@ -112,7 +145,26 @@ class MPEConfig:
         shared_mode = _required(data, "arp_shared_mode")
         if shared_mode not in ("anchor", "random"):
             raise ValueError("arp_shared_mode must be 'anchor' or 'random'")
+        # Stage 8.3b: additive.  An older config without "arp_order" keeps the
+        # Stage 6 forward order instead of failing to load.
+        order = _order(data.get("arp_order", DEFAULT_ORDER), "arp_order")
         seed = _int(_required(data, "arp_seed"), "arp_seed")
+        # Stage 8.3c keys are additive: an 8.3b config loads as free/no-evolve.
+        sync = arp_module.validate_sync_mode(
+            data.get("arp_sync", arp_module.DEFAULT_SYNC_MODE)
+        )
+        division = arp_module.validate_division(
+            data.get("arp_division", arp_module.DEFAULT_DIVISION)
+        )
+        evolve = arp_module.validate_evolve(
+            data.get("arp_evolve", arp_module.DEFAULT_EVOLVE)
+        )
+        evolve_beats = arp_module.validate_evolve_beats(
+            data.get("arp_evolve_beats", arp_module.DEFAULT_EVOLVE_BEATS)
+        )
+        evolve_depth = arp_module.validate_evolve_depth(
+            data.get("arp_evolve_depth", arp_module.DEFAULT_EVOLVE_DEPTH)
+        )
 
         return cls(
             drone_port=drone_port,
@@ -126,7 +178,13 @@ class MPEConfig:
             gate_seconds=gate_seconds,
             arp_octave_offsets=offsets,
             arp_shared_mode=shared_mode,
+            arp_order=order,
             arp_seed=seed,
+            arp_sync=sync,
+            arp_division=division,
+            arp_evolve=evolve,
+            arp_evolve_beats=evolve_beats,
+            arp_evolve_depth=evolve_depth,
         )
 
     @classmethod
@@ -184,6 +242,16 @@ class MIDIRig:
         bass_config: A :class:`~control.bass.BassConfig`, mapping, path, or
             ``None`` (default ``config/bass_config.json``).
         bass_output: Optional fake output for the bass tests.
+        lead: Build the Stage 8.3d lead output on Bus 5 (default ``False``).
+            Works with or without ``midi``/``drums``/``bass``; a missing Bus 5
+            disables the lead only and never raises from :meth:`start`.
+        lead_config: A :class:`~control.lead.LeadConfig`, mapping, path, or
+            ``None`` (default ``config/lead_config.json``).
+        lead_output: Optional fake output for the lead tests.
+        drone_config: A :class:`~control.drone.DroneConfig`, mapping, path, or
+            ``None`` (default ``config/drone_config.json``).  It only supplies
+            the drone mode/parameters; the bus stays ``mpe_config.drone_port``.
+        bpm: Initial quarter-note tempo forwarded to the drone/lead.
     """
 
     def __init__(
@@ -200,6 +268,11 @@ class MIDIRig:
         bass: bool = False,
         bass_config: Any | None = None,
         bass_output: Any | None = None,
+        lead: bool = False,
+        lead_config: Any | None = None,
+        lead_output: Any | None = None,
+        drone_config: Any | None = None,
+        bpm: float = 120.0,
     ) -> None:
         self._midi_enabled = bool(midi)
         cfg: MPEConfig | None = None
@@ -237,9 +310,32 @@ class MIDIRig:
                 output=arp_output,
                 label="arp",
             )
-            self.drone: AnchorDrone | None = AnchorDrone(
-                self.drone_output, velocity=cfg.drone_velocity
-            )
+            # Stage 8.3d: the drone gains pulse/bend modes on top of the
+            # untouched Stage 6 hold drone (self.drone keeps working).
+            drone_cfg: Any | None = None
+            try:
+                if isinstance(drone_config, (str, Path)):
+                    drone_cfg = load_drone_config(drone_config)
+                else:
+                    drone_cfg = drone_config
+                self.drone_rig: DroneRig | None = DroneRig(
+                    self.drone_output,
+                    drone_cfg,
+                    velocity=None if drone_cfg is not None else cfg.drone_velocity,
+                    bpm=bpm,
+                )
+            except Exception as exc:  # a bad drone config keeps the hold drone
+                print(
+                    f"[DRONE] config failed: {exc}; using mode=hold",
+                    file=sys.stderr,
+                )
+                self.drone_rig = DroneRig(
+                    self.drone_output,
+                    DroneConfig(),
+                    velocity=cfg.drone_velocity,
+                    bpm=bpm,
+                )
+            self.drone = self.drone_rig.anchor
             self.arp: SetArp | None = SetArp(
                 self.arp_output,
                 step_seconds=cfg.step_seconds,
@@ -248,11 +344,18 @@ class MIDIRig:
                 shared_mode=cfg.arp_shared_mode,
                 seed=cfg.arp_seed,
                 velocity=cfg.arp_velocity,
+                order=cfg.arp_order,
+                sync_mode=cfg.arp_sync,
+                division=cfg.arp_division,
+                evolve=cfg.arp_evolve,
+                evolve_beats=cfg.arp_evolve_beats,
+                evolve_depth=cfg.arp_evolve_depth,
             )
         else:
             self.drone_output = None
             self.arp_output = None
             self.drone = None
+            self.drone_rig = None
             self.arp = None
 
         self.drums: DrumRig | None = (
@@ -271,6 +374,20 @@ class MIDIRig:
                     file=sys.stderr,
                 )
                 self.bass = None
+
+        # Stage 8.3d lead: independent of the MPE buses.  A bad lead config or
+        # a missing Bus 5 disables only the lead.
+        self.lead: LeadRig | None = None
+        if lead:
+            try:
+                self.lead = LeadRig(lead_config, output=lead_output, bpm=bpm)
+            except Exception as exc:
+                print(
+                    f"[LEAD] disabled: {exc}; drone/arp/drums/bass continue",
+                    file=sys.stderr,
+                )
+                self.lead = None
+        self._lead_requested = bool(lead)
 
         self._lock = threading.Lock()
         self._started = False
@@ -314,11 +431,19 @@ class MIDIRig:
                 f"channel={self.config.member_channel} "
                 f"bend_range={self.config.bend_range_semitones:g}"
             )
+            if self.drone_rig is not None:
+                print(
+                    f"[DRONE] modes={drone_member_modes()} "
+                    f"mode={self.drone_rig.mode} "
+                    "(pulse/bend/sequence wait for the transport)"
+                )
             print(
                 f"[MIDI] arp port={self.config.arp_port} "
                 f"channel={self.config.member_channel} "
                 f"step={self.config.step_seconds:.2f}s "
-                f"gate={self.config.gate_seconds:.2f}s"
+                f"gate={self.config.gate_seconds:.2f}s "
+                f"order={self.config.arp_order} "
+                f"sync={self.config.arp_sync}"
             )
 
         drum_ok = True
@@ -329,17 +454,25 @@ class MIDIRig:
         if self.bass is not None:
             bass_ok = self.bass.start()
 
+        # Stage 8.3d lead: never fatal.  A missing Bus 5 only disables the lead.
+        lead_ok = False
+        if self.lead is not None:
+            lead_ok = self.lead.start()
+
         try:
             if self._midi_enabled:
                 if snapshot is not None:
                     self._apply(snapshot)
+                self.drone_rig.start()
                 if self._arp_enabled:
                     self.arp.start()
         except Exception:
             self._started = False
+            if self.lead is not None and lead_ok:
+                self.lead.stop()
             if self._midi_enabled:
                 self.arp.stop()
-                self.drone.stop()
+                self.drone_rig.stop()
                 self.drone_output.close()
                 self.arp_output.close()
             if self.drums is not None and drum_ok:
@@ -372,6 +505,12 @@ class MIDIRig:
             except Exception as exc:  # bass is non-critical
                 print(f"[MIDI] bass stop failed: {exc}", file=sys.stderr)
 
+        if self.lead is not None:
+            try:
+                self.lead.stop()
+            except Exception as exc:  # lead is non-critical
+                print(f"[MIDI] lead stop failed: {exc}", file=sys.stderr)
+
         if not self._midi_enabled:
             return
 
@@ -384,7 +523,7 @@ class MIDIRig:
             self.arp.stop()
         finally:
             try:
-                self.drone.stop()
+                self.drone_rig.stop()
             finally:
                 for output in (self.drone_output, self.arp_output):
                     try:
@@ -477,11 +616,19 @@ class MIDIRig:
         if enabled:
             if snapshot is not None:
                 ratios, anchor, fundamental = snapshot
-                self.drone.on_set(ratios, anchor, fundamental)
+                if self.drone_rig is not None:
+                    self.drone_rig.on_set(ratios, anchor, fundamental)
+                else:
+                    self.drone.on_set(ratios, anchor, fundamental)
             else:
                 print("[MIDI] drone enabled; waiting for the next set update")
+            if self.drone_rig is not None:
+                self.drone_rig.start()
         else:
-            self.drone.stop()
+            if self.drone_rig is not None:
+                self.drone_rig.stop()
+            else:
+                self.drone.stop()
             print("[MIDI] drone disabled")
 
     def set_arp_enabled(self, enabled: bool) -> None:
@@ -514,6 +661,69 @@ class MIDIRig:
             print("[MIDI] arp disabled")
 
     # ------------------------------------------------------------------
+    # Stage 8.3b arp parameters
+    # ------------------------------------------------------------------
+
+    @property
+    def arp_port_ok(self) -> bool:
+        """True when the rig is started and the arp MIDI output is open."""
+
+        output = self.arp_output
+        if not self._midi_enabled or output is None:
+            return False
+        with self._lock:
+            started = self._started
+        return bool(started and getattr(output, "is_open", False))
+
+    @property
+    def arp_settings(self) -> ArpSettings:
+        """Current arp settings (shipped defaults when the arp is absent)."""
+
+        if self.arp is None:
+            return ArpSettings()
+        return self.arp.settings
+
+    def arp_state(self) -> list[Any]:
+        """``/ji/arp/state`` payload, always well-formed.
+
+        With ``midi=False`` (or a missing Bus 2) this reports disabled and
+        ``port_ok = 0`` so the GUI shows a waiting state without crashing.
+        """
+
+        enabled = self.arp_enabled
+        if self.arp is None:
+            return ArpSettings().state_args(False, False)
+        return self.arp.state_args(enabled, self.arp_port_ok)
+
+    def set_arp_setting(self, name: str, value: object) -> object:
+        """Apply one arp setting; quantified/queued by the bridge, not here."""
+
+        if self.arp is None or not self._midi_enabled:
+            raise RuntimeError("arp is not configured (start with --midi)")
+        return self.arp.set_setting(name, value)
+
+    def set_arp_bpm(self, bpm: float) -> None:
+        """Feed the bridge's canonical BPM to beat sync and the evolve clock."""
+
+        if self.arp is not None:
+            self.arp.set_bpm(bpm)
+
+    def set_arp_transport(self, running: bool) -> None:
+        if self.arp is not None:
+            self.arp.set_transport(running)
+
+    def sync_arp_phase(self, delay: float) -> None:
+        """Snap the synced arp to a beat boundary ``delay`` seconds from now."""
+
+        if self.arp is not None:
+            self.arp.sync_phase(delay)
+
+    def set_arp_settings(self, settings: ArpSettings) -> object:
+        if self.arp is None or not self._midi_enabled:
+            raise RuntimeError("arp is not configured (start with --midi)")
+        return self.arp.set_settings(settings)
+
+    # ------------------------------------------------------------------
     # Set updates (snapshot from the bridge)
     # ------------------------------------------------------------------
 
@@ -540,6 +750,11 @@ class MIDIRig:
                 self.bass.on_set(snapshot[0], anchor, snapshot[2])
             except Exception as exc:  # bass is non-critical
                 print(f"[BASS] set update failed: {exc}", file=sys.stderr)
+        if self.lead is not None:
+            try:
+                self.lead.on_set(snapshot[0], anchor, snapshot[2])
+            except Exception as exc:  # lead is non-critical
+                print(f"[LEAD] set update failed: {exc}", file=sys.stderr)
         if started and self._midi_enabled:
             self._apply(snapshot)
 
@@ -665,6 +880,108 @@ class MIDIRig:
         if self.bass is not None:
             self.bass.set_note_callback(callback)
 
+    # -- Stage 8.3d lead --------------------------------------------------
+
+    @property
+    def lead_port(self) -> str:
+        return "" if self.lead is None else self.lead.port
+
+    @property
+    def lead_requested(self) -> bool:
+        """True when the rig was built with ``lead=True`` (flag or config)."""
+
+        return bool(getattr(self, "_lead_requested", False))
+
+    @property
+    def lead_enabled(self) -> bool:
+        return False if self.lead is None else self.lead.enabled
+
+    @property
+    def lead_port_ok(self) -> bool:
+        return False if self.lead is None else self.lead.port_ok
+
+    @property
+    def lead_playing(self) -> bool:
+        return False if self.lead is None else self.lead.playing
+
+    def lead_state(self) -> list[Any]:
+        """``/ji/lead/state`` payload; always well-formed."""
+
+        if self.lead is None:
+            return LeadSettings().state_args(False, False)
+        return self.lead.state_args()
+
+    def set_lead_transport(self, running: bool) -> None:
+        if self.lead is not None:
+            self.lead.set_transport(running)
+
+    def set_lead_bpm(self, bpm: float) -> None:
+        if self.lead is not None:
+            self.lead.set_bpm(bpm)
+
+    def set_lead_meter(self, meter_num: int, meter_den: int) -> None:
+        if self.lead is not None:
+            self.lead.set_meter(meter_num, meter_den)
+
+    def set_lead_setting(self, name: str, value: object) -> object:
+        if self.lead is None:
+            raise RuntimeError("lead is not configured (start with --lead)")
+        return self.lead.set_setting(name, value)
+
+    def set_lead_enabled(self, enabled: bool) -> bool:
+        if self.lead is None:
+            return False
+        return self.lead.set_enabled(enabled)
+
+    def vary_lead(self) -> object:
+        if self.lead is None:
+            raise RuntimeError("lead is not configured (start with --lead)")
+        return self.lead.vary()
+
+    def set_lead_groove_swing(self, swing: float) -> None:
+        if self.lead is not None:
+            self.lead.set_groove_swing(swing)
+
+    def set_lead_note_callback(self, callback: Any | None) -> None:
+        if self.lead is not None:
+            self.lead.set_note_callback(callback)
+
+    # -- Stage 8.3d drone modes -------------------------------------------
+
+    @property
+    def drone_port_ok(self) -> bool:
+        if not self._midi_enabled or self.drone_output is None:
+            return False
+        with self._lock:
+            started = self._started
+        return bool(started and getattr(self.drone_output, "is_open", False))
+
+    def drone_state(self) -> list[Any]:
+        """``/ji/drone/state`` payload; always well-formed."""
+
+        if self.drone_rig is None:
+            return DroneSettings().state_args(False)
+        return self.drone_rig.state_args(self.drone_port_ok)
+
+    def set_drone_setting(self, name: str, value: object) -> object:
+        if self.drone_rig is None or not self._midi_enabled:
+            raise RuntimeError("drone is not configured (start with --midi)")
+        return self.drone_rig.set_setting(name, value)
+
+    def set_drone_bpm(self, bpm: float) -> None:
+        if self.drone_rig is not None:
+            self.drone_rig.set_bpm(bpm)
+
+    def set_drone_transport(self, running: bool) -> None:
+        if self.drone_rig is not None:
+            self.drone_rig.set_transport(running)
+
+    def set_drone_meter(self, meter_num: int, meter_den: int) -> None:
+        """Forward the meter; the ``sequence`` note length is in bars."""
+
+        if self.drone_rig is not None:
+            self.drone_rig.set_meter(meter_num, meter_den)
+
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
@@ -674,7 +991,10 @@ class MIDIRig:
             return
         ratios, anchor, fundamental = snapshot
         if self._drone_enabled:
-            self.drone.on_set(ratios, anchor, fundamental)
+            if self.drone_rig is not None:
+                self.drone_rig.on_set(ratios, anchor, fundamental)
+            else:
+                self.drone.on_set(ratios, anchor, fundamental)
         if self._arp_enabled:
             self.arp.on_set(ratios, anchor, fundamental)
 
@@ -737,3 +1057,10 @@ def _offsets(value: Any, label: str) -> tuple[int, int, int]:
             raise ValueError(f"{label} offsets must be between -8 and 8")
         cleaned.append(number)
     return cleaned[0], cleaned[1], cleaned[2]
+
+
+def _order(value: Any, label: str) -> str:
+    """Validate a Stage 8.3b arp order name."""
+
+    return arp_module.validate_order(value)
+

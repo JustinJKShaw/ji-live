@@ -1,9 +1,18 @@
 # JI Station — Stage 8.3a Monophonic JI Bass Voice
 
-**Status:** implemented; **awaiting human audio/MIDI acceptance.** The agent
-verified the pure Python model and a fake MIDI output only. Audio, IAC Bus 4,
-Ableton, sclang, and the live PyQt6 window were not testable in the agent
-environment (the Qt harness skips without `libEGL`).
+**Status:** **human-tested and accepted 2026-10-31.** The owner got Bus 4, the
+Bass/Sub tracks, and the GUI working and confirmed the bass is functional. The
+agent's own verification remains limited to the pure Python model, a fake MIDI
+output, and the bridge/OSC layer; the live PyQt6 window was not executed by the
+agent (no `libEGL` in the container).
+
+**Stage 8.3b (arp parameters + one-entry startup) is implemented and awaiting
+human acceptance:** see
+[README_stage8_3b.md](README_stage8_3b.md). It adds mutable arp parameters
+(step, gate, velocity, three octave offsets, shared mode, playback order, seed)
+on `/ji/arp/*` + `/ji/arp/state` and `PHASE_ARP`, plus the one-sclang
+(`ji_start.scd`) and one-Python (`run/ji_station.py`) startup path documented in
+[START_HERE.md](START_HERE.md). The bass behavior documented here is unchanged.
 
 Stage 8.3a is the first increment of Stage 8.3: a **monophonic, transport-synced
 JI bass**. A lead voice, polyphony, and the rest of 8.3 are later. The bass is
@@ -334,6 +343,10 @@ port state, and queued/immediate feedback.
 
 Agent result: all pure harnesses pass. The Qt test **skipped** here because the
 container lacks `libEGL.so.1`; the window was not executed by the agent.
+
+Owner result: Bus 4 found, the bass and GUI worked, and the owner confirmed the
+stage on 2026-10-31. Human acceptance is the authority; no further agent
+audio/MIDI claims are made.
 
 ---
 

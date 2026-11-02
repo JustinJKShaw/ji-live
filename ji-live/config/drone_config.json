@@ -1,0 +1,17 @@
+{
+  "port": "IAC Driver Bus 1",
+  "mode": "hold",
+  "velocity": 90,
+  "pulse_notes": 4,
+  "pulse_grid": "1/4",
+  "pulse_gate": 0.5,
+  "pulse_octave_span": 1,
+  "slide_direction": "down",
+  "slide_semitones": 2,
+  "slide_seconds": 0.4,
+  "hold_beats": 2.5,
+  "seed": 1,
+  "seq_notes": 5,
+  "seq_gate": 1.0,
+  "seq_bars": "1"
+}

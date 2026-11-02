@@ -35,9 +35,10 @@ found during this check and fixed in 8.2.2 (`action.value(index)`); the owner
 re-tested beat-mode Record/Play successfully. Human acceptance is the
 authority; no further agent audio/MIDI claims are made.
 
-**Next:** Stage 8.3a is the monophonic JI bass voice. It is implemented and
-awaiting human acceptance; see [README_stage8_3.md](README_stage8_3.md). The
-agent prompt is [PROMPT_stage8_3_bass.md](prompts/PROMPT_stage8_3_bass.md).
+**Next:** Stage 8.3a is the monophonic JI bass voice, now human-accepted; see
+[README_stage8_3.md](README_stage8_3.md). Stage 8.3b (arp parameters + one-entry
+startup) is next; its prompt is
+[PROMPT_stage8_3b_arp_startup.md](prompts/PROMPT_stage8_3b_arp_startup.md).
 
 ---
 

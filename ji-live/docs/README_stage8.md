@@ -13,8 +13,8 @@ the Stage 6 drone/arp, the Stage 7 GUI controls, or `/ji/freqset/update`.
 **Next:** Stage 8.2 (groove generation, per-step grid, swing, probability,
 and beat-quantized state changes) is human-accepted; see
 [README_stage8_2.md](README_stage8_2.md). Stage 8.3a is the bass voice,
-implemented and awaiting human acceptance; see
-[README_stage8_3.md](README_stage8_3.md).
+human-accepted; see [README_stage8_3.md](README_stage8_3.md). Stage 8.3b
+(arp parameters + one-entry startup) is next.
 
 ---
 

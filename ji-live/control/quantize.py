@@ -20,7 +20,10 @@ Actions are grouped into phases and applied in this order:
 3. ``groove`` (preset/grid/modifiers)
 4. ``drums`` (enable/rate/lanes)
 5. ``bass`` (Stage 8.3a bass settings)
-6. ``midi`` (drone/arp enables)
+6. ``arp`` (Stage 8.3b arp parameters)
+7. ``lead`` (Stage 8.3d lead settings and variations)
+8. ``drone`` (Stage 8.3d drone mode and pad parameters)
+9. ``midi`` (drone/arp enables)
 
 Within a phase, actions retain request order (a monotonically increasing
 sequence), so the last request generally wins when two actions touch the same
@@ -53,7 +56,10 @@ PHASE_OCTAVE = 1
 PHASE_GROOVE = 2
 PHASE_DRUMS = 3
 PHASE_BASS = 4
-PHASE_MIDI = 5
+PHASE_ARP = 5
+PHASE_LEAD = 6
+PHASE_DRONE = 7
+PHASE_MIDI = 8
 
 PHASE_NAMES: dict[int, str] = {
     PHASE_MUTATION: "mutation",
@@ -61,6 +67,9 @@ PHASE_NAMES: dict[int, str] = {
     PHASE_GROOVE: "groove",
     PHASE_DRUMS: "drums",
     PHASE_BASS: "bass",
+    PHASE_ARP: "arp",
+    PHASE_LEAD: "lead",
+    PHASE_DRONE: "drone",
     PHASE_MIDI: "midi",
 }
 
@@ -445,9 +454,12 @@ StateQueue = BeatQuantizer
 
 __all__ = [
     "BeatQuantizer",
+    "PHASE_ARP",
     "PHASE_BASS",
+    "PHASE_DRONE",
     "PHASE_DRUMS",
     "PHASE_GROOVE",
+    "PHASE_LEAD",
     "PHASE_MIDI",
     "PHASE_MUTATION",
     "PHASE_NAMES",

@@ -101,6 +101,56 @@ BASS_SET_SUB_OCTAVES = "/ji/bass/set_sub_octaves"
 BASS_STATE = "/ji/bass/state"
 BASS_NOTE = "/ji/bass/note"
 
+# Stage 8.3b arp parameters and status.
+ARP_SET_STEP = "/ji/arp/set_step"
+ARP_SET_GATE = "/ji/arp/set_gate"
+ARP_SET_VELOCITY = "/ji/arp/set_velocity"
+ARP_SET_OCTAVES = "/ji/arp/set_octaves"
+ARP_SET_SHARED_MODE = "/ji/arp/set_shared_mode"
+ARP_SET_ORDER = "/ji/arp/set_order"
+ARP_SET_SEED = "/ji/arp/set_seed"
+ARP_SET_SYNC = "/ji/arp/set_sync"
+ARP_SET_DIVISION = "/ji/arp/set_division"
+ARP_SET_EVOLVE = "/ji/arp/set_evolve"
+ARP_SET_EVOLVE_BEATS = "/ji/arp/set_evolve_beats"
+ARP_SET_EVOLVE_DEPTH = "/ji/arp/set_evolve_depth"
+ARP_STATE = "/ji/arp/state"
+
+#: Stage 8.3d lead/melody controls (UI -> bridge).
+LEAD_SET_ENABLED = "/ji/lead/set_enabled"
+LEAD_SET_GRID = "/ji/lead/set_grid"
+LEAD_SET_PHRASE_BARS = "/ji/lead/set_phrase_bars"
+LEAD_SET_DENSITY = "/ji/lead/set_density"
+LEAD_SET_GATE = "/ji/lead/set_gate"
+LEAD_SET_VELOCITY = "/ji/lead/set_velocity"
+LEAD_SET_OCTAVE_RANGE = "/ji/lead/set_octave_range"
+LEAD_SET_BASE_OCTAVE = "/ji/lead/set_base_octave"
+LEAD_SET_VARIATION = "/ji/lead/set_variation"
+LEAD_SET_VARIATION_BARS = "/ji/lead/set_variation_bars"
+LEAD_SET_SWING = "/ji/lead/set_swing"
+LEAD_SET_GROOVE_LINK = "/ji/lead/set_groove_link"
+LEAD_SET_SEED = "/ji/lead/set_seed"
+LEAD_VARY = "/ji/lead/vary"
+LEAD_STATE = "/ji/lead/state"
+LEAD_NOTE = "/ji/lead/note"
+
+#: Stage 8.3d drone modes/pad parameters (UI -> bridge).
+DRONE_SET_MODE = "/ji/drone/set_mode"
+DRONE_SET_VELOCITY = "/ji/drone/set_velocity"
+DRONE_SET_PULSE_NOTES = "/ji/drone/set_pulse_notes"
+DRONE_SET_PULSE_GRID = "/ji/drone/set_pulse_grid"
+DRONE_SET_PULSE_GATE = "/ji/drone/set_pulse_gate"
+DRONE_SET_PULSE_SPAN = "/ji/drone/set_pulse_span"
+DRONE_SET_SLIDE_DIRECTION = "/ji/drone/set_slide_direction"
+DRONE_SET_SLIDE_SEMITONES = "/ji/drone/set_slide_semitones"
+DRONE_SET_SLIDE_SECONDS = "/ji/drone/set_slide_seconds"
+DRONE_SET_HOLD_BEATS = "/ji/drone/set_hold_beats"
+DRONE_SET_SEED = "/ji/drone/set_seed"
+DRONE_SET_SEQ_NOTES = "/ji/drone/set_seq_notes"
+DRONE_SET_SEQ_BARS = "/ji/drone/set_seq_bars"
+DRONE_SET_SEQ_GATE = "/ji/drone/set_seq_gate"
+DRONE_STATE = "/ji/drone/state"
+
 AUTOTUNE_SET = "/ji/autotune/set"
 AUTOTUNE_STATE = "/ji/autotune/state"
 
@@ -133,6 +183,10 @@ STATUS_ADDRESSES = (
     QUANTIZE_STATE,
     BASS_STATE,
     BASS_NOTE,
+    ARP_STATE,
+    LEAD_STATE,
+    LEAD_NOTE,
+    DRONE_STATE,
     CPU,
     LOOP_STATE,
     LOOP_CONFIG,
@@ -249,6 +303,142 @@ BASS_BASE_OCTAVE_MAX = 0
 BASS_SUB_OCTAVES: tuple[int, ...] = (1, 2)
 BASS_SEED_MAX = 2**31 - 1
 
+# Stage 8.3b arp ranges/defaults.  These mirror control/arp.py exactly; the
+# shipped defaults must reproduce the Stage 6 arp (0.25 s / 0.20 s / forward /
+# anchor / [0, 1, 2] / seed 1).
+ARP_STEP_MIN = 0.05
+ARP_STEP_MAX = 2.0
+ARP_STEP_DEFAULT = 0.25
+ARP_GATE_MIN = 0.01
+ARP_GATE_MAX = 2.0
+ARP_GATE_DEFAULT = 0.20
+ARP_VELOCITY_MIN = 1
+ARP_VELOCITY_MAX = 127
+ARP_VELOCITY_DEFAULT = 90
+ARP_OCTAVE_MIN = -8
+ARP_OCTAVE_MAX = 8
+ARP_DEFAULT_OCTAVES: tuple[int, int, int] = (0, 1, 2)
+ARP_SHARED_MODES: tuple[str, ...] = ("anchor", "random")
+ARP_DEFAULT_SHARED_MODE = "anchor"
+ARP_ORDERS: tuple[str, ...] = ("forward", "reverse", "pingpong", "random")
+ARP_DEFAULT_ORDER = "forward"
+ARP_SEED_MAX = 2**31 - 1
+ARP_DEFAULT_SEED = 1
+
+# Stage 8.3c: beat sync + self-evolution.
+ARP_SYNC_MODES: tuple[str, ...] = ("free", "beat")
+ARP_DEFAULT_SYNC = "free"
+ARP_DIVISIONS: tuple[str, ...] = ("1/4", "1/8", "1/16", "1/8T")
+ARP_DEFAULT_DIVISION = "1/8"
+ARP_DIVISION_QUARTERS: dict[str, float] = {
+    "1/4": 1.0,
+    "1/8": 0.5,
+    "1/16": 0.25,
+    "1/8T": 1.0 / 3.0,
+}
+ARP_EVOLVE_BEATS_MIN = 1
+ARP_EVOLVE_BEATS_MAX = 64
+ARP_DEFAULT_EVOLVE_BEATS = 4
+ARP_DEFAULT_EVOLVE = False
+ARP_EVOLVE_DEPTH_DEFAULT = 0.0
+
+# Stage 8.3d lead constants (mirror control/lead.py).
+LEAD_DEFAULT_ENABLED = False
+LEAD_GRID_STEPS: dict[str, float] = {
+    "1/4": 1.0,
+    "1/8": 0.5,
+    "1/16": 0.25,
+    "1/8T": 1.0 / 3.0,
+}
+LEAD_GRIDS: tuple[str, ...] = ("1/4", "1/8", "1/16", "1/8T")
+LEAD_DEFAULT_GRID = "1/8"
+LEAD_PHRASE_BARS_MIN = 1
+LEAD_PHRASE_BARS_MAX = 8
+LEAD_DEFAULT_PHRASE_BARS = 2
+LEAD_DENSITY_MIN = 0.1
+LEAD_DENSITY_MAX = 1.0
+LEAD_DEFAULT_DENSITY = 0.75
+LEAD_GATE_MIN = 0.05
+LEAD_GATE_MAX = 4.0
+LEAD_DEFAULT_GATE = 0.5
+LEAD_VELOCITY_MIN = 1
+LEAD_VELOCITY_MAX = 127
+LEAD_DEFAULT_VELOCITY = 90
+LEAD_OCTAVE_RANGE_MIN = 0
+LEAD_OCTAVE_RANGE_MAX = 2
+LEAD_DEFAULT_OCTAVE_RANGE = 1
+LEAD_BASE_OCTAVE_MIN = -2
+LEAD_BASE_OCTAVE_MAX = 2
+LEAD_DEFAULT_BASE_OCTAVE = 0
+LEAD_VARIATIONS: tuple[str, ...] = (
+    "identity",
+    "transpose",
+    "invert",
+    "retrograde",
+    "thin",
+    "ornament",
+    "rhythm",
+    "random",
+)
+LEAD_DEFAULT_VARIATION = "identity"
+LEAD_VARIATION_BARS_MIN = 0
+LEAD_VARIATION_BARS_MAX = 16
+LEAD_DEFAULT_VARIATION_BARS = 0
+LEAD_SEED_MAX = 2**31 - 1
+LEAD_DEFAULT_SEED = 1
+
+# Stage 8.3d drone constants (mirror control/drone.py).
+DRONE_MODES: tuple[str, ...] = ("hold", "pulse", "bend", "sequence")
+DRONE_DEFAULT_MODE = "hold"
+DRONE_VELOCITY_MIN = 1
+DRONE_VELOCITY_MAX = 127
+DRONE_DEFAULT_VELOCITY = 90
+DRONE_PULSE_NOTES_MIN = 2
+DRONE_PULSE_NOTES_MAX = 8
+DRONE_DEFAULT_PULSE_NOTES = 4
+DRONE_PULSE_GRIDS: tuple[str, ...] = ("1/4", "1/8", "1/16")
+DRONE_PULSE_GRID_QUARTERS: dict[str, float] = {
+    "1/4": 1.0,
+    "1/8": 0.5,
+    "1/16": 0.25,
+}
+DRONE_DEFAULT_PULSE_GRID = "1/4"
+DRONE_PULSE_GATE_MIN = 0.05
+DRONE_PULSE_GATE_MAX = 2.0
+DRONE_DEFAULT_PULSE_GATE = 0.5
+DRONE_PULSE_SPAN_MIN = 0
+DRONE_PULSE_SPAN_MAX = 2
+DRONE_DEFAULT_PULSE_SPAN = 1
+DRONE_SLIDE_DIRECTIONS: tuple[str, ...] = ("down", "up")
+DRONE_DEFAULT_SLIDE_DIRECTION = "down"
+DRONE_SLIDE_SEMITONES_MIN = 1
+DRONE_SLIDE_SEMITONES_MAX = 12
+DRONE_DEFAULT_SLIDE_SEMITONES = 2
+DRONE_SLIDE_SECONDS_MIN = 0.05
+DRONE_SLIDE_SECONDS_MAX = 4.0
+DRONE_DEFAULT_SLIDE_SECONDS = 0.4
+DRONE_HOLD_BEATS_MIN = 0.25
+DRONE_HOLD_BEATS_MAX = 16.0
+DRONE_DEFAULT_HOLD_BEATS = 2.5
+DRONE_SEED_MAX = 2**31 - 1
+DRONE_DEFAULT_SEED = 1
+
+# Stage 8.3d.1: drone ``sequence`` (harmonic movement through the set).
+DRONE_SEQ_NOTES_MIN = 2
+DRONE_SEQ_NOTES_MAX = 8
+DRONE_DEFAULT_SEQ_NOTES = 5
+DRONE_SEQ_BARS: tuple[str, ...] = ("1/4", "1/2", "1", "2", "4")
+DRONE_SEQ_BARS_VALUE: dict[str, float] = {
+    "1/4": 0.25,
+    "1/2": 0.5,
+    "1": 1.0,
+    "2": 2.0,
+    "4": 4.0,
+}
+DRONE_DEFAULT_SEQ_BARS = "1"
+DRONE_SEQ_GATE_MIN = 0.1
+DRONE_SEQ_GATE_MAX = 1.0
+DRONE_DEFAULT_SEQ_GATE = 1.0
 
 
 @dataclass(frozen=True)
@@ -430,6 +620,208 @@ BASS_SETTING_ADDRESSES: dict[str, str] = {
     "sub_enabled": BASS_SET_SUB_ENABLED,
     "sub_octaves": BASS_SET_SUB_OCTAVES,
 }
+
+ARP_PARAMS: tuple[ParamSpec, ...] = (
+    ParamSpec(
+        "step_seconds",
+        "Step",
+        ARP_SET_STEP,
+        ARP_STEP_MIN,
+        ARP_STEP_MAX,
+        ARP_STEP_DEFAULT,
+        fmt="{:.2f}",
+        suffix=" s",
+    ),
+    ParamSpec(
+        "gate_seconds",
+        "Gate",
+        ARP_SET_GATE,
+        ARP_GATE_MIN,
+        ARP_GATE_MAX,
+        ARP_GATE_DEFAULT,
+        fmt="{:.2f}",
+        suffix=" s",
+    ),
+    ParamSpec(
+        "velocity",
+        "Vel",
+        ARP_SET_VELOCITY,
+        float(ARP_VELOCITY_MIN),
+        float(ARP_VELOCITY_MAX),
+        float(ARP_VELOCITY_DEFAULT),
+        integer=True,
+        fmt="{:d}",
+    ),
+)
+ARP_PARAM_MAP: dict[str, ParamSpec] = {
+    spec.key: spec for spec in ARP_PARAMS
+}
+
+#: The evolution depth is a knob of its own (row 2 of the Arp group).
+ARP_EVOLVE_DEPTH_PARAM = ParamSpec(
+    "evolve_depth",
+    "Depth",
+    ARP_SET_EVOLVE_DEPTH,
+    0.0,
+    1.0,
+    ARP_EVOLVE_DEPTH_DEFAULT,
+)
+
+ARP_SETTING_ADDRESSES: dict[str, str] = {
+    "step_seconds": ARP_SET_STEP,
+    "gate_seconds": ARP_SET_GATE,
+    "velocity": ARP_SET_VELOCITY,
+    "octave_offsets": ARP_SET_OCTAVES,
+    "shared_mode": ARP_SET_SHARED_MODE,
+    "order": ARP_SET_ORDER,
+    "seed": ARP_SET_SEED,
+    "sync_mode": ARP_SET_SYNC,
+    "division": ARP_SET_DIVISION,
+    "evolve": ARP_SET_EVOLVE,
+    "evolve_beats": ARP_SET_EVOLVE_BEATS,
+    "evolve_depth": ARP_SET_EVOLVE_DEPTH,
+}
+ARP_SETTING_ALIASES: dict[str, str] = {
+    "step": "step_seconds",
+    "gate": "gate_seconds",
+    "octaves": "octave_offsets",
+    "shared": "shared_mode",
+    "sync": "sync_mode",
+    "evolve_every": "evolve_beats",
+    "depth": "evolve_depth",
+}
+
+# -- Stage 8.3d lead -------------------------------------------------------
+
+LEAD_SETTING_ADDRESSES: dict[str, str] = {
+    "enabled": LEAD_SET_ENABLED,
+    "grid": LEAD_SET_GRID,
+    "phrase_bars": LEAD_SET_PHRASE_BARS,
+    "density": LEAD_SET_DENSITY,
+    "gate_beats": LEAD_SET_GATE,
+    "velocity": LEAD_SET_VELOCITY,
+    "octave_range": LEAD_SET_OCTAVE_RANGE,
+    "base_octave": LEAD_SET_BASE_OCTAVE,
+    "variation": LEAD_SET_VARIATION,
+    "variation_bars": LEAD_SET_VARIATION_BARS,
+    "swing": LEAD_SET_SWING,
+    "groove_link": LEAD_SET_GROOVE_LINK,
+    "seed": LEAD_SET_SEED,
+}
+LEAD_SETTING_ALIASES: dict[str, str] = {
+    "gate": "gate_beats",
+    "bars": "phrase_bars",
+    "phrase": "phrase_bars",
+    "octaves": "octave_range",
+    "base": "base_octave",
+    "var_every": "variation_bars",
+    "link": "groove_link",
+}
+
+LEAD_PARAMS: tuple[ParamSpec, ...] = (
+    ParamSpec(
+        "density",
+        "Density",
+        LEAD_SET_DENSITY,
+        LEAD_DENSITY_MIN,
+        LEAD_DENSITY_MAX,
+        LEAD_DEFAULT_DENSITY,
+    ),
+    ParamSpec(
+        "gate_beats",
+        "Gate",
+        LEAD_SET_GATE,
+        LEAD_GATE_MIN,
+        LEAD_GATE_MAX,
+        LEAD_DEFAULT_GATE,
+        fmt="{:.2f}",
+        suffix=" b",
+    ),
+    ParamSpec(
+        "velocity",
+        "Vel",
+        LEAD_SET_VELOCITY,
+        float(LEAD_VELOCITY_MIN),
+        float(LEAD_VELOCITY_MAX),
+        float(LEAD_DEFAULT_VELOCITY),
+        integer=True,
+        fmt="{:d}",
+    ),
+    ParamSpec(
+        "swing", "Swing", LEAD_SET_SWING, 0.0, 1.0, 0.0
+    ),
+)
+LEAD_PARAM_MAP: dict[str, ParamSpec] = {
+    spec.key: spec for spec in LEAD_PARAMS
+}
+
+# -- Stage 8.3d drone modes ------------------------------------------------
+
+DRONE_SETTING_ADDRESSES: dict[str, str] = {
+    "mode": DRONE_SET_MODE,
+    "velocity": DRONE_SET_VELOCITY,
+    "pulse_notes": DRONE_SET_PULSE_NOTES,
+    "pulse_grid": DRONE_SET_PULSE_GRID,
+    "pulse_gate": DRONE_SET_PULSE_GATE,
+    "pulse_octave_span": DRONE_SET_PULSE_SPAN,
+    "slide_direction": DRONE_SET_SLIDE_DIRECTION,
+    "slide_semitones": DRONE_SET_SLIDE_SEMITONES,
+    "slide_seconds": DRONE_SET_SLIDE_SECONDS,
+    "hold_beats": DRONE_SET_HOLD_BEATS,
+    "seed": DRONE_SET_SEED,
+    "seq_notes": DRONE_SET_SEQ_NOTES,
+    "seq_bars": DRONE_SET_SEQ_BARS,
+    "seq_gate": DRONE_SET_SEQ_GATE,
+}
+DRONE_SETTING_ALIASES: dict[str, str] = {
+    "span": "pulse_octave_span",
+    "pulse_span": "pulse_octave_span",
+    "dir": "slide_direction",
+    "semis": "slide_semitones",
+    "slide": "slide_seconds",
+    "hold": "hold_beats",
+}
+
+DRONE_VELOCITY_PARAM = ParamSpec(
+    "velocity",
+    "Vel",
+    DRONE_SET_VELOCITY,
+    float(DRONE_VELOCITY_MIN),
+    float(DRONE_VELOCITY_MAX),
+    float(DRONE_DEFAULT_VELOCITY),
+    integer=True,
+    fmt="{:d}",
+)
+DRONE_PULSE_GATE_PARAM = ParamSpec(
+    "pulse_gate",
+    "Gate",
+    DRONE_SET_PULSE_GATE,
+    DRONE_PULSE_GATE_MIN,
+    DRONE_PULSE_GATE_MAX,
+    DRONE_DEFAULT_PULSE_GATE,
+    fmt="{:.2f}",
+    suffix=" b",
+)
+DRONE_SEQ_GATE_PARAM = ParamSpec(
+    "seq_gate",
+    "Gate",
+    DRONE_SET_SEQ_GATE,
+    DRONE_SEQ_GATE_MIN,
+    DRONE_SEQ_GATE_MAX,
+    DRONE_DEFAULT_SEQ_GATE,
+    fmt="{:.0%}",
+)
+
+DRONE_SLIDE_PARAM = ParamSpec(
+    "slide_seconds",
+    "Slide",
+    DRONE_SET_SLIDE_SECONDS,
+    DRONE_SLIDE_SECONDS_MIN,
+    DRONE_SLIDE_SECONDS_MAX,
+    DRONE_DEFAULT_SLIDE_SECONDS,
+    fmt="{:.2f}",
+    suffix=" s",
+)
 
 AUTOTUNE_PARAMS: tuple[ParamSpec, ...] = (
     ParamSpec(
@@ -641,6 +1033,281 @@ def _validate_bass_sub_octaves(value: Any) -> int:
     if octaves not in BASS_SUB_OCTAVES:
         raise ValueError("sub octaves must be 1 or 2")
     return octaves
+
+
+# -- Stage 8.3b arp validators ---------------------------------------------
+
+
+def _validate_arp_setting_name(name: Any) -> str:
+    key = str(name).strip().lower()
+    key = ARP_SETTING_ALIASES.get(key, key)
+    if key not in ARP_SETTING_ADDRESSES:
+        raise ValueError(f"unknown arp setting {name!r}")
+    return key
+
+
+def _validate_arp_step(value: Any) -> float:
+    return clamp(_as_finite_float(value, "arp step"), ARP_STEP_MIN, ARP_STEP_MAX)
+
+
+def _validate_arp_gate(value: Any, step: Any = None) -> float:
+    """Clamp the gate to 0.01..2.0 and, when given, to the step duration."""
+
+    high = ARP_GATE_MAX
+    if step is not None:
+        high = min(ARP_GATE_MAX, _validate_arp_step(step))
+    return clamp(_as_finite_float(value, "arp gate"), ARP_GATE_MIN, high)
+
+
+def _validate_arp_velocity(value: Any) -> int:
+    return clamp_int(value, ARP_VELOCITY_MIN, ARP_VELOCITY_MAX)
+
+
+def _validate_arp_octaves(value: Any) -> tuple[int, int, int]:
+    if isinstance(value, (str, bytes)):
+        raise TypeError("arp octaves must be three integers")
+    try:
+        values = list(value)
+    except TypeError:
+        raise TypeError("arp octaves must be three integers") from None
+    if len(values) != 3:
+        raise ValueError("arp octaves must contain exactly three integers")
+    cleaned = [
+        clamp_int(item, ARP_OCTAVE_MIN, ARP_OCTAVE_MAX) for item in values
+    ]
+    return cleaned[0], cleaned[1], cleaned[2]
+
+
+def _validate_arp_shared_mode(value: Any) -> str:
+    text = str(value).strip().lower()
+    if text not in ARP_SHARED_MODES:
+        raise ValueError("arp shared_mode must be 'anchor' or 'random'")
+    return text
+
+
+def _validate_arp_order(value: Any) -> str:
+    text = str(value).strip().lower()
+    if text not in ARP_ORDERS:
+        raise ValueError("arp order must be one of " + ", ".join(ARP_ORDERS))
+    return text
+
+
+def _validate_arp_seed(value: Any) -> int:
+    return clamp_int(value, 0, ARP_SEED_MAX)
+
+
+def _validate_arp_sync(value: Any) -> str:
+    if isinstance(value, bool):
+        return "beat" if value else "free"
+    text = str(value).strip().lower()
+    if text in ("beat", "sync", "synced", "on", "true", "1"):
+        return "beat"
+    if text in ("free", "off", "false", "0"):
+        return "free"
+    raise ValueError("arp sync must be 'free' or 'beat'")
+
+
+def _validate_arp_division(value: Any) -> str:
+    text = str(value).strip().upper().replace(" ", "")
+    if text not in ARP_DIVISION_QUARTERS:
+        raise ValueError("arp division must be one of " + ", ".join(ARP_DIVISIONS))
+    return text
+
+
+def _validate_arp_evolve(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    try:
+        numeric = _as_finite_float(value, "arp evolve")
+    except TypeError:
+        raise TypeError("arp evolve must be a boolean or 0/1") from None
+    if numeric not in (0.0, 1.0):
+        raise ValueError("arp evolve must be 0 or 1")
+    return bool(numeric)
+
+
+def _validate_arp_evolve_beats(value: Any) -> int:
+    return clamp_int(value, ARP_EVOLVE_BEATS_MIN, ARP_EVOLVE_BEATS_MAX)
+
+
+def _validate_arp_evolve_depth(value: Any) -> float:
+    return clamp(_as_finite_float(value, "arp evolve depth"), 0.0, 1.0)
+
+
+# -- Stage 8.3d lead validators --------------------------------------------
+
+
+def _validate_lead_setting_name(name: Any) -> str:
+    key = str(name).strip().lower()
+    key = LEAD_SETTING_ALIASES.get(key, key)
+    if key not in LEAD_SETTING_ADDRESSES:
+        raise ValueError(f"unknown lead setting {name!r}")
+    return key
+
+
+def _validate_lead_grid(value: Any) -> str:
+    grid = str(value).strip().upper().replace(" ", "")
+    if grid not in LEAD_GRIDS:
+        raise ValueError("lead grid must be one of " + ", ".join(LEAD_GRIDS))
+    return grid
+
+
+def _validate_lead_phrase_bars(value: Any) -> int:
+    return clamp_int(value, LEAD_PHRASE_BARS_MIN, LEAD_PHRASE_BARS_MAX)
+
+
+def _validate_lead_density(value: Any) -> float:
+    return clamp(
+        _as_finite_float(value, "lead density"),
+        LEAD_DENSITY_MIN,
+        LEAD_DENSITY_MAX,
+    )
+
+
+def _validate_lead_gate(value: Any) -> float:
+    return clamp(
+        _as_finite_float(value, "lead gate"), LEAD_GATE_MIN, LEAD_GATE_MAX
+    )
+
+
+def _validate_lead_velocity(value: Any) -> int:
+    return clamp_int(value, LEAD_VELOCITY_MIN, LEAD_VELOCITY_MAX)
+
+
+def _validate_lead_octave_range(value: Any) -> int:
+    return clamp_int(value, LEAD_OCTAVE_RANGE_MIN, LEAD_OCTAVE_RANGE_MAX)
+
+
+def _validate_lead_base_octave(value: Any) -> int:
+    return clamp_int(value, LEAD_BASE_OCTAVE_MIN, LEAD_BASE_OCTAVE_MAX)
+
+
+def _validate_lead_variation(value: Any) -> str:
+    text = str(value).strip().lower()
+    if text not in LEAD_VARIATIONS:
+        raise ValueError(
+            "lead variation must be one of " + ", ".join(LEAD_VARIATIONS)
+        )
+    return text
+
+
+def _validate_lead_variation_bars(value: Any) -> int:
+    return clamp_int(value, LEAD_VARIATION_BARS_MIN, LEAD_VARIATION_BARS_MAX)
+
+
+def _validate_lead_seed(value: Any) -> int:
+    return clamp_int(value, 0, LEAD_SEED_MAX)
+
+
+def _validate_lead_groove_link(value: Any) -> bool:
+    return _to_bool(value, "lead groove_link")
+
+
+# -- Stage 8.3d drone validators -------------------------------------------
+
+
+def _validate_drone_mode(value: Any) -> str:
+    text = str(value).strip().lower()
+    if text not in DRONE_MODES:
+        raise ValueError("drone mode must be one of " + ", ".join(DRONE_MODES))
+    return text
+
+
+def _validate_drone_velocity(value: Any) -> int:
+    return clamp_int(value, DRONE_VELOCITY_MIN, DRONE_VELOCITY_MAX)
+
+
+def _validate_drone_pulse_notes(value: Any) -> int:
+    return clamp_int(value, DRONE_PULSE_NOTES_MIN, DRONE_PULSE_NOTES_MAX)
+
+
+def _validate_drone_pulse_grid(value: Any) -> str:
+    grid = str(value).strip().upper().replace(" ", "")
+    if grid not in DRONE_PULSE_GRIDS:
+        raise ValueError(
+            "drone pulse grid must be one of " + ", ".join(DRONE_PULSE_GRIDS)
+        )
+    return grid
+
+
+def _validate_drone_pulse_gate(value: Any) -> float:
+    return clamp(
+        _as_finite_float(value, "drone pulse gate"),
+        DRONE_PULSE_GATE_MIN,
+        DRONE_PULSE_GATE_MAX,
+    )
+
+
+def _validate_drone_pulse_span(value: Any) -> int:
+    return clamp_int(value, DRONE_PULSE_SPAN_MIN, DRONE_PULSE_SPAN_MAX)
+
+
+def _validate_drone_slide_direction(value: Any) -> str:
+    text = str(value).strip().lower()
+    if text not in DRONE_SLIDE_DIRECTIONS:
+        raise ValueError(
+            "drone slide direction must be one of "
+            + ", ".join(DRONE_SLIDE_DIRECTIONS)
+        )
+    return text
+
+
+def _validate_drone_slide_semitones(value: Any) -> int:
+    return clamp_int(
+        value, DRONE_SLIDE_SEMITONES_MIN, DRONE_SLIDE_SEMITONES_MAX
+    )
+
+
+def _validate_drone_slide_seconds(value: Any) -> float:
+    return clamp(
+        _as_finite_float(value, "drone slide seconds"),
+        DRONE_SLIDE_SECONDS_MIN,
+        DRONE_SLIDE_SECONDS_MAX,
+    )
+
+
+def _validate_drone_hold_beats(value: Any) -> float:
+    return clamp(
+        _as_finite_float(value, "drone hold beats"),
+        DRONE_HOLD_BEATS_MIN,
+        DRONE_HOLD_BEATS_MAX,
+    )
+
+
+def _validate_drone_seed(value: Any) -> int:
+    return clamp_int(value, 0, DRONE_SEED_MAX)
+
+
+def _validate_drone_seq_notes(value: Any) -> int:
+    return clamp_int(value, DRONE_SEQ_NOTES_MIN, DRONE_SEQ_NOTES_MAX)
+
+
+def _validate_drone_seq_bars(value: Any) -> str:
+    text = str(value).strip().replace(" ", "").replace("bar", "").replace("s", "")
+    if text in DRONE_SEQ_BARS_VALUE:
+        return text
+    try:
+        numeric = float(text)
+    except (TypeError, ValueError):
+        raise ValueError(
+            "drone sequence length must be one of " + ", ".join(DRONE_SEQ_BARS)
+        ) from None
+    for name, bars in DRONE_SEQ_BARS_VALUE.items():
+        if abs(numeric - bars) < 1e-9:
+            return name
+    raise ValueError(
+        "drone sequence length must be one of " + ", ".join(DRONE_SEQ_BARS)
+    )
+
+
+def _validate_drone_seq_gate(value: Any) -> float:
+    return clamp(
+        _as_finite_float(value, "drone sequence gate"),
+        DRONE_SEQ_GATE_MIN,
+        DRONE_SEQ_GATE_MAX,
+    )
 
 
 def grid_steps_for_meter(numerator: Any, denominator: Any) -> int:
@@ -987,6 +1654,157 @@ def build_set_bass_sub_octaves(value: Any) -> tuple[str, list[Any]]:
     return build_set_bass_setting("sub_octaves", value)
 
 
+# ---------------------------------------------------------------------------
+# Stage 8.3b arp builders
+# ---------------------------------------------------------------------------
+
+
+def build_set_arp_setting(name: Any, value: Any) -> tuple[str, list[Any]]:
+    """Build one ``/ji/arp/set_*`` message with a validated argument."""
+
+    key = _validate_arp_setting_name(name)
+    address = ARP_SETTING_ADDRESSES[key]
+    if key == "octave_offsets":
+        return address, [int(item) for item in _validate_arp_octaves(value)]
+    if key == "shared_mode":
+        return address, [_validate_arp_shared_mode(value)]
+    if key == "order":
+        return address, [_validate_arp_order(value)]
+    if key == "velocity":
+        return address, [int(_validate_arp_velocity(value))]
+    if key == "seed":
+        return address, [int(_validate_arp_seed(value))]
+    if key == "sync_mode":
+        return address, [_validate_arp_sync(value)]
+    if key == "division":
+        return address, [_validate_arp_division(value)]
+    if key == "evolve":
+        return address, [1 if _validate_arp_evolve(value) else 0]
+    if key == "evolve_beats":
+        return address, [int(_validate_arp_evolve_beats(value))]
+    if key == "evolve_depth":
+        return address, [float(_validate_arp_evolve_depth(value))]
+    if key == "step_seconds":
+        return address, [float(_validate_arp_step(value))]
+    return address, [float(_validate_arp_gate(value))]
+
+
+def build_set_arp_step(seconds: Any) -> tuple[str, list[Any]]:
+    return build_set_arp_setting("step_seconds", seconds)
+
+
+def build_set_arp_gate(seconds: Any, step: Any = None) -> tuple[str, list[Any]]:
+    return ARP_SET_GATE, [float(_validate_arp_gate(seconds, step))]
+
+
+def build_set_arp_velocity(velocity: Any) -> tuple[str, list[Any]]:
+    return build_set_arp_setting("velocity", velocity)
+
+
+def build_set_arp_octaves(
+    shared: Any, non_shared_1: Any, non_shared_2: Any
+) -> tuple[str, list[Any]]:
+    return build_set_arp_setting(
+        "octave_offsets", [shared, non_shared_1, non_shared_2]
+    )
+
+
+def build_set_arp_shared_mode(mode: Any) -> tuple[str, list[Any]]:
+    return build_set_arp_setting("shared_mode", mode)
+
+
+def build_set_arp_order(order: Any) -> tuple[str, list[Any]]:
+    return build_set_arp_setting("order", order)
+
+
+def build_set_arp_seed(seed: Any) -> tuple[str, list[Any]]:
+    return build_set_arp_setting("seed", seed)
+
+
+def build_set_arp_sync(sync: Any) -> tuple[str, list[Any]]:
+    return build_set_arp_setting("sync_mode", sync)
+
+
+def build_set_arp_division(division: Any) -> tuple[str, list[Any]]:
+    return build_set_arp_setting("division", division)
+
+
+def build_set_arp_evolve(enabled: Any) -> tuple[str, list[Any]]:
+    return build_set_arp_setting("evolve", enabled)
+
+
+def build_set_arp_evolve_beats(beats: Any) -> tuple[str, list[Any]]:
+    return build_set_arp_setting("evolve_beats", beats)
+
+
+def build_set_arp_evolve_depth(depth: Any) -> tuple[str, list[Any]]:
+    return build_set_arp_setting("evolve_depth", depth)
+
+
+# -- Stage 8.3d lead -------------------------------------------------------
+
+_LEAD_COERCE: dict[str, Callable[[Any], Any]] = {
+    "enabled": lambda value: 1 if _to_bool(value, "lead enabled") else 0,
+    "grid": _validate_lead_grid,
+    "phrase_bars": _validate_lead_phrase_bars,
+    "density": _validate_lead_density,
+    "gate_beats": _validate_lead_gate,
+    "velocity": _validate_lead_velocity,
+    "octave_range": _validate_lead_octave_range,
+    "base_octave": _validate_lead_base_octave,
+    "variation": _validate_lead_variation,
+    "variation_bars": _validate_lead_variation_bars,
+    "swing": lambda value: _validate_unit(value, "lead swing"),
+    "groove_link": lambda value: 1 if _to_bool(value, "lead groove_link") else 0,
+    "seed": _validate_lead_seed,
+}
+
+
+def build_set_lead_setting(name: Any, value: Any) -> tuple[str, list[Any]]:
+    """Build one validated ``/ji/lead/set_*`` message."""
+
+    key = _validate_lead_setting_name(name)
+    return LEAD_SETTING_ADDRESSES[key], [_LEAD_COERCE[key](value)]
+
+
+def build_set_lead_enabled(enabled: Any) -> tuple[str, list[Any]]:
+    return build_set_lead_setting("enabled", enabled)
+
+
+def build_lead_vary() -> tuple[str, list[Any]]:
+    return LEAD_VARY, []
+
+
+# -- Stage 8.3d drone modes ------------------------------------------------
+
+_DRONE_COERCE: dict[str, Callable[[Any], Any]] = {
+    "mode": _validate_drone_mode,
+    "velocity": _validate_drone_velocity,
+    "pulse_notes": _validate_drone_pulse_notes,
+    "pulse_grid": _validate_drone_pulse_grid,
+    "pulse_gate": _validate_drone_pulse_gate,
+    "pulse_octave_span": _validate_drone_pulse_span,
+    "slide_direction": _validate_drone_slide_direction,
+    "slide_semitones": _validate_drone_slide_semitones,
+    "slide_seconds": _validate_drone_slide_seconds,
+    "hold_beats": _validate_drone_hold_beats,
+    "seed": _validate_drone_seed,
+    "seq_notes": _validate_drone_seq_notes,
+    "seq_bars": _validate_drone_seq_bars,
+    "seq_gate": _validate_drone_seq_gate,
+}
+
+
+def build_set_drone_setting(name: Any, value: Any) -> tuple[str, list[Any]]:
+    """Build one validated ``/ji/drone/set_*`` message."""
+
+    key = str(name).strip().lower()
+    key = DRONE_SETTING_ALIASES.get(key, key)
+    if key not in DRONE_SETTING_ADDRESSES:
+        raise ValueError(f"unknown drone setting {name!r}")
+    return DRONE_SETTING_ADDRESSES[key], [_DRONE_COERCE[key](value)]
+
+
 def build_loop_set_mode(index: Any, mode: Any) -> tuple[str, list[Any]]:
     return LOOP_SET_MODE, [_validate_index(index), str(_validate_loop_mode(mode))]
 
@@ -1157,6 +1975,180 @@ class BassStatus:
     @property
     def steps_per_beat(self) -> int:
         return BASS_GRID_STEPS.get(self.grid, 1)
+
+
+@dataclass(frozen=True)
+class ArpStatus:
+    """``/ji/arp/state`` snapshot (11 fields, Stage 8.3b order)."""
+
+    enabled: bool
+    port_ok: bool
+    step_seconds: float
+    step_effective: float
+    gate_seconds: float
+    velocity: int
+    oct_shared: int
+    oct_non_shared_1: int
+    oct_non_shared_2: int
+    shared_mode: str
+    order: str
+    seed: int
+    sync_mode: str = ARP_DEFAULT_SYNC
+    division: str = ARP_DEFAULT_DIVISION
+    evolve: bool = ARP_DEFAULT_EVOLVE
+    evolve_beats: int = ARP_DEFAULT_EVOLVE_BEATS
+    evolve_depth: float = ARP_EVOLVE_DEPTH_DEFAULT
+
+    @property
+    def available(self) -> bool:
+        """True when the arp MIDI port is open."""
+
+        return self.port_ok
+
+    @property
+    def synced(self) -> bool:
+        return self.sync_mode == "beat"
+
+    @property
+    def octave_offsets(self) -> tuple[int, int, int]:
+        return (self.oct_shared, self.oct_non_shared_1, self.oct_non_shared_2)
+
+    def status_line(self) -> str:
+        """``on | 0.25 s / 0.20 s | forward | anchor | seed 1``.
+
+        In beat mode the timing part reads ``beat 1/8 = 0.25 s / 0.20 s``; an
+        active evolution appends ``| evolve 4 b depth 0.30``.
+        """
+
+        state = "on" if self.enabled else "off"
+        if self.synced:
+            timing = (
+                f"beat {self.division} = {self.step_effective:.2f} s"
+                f" / {self.gate_seconds:.2f} s"
+            )
+        else:
+            timing = f"{self.step_seconds:.2f} s / {self.gate_seconds:.2f} s"
+        line = (
+            f"{state} | {timing}"
+            f" | {self.order} | {self.shared_mode} | seed {self.seed}"
+        )
+        if self.evolve:
+            line += f" | evolve {self.evolve_beats} b depth {self.evolve_depth:.2f}"
+        return line
+
+
+@dataclass(frozen=True)
+class LeadStatus:
+    """``/ji/lead/state`` snapshot (16 fields, Stage 8.3d order)."""
+
+    enabled: bool
+    port_ok: bool
+    grid: str
+    phrase_bars: int
+    density: float
+    gate_beats: float
+    velocity: int
+    octave_range: int
+    base_octave: int
+    variation: str
+    variation_index: int
+    variation_bars: int
+    swing: float
+    groove_link: bool
+    seed: int
+    playing: bool
+
+    @property
+    def available(self) -> bool:
+        """True when the lead MIDI port (Bus 5) is open."""
+
+        return self.port_ok
+
+    def status_line(self) -> str:
+        """``on | 1/8 · 2 bars · 0.75 | identity #0 | seed 1``."""
+
+        state = "on" if self.enabled else "off"
+        line = (
+            f"{state} | {self.grid} · {self.phrase_bars} bars · "
+            f"{self.density:.2f} | {self.variation} #{self.variation_index} "
+            f"| seed {self.seed}"
+        )
+        if self.variation_bars > 0:
+            line += f" | vary every {self.variation_bars} b"
+        if self.playing:
+            line += " | playing"
+        return line
+
+
+@dataclass(frozen=True)
+class DroneStatus:
+    """``/ji/drone/state`` snapshot (14 fields, Stage 8.3d order)."""
+
+    port_ok: bool
+    mode: str
+    velocity: int
+    pulse_notes: int
+    pulse_grid: str
+    pulse_gate: float
+    pulse_octave_span: int
+    slide_direction: str
+    slide_semitones: int
+    slide_seconds: float
+    hold_beats: float
+    cycle_beats: float
+    seed: int
+    playing: bool
+    seq_notes: int = DRONE_DEFAULT_SEQ_NOTES
+    seq_bars: str = DRONE_DEFAULT_SEQ_BARS
+    seq_gate: float = DRONE_DEFAULT_SEQ_GATE
+
+    @property
+    def available(self) -> bool:
+        return self.port_ok
+
+    @property
+    def gated(self) -> bool:
+        """True for the modes that wait for the transport (not ``hold``)."""
+
+        return self.mode in ("pulse", "bend", "sequence")
+
+    def status_line(self, anchor_label: str | None = None) -> str:
+        """One compact line per mode (see ``docs/README_stage8_3d.md``)."""
+
+        if self.mode == "pulse":
+            return (
+                f"pulse {self.pulse_notes} · {self.pulse_grid} | "
+                f"{self.velocity}"
+            )
+        if self.mode == "bend":
+            return (
+                f"bend {self.slide_direction} {self.slide_semitones} st / "
+                f"{self.slide_seconds:.2f} s every {self.cycle_beats:g} beats"
+            )
+        if self.mode == "sequence":
+            bars = float(DRONE_SEQ_BARS_VALUE.get(self.seq_bars, 1.0))
+            unit = "bar" if bars <= 1.0 else "bars"
+            return (
+                f"sequence {self.seq_notes} notes · {self.seq_bars} {unit} | "
+                f"{self.velocity}"
+            )
+        anchor = f" | anchor {anchor_label}" if anchor_label else ""
+        return f"hold | {self.velocity}{anchor}"
+
+
+@dataclass(frozen=True)
+class LeadNoteStatus:
+    """``/ji/lead/note`` snapshot: the last triggered lead note."""
+
+    hz: float
+    midi_note: int
+    velocity: int
+
+    @property
+    def note_name(self) -> str:
+        names = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
+        note = max(0, min(127, int(self.midi_note)))
+        return f"{names[note % 12]}{note // 12 - 1}"
 
 
 @dataclass(frozen=True)
@@ -1403,6 +2395,130 @@ def parse_bass_note(args: Sequence[Any]) -> BassNoteStatus:
     )
 
 
+def parse_arp_state(args: Sequence[Any]) -> ArpStatus:
+    """Parse the 17-argument ``/ji/arp/state`` payload."""
+
+    if len(args) != 17:
+        raise ValueError(
+            "arp state needs 17 values: enabled, port_ok, step_seconds, "
+            "step_effective, gate_seconds, velocity, oct_shared, "
+            "oct_non_shared_1, oct_non_shared_2, shared_mode, order, seed, "
+            "sync_mode, division, evolve, evolve_beats, evolve_depth"
+        )
+    return ArpStatus(
+        enabled=_to_bool(args[0], "arp enabled"),
+        port_ok=_to_bool(args[1], "arp port_ok"),
+        step_seconds=_validate_arp_step(args[2]),
+        step_effective=_validate_arp_step(args[3]),
+        gate_seconds=_validate_arp_gate(args[4], args[3]),
+        velocity=_validate_arp_velocity(args[5]),
+        oct_shared=clamp_int(args[6], ARP_OCTAVE_MIN, ARP_OCTAVE_MAX),
+        oct_non_shared_1=clamp_int(args[7], ARP_OCTAVE_MIN, ARP_OCTAVE_MAX),
+        oct_non_shared_2=clamp_int(args[8], ARP_OCTAVE_MIN, ARP_OCTAVE_MAX),
+        shared_mode=_validate_arp_shared_mode(args[9]),
+        order=_validate_arp_order(args[10]),
+        seed=_validate_arp_seed(args[11]),
+        sync_mode=_validate_arp_sync(args[12]),
+        division=_validate_arp_division(args[13]),
+        evolve=_to_bool(args[14], "arp evolve"),
+        evolve_beats=_validate_arp_evolve_beats(args[15]),
+        evolve_depth=_validate_arp_evolve_depth(args[16]),
+    )
+
+
+def parse_lead_state(args: Sequence[Any]) -> LeadStatus:
+    """Parse the 16-argument ``/ji/lead/state`` payload."""
+
+    if len(args) != 16:
+        raise ValueError(
+            "lead state needs 16 values: enabled, port_ok, grid, phrase_bars, "
+            "density, gate_beats, velocity, octave_range, base_octave, "
+            "variation, variation_index, variation_bars, swing, groove_link, "
+            "seed, playing"
+        )
+    return LeadStatus(
+        enabled=_to_bool(args[0], "lead enabled"),
+        port_ok=_to_bool(args[1], "lead port_ok"),
+        grid=_validate_lead_grid(args[2]),
+        phrase_bars=_validate_lead_phrase_bars(args[3]),
+        density=_validate_lead_density(args[4]),
+        gate_beats=_validate_lead_gate(args[5]),
+        velocity=_validate_lead_velocity(args[6]),
+        octave_range=_validate_lead_octave_range(args[7]),
+        base_octave=_validate_lead_base_octave(args[8]),
+        variation=_validate_lead_variation(args[9]),
+        variation_index=clamp_int(args[10], 0, 1_000_000),
+        variation_bars=_validate_lead_variation_bars(args[11]),
+        swing=_validate_unit(args[12], "lead swing"),
+        groove_link=_to_bool(args[13], "lead groove_link"),
+        seed=_validate_lead_seed(args[14]),
+        playing=_to_bool(args[15], "lead playing"),
+    )
+
+
+def parse_lead_note(args: Sequence[Any]) -> LeadNoteStatus:
+    """Parse ``[hz, midi_note, velocity]`` from ``/ji/lead/note``."""
+
+    if len(args) != 3:
+        raise ValueError("lead note needs hz, midi_note, velocity")
+    hz = _as_finite_float(args[0], "lead note hz")
+    if hz <= 0.0:
+        raise ValueError("lead note hz must be strictly positive")
+    return LeadNoteStatus(
+        hz=hz,
+        midi_note=clamp_int(args[1], 0, 127),
+        velocity=clamp_int(args[2], 0, 127),
+    )
+
+
+def parse_drone_state(args: Sequence[Any]) -> DroneStatus:
+    """Parse ``/ji/drone/state`` (17 values; a 14-value 8.3d payload works).
+
+    Accepting the shorter payload keeps a GUI and a bridge from different
+    builds talking while the rig is being updated; the missing ``seq_*``
+    values fall back to their shipped defaults.
+    """
+
+    if len(args) not in (14, 17):
+        raise ValueError(
+            "drone state needs 14 or 17 values: port_ok, mode, velocity, "
+            "pulse_notes, pulse_grid, pulse_gate, pulse_octave_span, "
+            "slide_direction, slide_semitones, slide_seconds, hold_beats, "
+            "cycle_beats, seed, playing[, seq_notes, seq_bars, seq_gate]"
+        )
+    return DroneStatus(
+        port_ok=_to_bool(args[0], "drone port_ok"),
+        mode=_validate_drone_mode(args[1]),
+        velocity=_validate_drone_velocity(args[2]),
+        pulse_notes=_validate_drone_pulse_notes(args[3]),
+        pulse_grid=_validate_drone_pulse_grid(args[4]),
+        pulse_gate=_validate_drone_pulse_gate(args[5]),
+        pulse_octave_span=_validate_drone_pulse_span(args[6]),
+        slide_direction=_validate_drone_slide_direction(args[7]),
+        slide_semitones=_validate_drone_slide_semitones(args[8]),
+        slide_seconds=_validate_drone_slide_seconds(args[9]),
+        hold_beats=_validate_drone_hold_beats(args[10]),
+        cycle_beats=max(1.0, _as_finite_float(args[11], "drone cycle_beats")),
+        seed=_validate_drone_seed(args[12]),
+        playing=_to_bool(args[13], "drone playing"),
+        seq_notes=(
+            _validate_drone_seq_notes(args[14])
+            if len(args) == 17
+            else DRONE_DEFAULT_SEQ_NOTES
+        ),
+        seq_bars=(
+            _validate_drone_seq_bars(args[15])
+            if len(args) == 17
+            else DRONE_DEFAULT_SEQ_BARS
+        ),
+        seq_gate=(
+            _validate_drone_seq_gate(args[16])
+            if len(args) == 17
+            else DRONE_DEFAULT_SEQ_GATE
+        ),
+    )
+
+
 def parse_loop_config(args: Sequence[Any]) -> tuple[int, LoopConfig]:
     """Parse ``[index, mode, beats, seconds]``."""
 
@@ -1465,6 +2581,10 @@ STATUS_PARSERS: dict[str, Callable[[Sequence[Any]], Any]] = {
     QUANTIZE_STATE: parse_quantize,
     BASS_STATE: parse_bass_state,
     BASS_NOTE: parse_bass_note,
+    ARP_STATE: parse_arp_state,
+    LEAD_STATE: parse_lead_state,
+    LEAD_NOTE: parse_lead_note,
+    DRONE_STATE: parse_drone_state,
     CPU: parse_cpu,
     LOOP_STATE: parse_loop_state,
     LOOP_CONFIG: parse_loop_config,
@@ -1491,6 +2611,10 @@ class StatusStore:
         self.quantize: QuantizeStatus | None = None
         self.bass: BassStatus | None = None
         self.bass_note: BassNoteStatus | None = None
+        self.arp: ArpStatus | None = None
+        self.lead: LeadStatus | None = None
+        self.lead_note: LeadNoteStatus | None = None
+        self.drone: DroneStatus | None = None
         self.cpu: float | None = None
         self.loop_states: dict[int, str] = {
             index: "waiting" for index in range(LOOP_INDEX_MIN, LOOP_INDEX_MAX + 1)
@@ -1564,6 +2688,18 @@ class StatusStore:
             self.bridge_seen = True
         elif address == BASS_NOTE:
             self.bass_note = parsed
+            self.bridge_seen = True
+        elif address == ARP_STATE:
+            self.arp = parsed
+            self.bridge_seen = True
+        elif address == LEAD_STATE:
+            self.lead = parsed
+            self.bridge_seen = True
+        elif address == LEAD_NOTE:
+            self.lead_note = parsed
+            self.bridge_seen = True
+        elif address == DRONE_STATE:
+            self.drone = parsed
             self.bridge_seen = True
         elif address == CPU:
             self.cpu = parsed
@@ -1980,6 +3116,116 @@ class OSCController:
         self._send_bridge(*message)
         return message
 
+    # -- Stage 8.3b arp ------------------------------------------------
+
+    def set_arp_setting(
+        self, name: Any, value: Any
+    ) -> tuple[str, list[Any]]:
+        message = build_set_arp_setting(name, value)
+        self._send_bridge(*message)
+        return message
+
+    def set_arp_param(self, name: Any, value: Any) -> tuple[str, list[Any]]:
+        return self.set_arp_setting(name, value)
+
+    def set_arp_step(self, seconds: Any) -> tuple[str, list[Any]]:
+        message = build_set_arp_step(seconds)
+        self._send_bridge(*message)
+        return message
+
+    def set_arp_gate(
+        self, seconds: Any, step: Any = None
+    ) -> tuple[str, list[Any]]:
+        message = build_set_arp_gate(seconds, step)
+        self._send_bridge(*message)
+        return message
+
+    def set_arp_velocity(self, velocity: Any) -> tuple[str, list[Any]]:
+        message = build_set_arp_velocity(velocity)
+        self._send_bridge(*message)
+        return message
+
+    def set_arp_octaves(
+        self, shared: Any, non_shared_1: Any, non_shared_2: Any
+    ) -> tuple[str, list[Any]]:
+        message = build_set_arp_octaves(shared, non_shared_1, non_shared_2)
+        self._send_bridge(*message)
+        return message
+
+    def set_arp_shared_mode(self, mode: Any) -> tuple[str, list[Any]]:
+        message = build_set_arp_shared_mode(mode)
+        self._send_bridge(*message)
+        return message
+
+    def set_arp_order(self, order: Any) -> tuple[str, list[Any]]:
+        message = build_set_arp_order(order)
+        self._send_bridge(*message)
+        return message
+
+    def set_arp_seed(self, seed: Any) -> tuple[str, list[Any]]:
+        message = build_set_arp_seed(seed)
+        self._send_bridge(*message)
+        return message
+
+    def set_arp_sync(self, sync: Any) -> tuple[str, list[Any]]:
+        message = build_set_arp_sync(sync)
+        self._send_bridge(*message)
+        return message
+
+    def set_arp_division(self, division: Any) -> tuple[str, list[Any]]:
+        message = build_set_arp_division(division)
+        self._send_bridge(*message)
+        return message
+
+    def set_arp_evolve(self, enabled: Any) -> tuple[str, list[Any]]:
+        message = build_set_arp_evolve(enabled)
+        self._send_bridge(*message)
+        return message
+
+    def set_arp_evolve_beats(self, beats: Any) -> tuple[str, list[Any]]:
+        message = build_set_arp_evolve_beats(beats)
+        self._send_bridge(*message)
+        return message
+
+    def set_arp_evolve_depth(self, depth: Any) -> tuple[str, list[Any]]:
+        message = build_set_arp_evolve_depth(depth)
+        self._send_bridge(*message)
+        return message
+
+    # -- Stage 8.3d lead ------------------------------------------------
+
+    def set_lead_setting(
+        self, name: Any, value: Any
+    ) -> tuple[str, list[Any]]:
+        message = build_set_lead_setting(name, value)
+        self._send_bridge(*message)
+        return message
+
+    def set_lead_param(self, name: Any, value: Any) -> tuple[str, list[Any]]:
+        return self.set_lead_setting(name, value)
+
+    def set_lead_enabled(self, enabled: Any) -> tuple[str, list[Any]]:
+        message = build_set_lead_enabled(enabled)
+        self._send_bridge(*message)
+        return message
+
+    def vary_lead(self) -> tuple[str, list[Any]]:
+        message = build_lead_vary()
+        self._send_bridge(*message)
+        return message
+
+    # -- Stage 8.3d drone modes -----------------------------------------
+
+    def set_drone_setting(
+        self, name: Any, value: Any
+    ) -> tuple[str, list[Any]]:
+        message = build_set_drone_setting(name, value)
+        self._send_bridge(*message)
+        return message
+
+    def set_drone_param(self, name: Any, value: Any) -> tuple[str, list[Any]]:
+        return self.set_drone_setting(name, value)
+
     def loop_record(
         self, index: Any, seconds: float | None = None
     ) -> tuple[str, list[Any]]:
@@ -2074,6 +3320,61 @@ __all__ = ["AUTOTUNE_PARAMS",
     "ParamSpec",
     "RhythmStatus",
     "StatusStore",
+    "DRONE_DEFAULT_MODE",
+    "DRONE_MODES",
+    "DRONE_PULSE_GRIDS",
+    "DRONE_SETTING_ADDRESSES",
+    "DRONE_SLIDE_DIRECTIONS",
+    "DRONE_DEFAULT_SEQ_GATE",
+    "DRONE_DEFAULT_SEQ_BARS",
+    "DRONE_DEFAULT_SEQ_NOTES",
+    "DRONE_SEQ_GATE_MAX",
+    "DRONE_SEQ_GATE_MIN",
+    "DRONE_SEQ_BARS",
+    "DRONE_SEQ_BARS_VALUE",
+    "DRONE_SEQ_NOTES_MAX",
+    "DRONE_SEQ_NOTES_MIN",
+    "DRONE_SEQ_GATE_PARAM",
+    "DRONE_STATE",
+    "DroneStatus",
+    "LEAD_DEFAULT_DENSITY",
+    "LEAD_DEFAULT_GATE",
+    "LEAD_DEFAULT_GRID",
+    "LEAD_DEFAULT_PHRASE_BARS",
+    "LEAD_DEFAULT_SEED",
+    "LEAD_DEFAULT_VARIATION",
+    "LEAD_DEFAULT_VELOCITY",
+    "LEAD_DENSITY_MAX",
+    "LEAD_DENSITY_MIN",
+    "LEAD_GATE_MAX",
+    "LEAD_GATE_MIN",
+    "LEAD_GRIDS",
+    "LEAD_GRID_STEPS",
+    "LEAD_VARIATIONS",
+    "LEAD_BASE_OCTAVE_MAX",
+    "LEAD_BASE_OCTAVE_MIN",
+    "LEAD_OCTAVE_RANGE_MAX",
+    "LEAD_OCTAVE_RANGE_MIN",
+    "LEAD_PARAMS",
+    "LEAD_PARAM_MAP",
+    "LEAD_PHRASE_BARS_MAX",
+    "LEAD_PHRASE_BARS_MIN",
+    "LEAD_SEED_MAX",
+    "LEAD_SETTING_ADDRESSES",
+    "LEAD_STATE",
+    "LEAD_VARIATION_BARS_MAX",
+    "LEAD_VARIATION_BARS_MIN",
+    "LEAD_VELOCITY_MAX",
+    "LEAD_VELOCITY_MIN",
+    "LeadNoteStatus",
+    "LeadStatus",
+    "build_lead_vary",
+    "build_set_drone_setting",
+    "build_set_lead_enabled",
+    "build_set_lead_setting",
+    "parse_drone_state",
+    "parse_lead_note",
+    "parse_lead_state",
     "build_loop_clear",
     "build_loop_play",
     "build_loop_record",

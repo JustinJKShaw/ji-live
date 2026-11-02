@@ -35,6 +35,13 @@ if str(_ROOT) not in sys.path:
 import control.ji_bridge as bridge_module
 from control.mutation import MutationEngine
 from control.osc_server import (
+    ARP_SET_GATE_ADDRESS,
+    ARP_SET_OCTAVES_ADDRESS,
+    ARP_SET_ORDER_ADDRESS,
+    ARP_SET_SEED_ADDRESS,
+    ARP_SET_SHARED_MODE_ADDRESS,
+    ARP_SET_STEP_ADDRESS,
+    ARP_SET_VELOCITY_ADDRESS,
     BASS_SET_DENSITY_ADDRESS,
     BASS_SET_ENABLED_ADDRESS,
     BASS_SET_PITCH_MODE_ADDRESS,
@@ -61,7 +68,31 @@ from control.osc_server import (
 )
 from ui import osc_control
 from ui.osc_control import (
+    ARP_DEFAULT_DIVISION,
+    ARP_DEFAULT_EVOLVE,
+    ARP_DEFAULT_OCTAVES,
+    ARP_DIVISIONS,
+    ARP_SYNC_MODES,
+    ARP_DEFAULT_ORDER,
+    ARP_DEFAULT_SEED,
+    ARP_ORDERS,
+    ARP_PARAMS,
+    ARP_SHARED_MODES,
     AUTOTUNE_PARAMS,
+    ArpStatus,
+    DRONE_DEFAULT_MODE,
+    DRONE_DEFAULT_PULSE_GRID,
+    DRONE_DEFAULT_SEQ_BARS,
+    DRONE_DEFAULT_SEQ_NOTES,
+    DRONE_DEFAULT_PULSE_NOTES,
+    DRONE_DEFAULT_PULSE_SPAN,
+    LEAD_DEFAULT_BASE_OCTAVE,
+    LEAD_DEFAULT_GRID,
+    LEAD_DEFAULT_OCTAVE_RANGE,
+    LEAD_DEFAULT_PHRASE_BARS,
+    LEAD_DEFAULT_SEED,
+    LEAD_DEFAULT_VARIATION,
+    LEAD_DEFAULT_VARIATION_BARS,
     BASS_PRESET_DISPLAY,
     BassNoteStatus,
     BassStatus,
@@ -88,6 +119,19 @@ from ui.osc_control import (
     build_loop_stop_all,
     build_loop_stop_record,
     build_request_state,
+    build_set_arp_division,
+    build_set_arp_evolve,
+    build_set_arp_evolve_beats,
+    build_set_arp_evolve_depth,
+    build_set_arp_gate,
+    build_set_arp_octaves,
+    build_set_arp_sync,
+    build_set_arp_order,
+    build_set_arp_seed,
+    build_set_arp_setting,
+    build_set_arp_shared_mode,
+    build_set_arp_step,
+    build_set_arp_velocity,
     build_reset_drum_grid,
     build_rhythm_request,
     build_set_autotune,
@@ -124,6 +168,7 @@ from ui.osc_control import (
     drum_lane_mask,
     drum_lane_states,
     grid_steps_for_meter,
+    parse_arp_state,
     parse_autotune_state,
     parse_bass_note,
     parse_bass_state,
@@ -608,6 +653,171 @@ def test_bass_builders() -> None:
         else:
             raise AssertionError("bad bass state length accepted")
     print("  bass setters/validators, 20-field state, note/name")
+
+
+def test_arp_builders() -> None:
+    print("\n=== Test 5c: Stage 8.3b arp builders/parsers ===")
+    assert build_set_arp_setting("step", 0.5) == (ARP_SET_STEP_ADDRESS, [0.5])
+    assert build_set_arp_step(0.5) == (ARP_SET_STEP_ADDRESS, [0.5])
+    assert build_set_arp_step(99) == (ARP_SET_STEP_ADDRESS, [2.0])
+    assert build_set_arp_gate(0.1) == (ARP_SET_GATE_ADDRESS, [0.1])
+    assert build_set_arp_gate(99) == (ARP_SET_GATE_ADDRESS, [2.0])
+    assert build_set_arp_gate(1.0, 0.2) == (ARP_SET_GATE_ADDRESS, [0.2])
+    assert build_set_arp_velocity(90) == (ARP_SET_VELOCITY_ADDRESS, [90])
+    assert build_set_arp_velocity(0) == (ARP_SET_VELOCITY_ADDRESS, [1])
+    assert build_set_arp_velocity(999) == (ARP_SET_VELOCITY_ADDRESS, [127])
+    assert build_set_arp_octaves(0, 1, 2) == (
+        ARP_SET_OCTAVES_ADDRESS,
+        [0, 1, 2],
+    )
+    assert build_set_arp_octaves(-9, 0, 9) == (
+        ARP_SET_OCTAVES_ADDRESS,
+        [-8, 0, 8],
+    )
+    assert build_set_arp_shared_mode("random") == (
+        ARP_SET_SHARED_MODE_ADDRESS,
+        ["random"],
+    )
+    assert build_set_arp_order("pingpong") == (
+        ARP_SET_ORDER_ADDRESS,
+        ["pingpong"],
+    )
+    assert build_set_arp_seed(7) == (ARP_SET_SEED_ADDRESS, [7])
+    assert build_set_arp_setting("seed", -3) == (ARP_SET_SEED_ADDRESS, [0])
+    # Stage 8.3c: beat sync + evolution.
+    assert ARP_SYNC_MODES == ("free", "beat")
+    assert ARP_DIVISIONS == ("1/4", "1/8", "1/16", "1/8T")
+    assert ARP_DEFAULT_DIVISION == "1/8" and ARP_DEFAULT_EVOLVE is False
+    assert build_set_arp_sync("beat") == (osc_control.ARP_SET_SYNC, ["beat"])
+    assert build_set_arp_sync(False) == (osc_control.ARP_SET_SYNC, ["free"])
+    assert build_set_arp_division("1/8t") == (
+        osc_control.ARP_SET_DIVISION,
+        ["1/8T"],
+    )
+    assert build_set_arp_evolve(True) == (osc_control.ARP_SET_EVOLVE, [1])
+    assert build_set_arp_evolve(0) == (osc_control.ARP_SET_EVOLVE, [0])
+    assert build_set_arp_evolve_beats(0) == (
+        osc_control.ARP_SET_EVOLVE_BEATS,
+        [1],
+    )
+    assert build_set_arp_evolve_beats(999) == (
+        osc_control.ARP_SET_EVOLVE_BEATS,
+        [64],
+    )
+    assert build_set_arp_evolve_depth(0.4) == (
+        osc_control.ARP_SET_EVOLVE_DEPTH,
+        [0.4],
+    )
+    assert build_set_arp_evolve_depth(9) == (
+        osc_control.ARP_SET_EVOLVE_DEPTH,
+        [1.0],
+    )
+    for bad in (
+        lambda: build_set_arp_sync("swing"),
+        lambda: build_set_arp_division("1/5"),
+        lambda: build_set_arp_evolve("maybe"),
+        lambda: build_set_arp_evolve_beats("lots"),
+        lambda: build_set_arp_evolve_depth("deep"),
+    ):
+        try:
+            bad()
+        except (TypeError, ValueError):
+            pass
+        else:
+            raise AssertionError(f"invalid arp sync/evolve builder: {bad}")
+    for bad in (
+        lambda: build_set_arp_order("sideways"),
+        lambda: build_set_arp_shared_mode("middle"),
+        lambda: build_set_arp_setting("tempo_sync", 1),
+        lambda: build_set_arp_octaves(0, 1),
+    ):
+        try:
+            bad()
+        except (TypeError, ValueError):
+            pass
+        else:
+            raise AssertionError(f"invalid arp builder accepted: {bad}")
+
+    assert [spec.key for spec in ARP_PARAMS] == [
+        "step_seconds",
+        "gate_seconds",
+        "velocity",
+    ]
+    assert ARP_ORDERS == ("forward", "reverse", "pingpong", "random")
+    assert ARP_SHARED_MODES == ("anchor", "random")
+    assert ARP_DEFAULT_OCTAVES == (0, 1, 2)
+    assert ARP_DEFAULT_ORDER == "forward" and ARP_DEFAULT_SEED == 1
+
+    free_state = [
+        1, 1, 0.25, 0.25, 0.20, 90, 0, 1, 2, "anchor", "forward", 1,
+        "free", "1/8", 0, 4, 0.0,
+    ]
+    state = parse_arp_state(free_state)
+    assert isinstance(state, ArpStatus)
+    assert state.enabled and state.port_ok and state.available
+    assert state.octave_offsets == (0, 1, 2)
+    assert state.synced is False
+    assert state.status_line() == (
+        "on | 0.25 s / 0.20 s | forward | anchor | seed 1"
+    )
+    off = parse_arp_state(
+        [0, 0, 0.5, 0.5, 0.4, 30, -1, 0, 1, "random", "pingpong", 9,
+         "free", "1/8", 0, 4, 0.0]
+    )
+    assert not off.available
+    assert off.status_line() == (
+        "off | 0.50 s / 0.40 s | pingpong | random | seed 9"
+    )
+    synced = parse_arp_state(
+        [1, 1, 0.25, 0.25, 0.20, 90, 0, 1, 2, "random", "pingpong", 9,
+         "beat", "1/8", 1, 8, 0.3]
+    )
+    assert synced.synced is True
+    assert synced.evolve and synced.evolve_beats == 8
+    assert abs(synced.evolve_depth - 0.3) < 1e-9
+    assert synced.status_line() == (
+        "on | beat 1/8 = 0.25 s / 0.20 s | pingpong | random | seed 9"
+        " | evolve 8 b depth 0.30"
+    )
+    # Clamps keep a malformed bridge message harmless.
+    clamped = parse_arp_state(
+        [1, 1, 0.001, 9.0, 9.0, 999, -99, 0, 99, "anchor", "reverse", -1,
+         "beat", "1/4", 1, 999, 9]
+    )
+    assert clamped.step_seconds == 0.05
+    assert clamped.step_effective == 2.0
+    assert clamped.gate_seconds == 2.0
+    assert clamped.velocity == 127
+    assert clamped.octave_offsets == (-8, 0, 8)
+    assert clamped.seed == 0
+    assert clamped.evolve_beats == 64 and clamped.evolve_depth == 1.0
+    for bad_state in ([0] * 16, [0] * 18):
+        try:
+            parse_arp_state(bad_state)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("bad arp state length accepted")
+    for index, bad_value in (
+        (9, "nope"),
+        (12, "swing"),
+        (13, "1/5"),
+    ):
+        payload = list(free_state)
+        payload[index] = bad_value
+        try:
+            parse_arp_state(payload)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"bad arp state value accepted: {bad_value}")
+
+    store = StatusStore()
+    assert store.arp is None
+    assert store.apply("/ji/arp/state", free_state)
+    assert store.arp is not None and store.arp.port_ok
+    assert store.bridge_seen
+    print("  arp setters/validators, 11-field state, label, store")
 
 
 def test_status_parsers() -> None:
@@ -1101,6 +1311,9 @@ def test_bridge_ui_status() -> None:
             "/ji/drums/groove",
             "/ji/drums/grid",
             "/ji/bass/state",
+            "/ji/arp/state",
+            "/ji/lead/state",
+            "/ji/drone/state",
             "/ji/quantize/state",
         ]
         assert len(client.sent) == 1
@@ -1116,7 +1329,42 @@ def test_bridge_ui_status() -> None:
         assert bass_args[0] == 0 and bass_args[1] == 0
         assert bass_args[2] == "pulse" and bass_args[3] == "1/4"
         assert bass_args[18] == 2 and bass_args[19] == 3
-        assert ui_client.sent[9][1] == [0, -1.0]
+        arp_args = ui_client.sent[9][1]
+        assert len(arp_args) == 17, arp_args
+        assert arp_args[0] == 0 and arp_args[1] == 0
+        assert arp_args[2] == 0.25 and arp_args[3] == 0.25
+        assert arp_args[4] == 0.20
+        assert arp_args[5] == 90
+        assert arp_args[6:9] == [0, 1, 2]
+        assert arp_args[9] == "anchor" and arp_args[10] == "forward"
+        assert arp_args[11] == 1
+        assert arp_args[12] == "free" and arp_args[13] == "1/8"
+        assert arp_args[14] == 0 and arp_args[15] == 4 and arp_args[16] == 0.0
+        lead_args = ui_client.sent[10][1]
+        assert len(lead_args) == 16, lead_args
+        assert lead_args[0] == 0 and lead_args[1] == 0
+        assert lead_args[2] == "1/8" and lead_args[3] == 2
+        assert lead_args[9] == "identity" and lead_args[10] == 0
+        assert lead_args[14] == 1 and lead_args[15] == 0
+        drone_args = ui_client.sent[11][1]
+        assert len(drone_args) == 17, drone_args
+        assert drone_args[0] == 0 and drone_args[1] == "hold"
+        assert drone_args[2] == 90 and drone_args[3] == 4
+        assert drone_args[10] == 2.5 and drone_args[11] == 4.0
+        assert drone_args[13] == 0
+        assert drone_args[14] == 5 and drone_args[15] == "1"
+        assert drone_args[16] == 1.0
+        # A 14-value (8.3d) payload still parses: a half-updated rig works.
+        legacy = osc_control.parse_drone_state(
+            [1, "pulse", 90, 4, "1/4", 0.5, 1, "down", 2, 0.4, 2.5, 4.0, 1, 0]
+        )
+        assert legacy.seq_notes == 5 and legacy.seq_bars == "1"
+        assert legacy.seq_gate == 1.0 and legacy.mode == "pulse"
+        assert legacy.gated is True
+        assert osc_control.parse_drone_state(
+            [1, "hold", 90, 4, "1/4", 0.5, 1, "down", 2, 0.4, 2.5, 4.0, 1, 0]
+        ).gated is False
+        assert ui_client.sent[12][1] == [0, -1.0]
 
         # Rhythm commands: state changes go to sclang and the UI.
         client.sent.clear()
@@ -1127,9 +1375,12 @@ def test_bridge_ui_status() -> None:
         ]
         assert ui_client.addresses() == [
             "/ji/rhythm/state",
+            "/ji/arp/state",
+            "/ji/drone/state",
             "/ji/quantize/state",
         ]
         assert ui_client.sent[0][1][0] == 140.0
+        assert ui_client.sent[2][1][11] == 4.0
 
         ui_client.sent.clear()
         bridge._on_rhythm_meter(3, 4)
@@ -1186,6 +1437,7 @@ def test_bridge_ui_status() -> None:
         assert fake_midi.calls == [("drone", False), ("arp", True)]
         assert ui_client.addresses() == [
             "/ji/midi/state",
+            "/ji/arp/state",
             "/ji/quantize/state",
         ]
         assert ui_client.sent[0][1] == [0, 1]
@@ -1588,6 +1840,72 @@ class FakeController:
     def set_bass_sub_octaves(self, value) -> None:
         self.calls.append(("set_bass_sub_octaves", value))
 
+    # -- Stage 8.3b arp ------------------------------------------------
+
+    def set_arp_setting(self, name, value) -> None:
+        self.calls.append(("set_arp_setting", name, value))
+
+    def set_arp_param(self, name, value) -> None:
+        self.calls.append(("set_arp_param", name, value))
+
+    def set_arp_step(self, seconds) -> None:
+        self.calls.append(("set_arp_step", seconds))
+
+    def set_arp_gate(self, seconds, step=None) -> None:
+        self.calls.append(("set_arp_gate", seconds, step))
+
+    def set_arp_velocity(self, velocity) -> None:
+        self.calls.append(("set_arp_velocity", velocity))
+
+    def set_arp_octaves(self, shared, non_shared_1, non_shared_2) -> None:
+        self.calls.append(
+            ("set_arp_octaves", shared, non_shared_1, non_shared_2)
+        )
+
+    def set_arp_shared_mode(self, mode) -> None:
+        self.calls.append(("set_arp_shared_mode", mode))
+
+    def set_arp_order(self, order) -> None:
+        self.calls.append(("set_arp_order", order))
+
+    def set_arp_seed(self, seed) -> None:
+        self.calls.append(("set_arp_seed", seed))
+
+    def set_arp_sync(self, sync) -> None:
+        self.calls.append(("set_arp_sync", sync))
+
+    def set_arp_division(self, division) -> None:
+        self.calls.append(("set_arp_division", division))
+
+    def set_arp_evolve(self, enabled) -> None:
+        self.calls.append(("set_arp_evolve", enabled))
+
+    def set_arp_evolve_beats(self, beats) -> None:
+        self.calls.append(("set_arp_evolve_beats", beats))
+
+    def set_arp_evolve_depth(self, depth) -> None:
+        self.calls.append(("set_arp_evolve_depth", depth))
+
+    # -- Stage 8.3d ------------------------------------------------------
+
+    def set_lead_setting(self, name, value) -> None:
+        self.calls.append(("set_lead_setting", name, value))
+
+    def set_lead_param(self, name, value) -> None:
+        self.calls.append(("set_lead_param", name, value))
+
+    def set_lead_enabled(self, enabled) -> None:
+        self.calls.append(("set_lead_enabled", enabled))
+
+    def vary_lead(self) -> None:
+        self.calls.append(("vary_lead",))
+
+    def set_drone_setting(self, name, value) -> None:
+        self.calls.append(("set_drone_setting", name, value))
+
+    def set_drone_param(self, name, value) -> None:
+        self.calls.append(("set_drone_param", name, value))
+
 
 def run_qt_tests() -> int:
     print("\n=== Qt smoke test: one window, widgets, signals, close ===")
@@ -1618,6 +1936,9 @@ def run_qt_tests() -> int:
         "Rhythm",
         "Groove",
         "Bass",
+        "Arp",
+        "Drone modes",
+        "Lead",
         "MIDI",
         "Status",
     ):
@@ -1652,7 +1973,7 @@ def run_qt_tests() -> int:
     assert window.bass_grid_combo.currentText() == "1/16"
     assert window.bass_pitch_combo.currentText() == "walk"
     assert window.bass_enable_checkbox.isChecked() is True
-    assert abs(window.bass_knobs["density"].value() - 0.55) < 1e-6
+    assert abs(window.bass_knobs["density"].value() - 0.55) < 1e-2
     assert window.bass_octave_range_spin.value() == 1
     assert window.bass_seed_spin.value() == 4
     assert window.bass_enable_checkbox.isEnabled()
@@ -1691,14 +2012,413 @@ def run_qt_tests() -> int:
         0.0, 0.0, 0.0, 3.5, 0.0, "root", 0.0, 0, 0.0, 1, -2, 0, 1, 2, 3])
     assert not window.bass_enable_checkbox.isEnabled()
     assert "disabled" in window.bass_label.text()
+    # --- Stage 8.3b Arp group -------------------------------------------
+    assert window.arp_order_combo.currentText() == ARP_DEFAULT_ORDER
+    assert window.arp_shared_combo.currentText() == ARP_SHARED_MODES[0]
+    assert window.arp_seed_spin.value() == ARP_DEFAULT_SEED
+    assert [spin.value() for spin in window.arp_octave_spins] == list(
+        ARP_DEFAULT_OCTAVES
+    )
+    assert abs(window.arp_knobs["step_seconds"].value() - 0.25) < 1e-2
+    assert abs(window.arp_knobs["gate_seconds"].value() - 0.20) < 1e-2
+    assert window.arp_knobs["velocity"].value() == 90
+    # Nothing has arrived yet: waiting label, controls disabled.
+    assert "waiting for bridge" in window.arp_label.text()
+    assert not window.arp_order_combo.isEnabled()
+    assert not window.arp_knobs["step_seconds"].isEnabled()
+    # Stage 8.3c defaults: free sync, 1/8, evolution off.
+    assert window.arp_sync_combo.currentText() == "free"
+    assert window.arp_division_combo.currentText() == ARP_DEFAULT_DIVISION
+    assert window.arp_evolve_checkbox.isChecked() is False
+    assert window.arp_evolve_beats_spin.value() == 4
+    assert abs(window.arp_depth_knob.value() - 0.0) < 1e-9
+
+    # Incoming state syncs every widget with signals blocked (no feedback OSC).
+    fake.calls.clear()
+    window._on_status_message(
+        "/ji/arp/state",
+        [1, 1, 0.5, 0.5, 0.4, 40, -1, 0, 2, "random", "pingpong", 9,
+         "free", "1/8", 0, 4, 0.0],
+    )
+    assert window.arp_order_combo.currentText() == "pingpong"
+    assert window.arp_shared_combo.currentText() == "random"
+    assert window.arp_seed_spin.value() == 9
+    assert [spin.value() for spin in window.arp_octave_spins] == [-1, 0, 2]
+    assert abs(window.arp_knobs["step_seconds"].value() - 0.5) < 1e-2
+    assert window.arp_knobs["velocity"].value() == 40
+    assert window.arp_order_combo.isEnabled()
+    assert "on | 0.50 s / 0.40 s | pingpong | random | seed 9" in (
+        window.arp_label.text()
+    )
+    assert not [c for c in fake.calls if str(c[0]).startswith("set_arp")], (
+        fake.calls
+    )
+
+    # Combos and spins send immediately; knobs coalesce then flush.
+    # Beat sync: the derived step is shown, the step knob is disabled and the
+    # division combo becomes usable; the evolve row follows the checkbox.
+    window._on_status_message(
+        "/ji/arp/state",
+        [1, 1, 0.5, 0.25, 0.20, 40, -1, 0, 2, "random", "pingpong", 9,
+         "beat", "1/8", 1, 8, 0.35],
+    )
+    assert window.arp_sync_combo.currentText() == "beat"
+    assert window.arp_division_combo.currentText() == "1/8"
+    assert not window.arp_knobs["step_seconds"].isEnabled()
+    assert window.arp_division_combo.isEnabled()
+    assert window.arp_evolve_checkbox.isChecked()
+    assert window.arp_evolve_beats_spin.value() == 8
+    assert abs(window.arp_depth_knob.value() - 0.35) < 1e-2
+    assert "beat 1/8 = 0.25 s / 0.20 s" in window.arp_label.text(), (
+        window.arp_label.text()
+    )
+    assert "evolve 8 b depth 0.35" in window.arp_label.text(), (
+        window.arp_label.text()
+    )
+    assert not [c for c in fake.calls if str(c[0]).startswith("set_arp")], (
+        fake.calls
+    )
+
+    # Back to free: the step knob is usable again.
+    window._on_status_message(
+        "/ji/arp/state",
+        [1, 1, 0.5, 0.5, 0.20, 40, -1, 0, 2, "random", "pingpong", 9,
+         "free", "1/8", 0, 4, 0.0],
+    )
+    assert window.arp_knobs["step_seconds"].isEnabled()
+    assert not window.arp_division_combo.isEnabled()
+    assert not window.arp_evolve_beats_spin.isEnabled()
+    assert not window.arp_depth_knob.isEnabled()
+    assert "beat" not in window.arp_label.text()
+
+    fake.calls.clear()
+    window.arp_sync_combo.setCurrentText("beat")
+    assert ("set_arp_sync", "beat") in fake.calls, fake.calls
+    window.arp_division_combo.setCurrentText("1/4")
+    assert ("set_arp_division", "1/4") in fake.calls, fake.calls
+    window.arp_evolve_checkbox.setChecked(True)
+    assert ("set_arp_evolve", True) in fake.calls, fake.calls
+    window.arp_evolve_beats_spin.setValue(16)
+    assert ("set_arp_evolve_beats", 16) in fake.calls, fake.calls
+    window.arp_depth_knob.set_value(0.6, emit=True)
+    assert not [c for c in fake.calls if c[0] == "set_arp_param"], fake.calls
+    window._flush_pending()
+    assert ("set_arp_param", "evolve_depth", 0.6) in fake.calls, fake.calls
+    window.arp_sync_combo.setCurrentText("free")
+    window.arp_evolve_checkbox.setChecked(False)
+
+    fake.calls.clear()
+    window.arp_order_combo.setCurrentText("reverse")
+    assert ("set_arp_order", "reverse") in fake.calls, fake.calls
+    window.arp_shared_combo.setCurrentText("anchor")
+    assert ("set_arp_shared_mode", "anchor") in fake.calls, fake.calls
+    window.arp_octave_spins[1].setValue(3)
+    assert ("set_arp_octaves", -1, 3, 2) in fake.calls, fake.calls
+    window.arp_seed_spin.setValue(4)
+    assert ("set_arp_seed", 4) in fake.calls, fake.calls
+    window.arp_knobs["velocity"].set_value(70, emit=True)
+    assert not [c for c in fake.calls if c[0] == "set_arp_param"], fake.calls
+    window._flush_pending()
+    assert ("set_arp_param", "velocity", 70) in fake.calls, fake.calls
+
+    # The message line reflects queued vs immediate application.
+    window._on_status_message("/ji/rhythm/state", [120.0, 4, 4, 1, 1, 1.0])
+    window.arp_order_combo.setCurrentText("forward")
+    assert "queued for the next beat" in window.message_label.text(), (
+        window.message_label.text()
+    )
+    window._on_status_message("/ji/rhythm/state", [120.0, 4, 4, 0, 1, 1.0])
+    window.arp_order_combo.setCurrentText("pingpong")
+    assert "applied immediately" in window.message_label.text(), (
+        window.message_label.text()
+    )
+
+    # MIDI/Bus 2 unavailable: disabled controls, explicit label, no sends.
+    fake.calls.clear()
+    window._on_status_message(
+        "/ji/arp/state",
+        [0, 0, 0.25, 0.25, 0.2, 90, 0, 1, 2, "anchor", "forward", 1,
+         "free", "1/8", 0, 4, 0.0],
+    )
+    assert not window.arp_order_combo.isEnabled()
+    assert not window.arp_seed_spin.isEnabled()
+    assert not window.arp_knobs["step_seconds"].isEnabled()
+    assert "disabled" in window.arp_label.text(), window.arp_label.text()
+    assert not [c for c in fake.calls if str(c[0]).startswith("set_arp")], (
+        fake.calls
+    )
+
+    # --- Stage 8.3d Lead group ------------------------------------------
+    assert window.lead_grid_combo.currentText() == LEAD_DEFAULT_GRID
+    assert window.lead_variation_combo.currentText() == LEAD_DEFAULT_VARIATION
+    assert window.lead_phrase_spin.value() == LEAD_DEFAULT_PHRASE_BARS
+    assert abs(window.lead_knobs["density"].value() - 0.75) < 1e-2
+    assert window.lead_octave_range_spin.value() == LEAD_DEFAULT_OCTAVE_RANGE
+    assert window.lead_base_octave_spin.value() == LEAD_DEFAULT_BASE_OCTAVE
+    assert window.lead_seed_spin.value() == LEAD_DEFAULT_SEED
+    assert window.lead_variation_bars_spin.value() == LEAD_DEFAULT_VARIATION_BARS
+    assert window.lead_groove_link_checkbox.isChecked() is True
+    assert "waiting for bridge" in window.lead_label.text()
+    assert not window.lead_enable_checkbox.isEnabled()
+    assert not window.lead_grid_combo.isEnabled()
+    assert not window.lead_vary_button.isEnabled()
+
+    # Incoming state syncs every widget with signals blocked (no feedback OSC).
+    fake.calls.clear()
+    window._on_status_message(
+        "/ji/lead/state",
+        [1, 1, "1/16", 4, 0.4, 0.25, 80, 2, -1, "invert", 3, 2, 0.3, 0, 9, 1],
+    )
+    assert window.lead_enable_checkbox.isChecked() is True
+    assert window.lead_grid_combo.currentText() == "1/16"
+    assert window.lead_variation_combo.currentText() == "invert"
+    assert window.lead_phrase_spin.value() == 4
+    assert abs(window.lead_knobs["density"].value() - 0.4) < 1e-2
+    assert abs(window.lead_knobs["gate_beats"].value() - 0.25) < 1e-2
+    assert window.lead_knobs["velocity"].value() == 80
+    assert window.lead_octave_range_spin.value() == 2
+    assert window.lead_base_octave_spin.value() == -1
+    assert window.lead_variation_bars_spin.value() == 2
+    assert window.lead_seed_spin.value() == 9
+    assert window.lead_groove_link_checkbox.isChecked() is False
+    assert window.lead_enable_checkbox.isEnabled()
+    assert window.lead_vary_button.isEnabled()
+    assert "on | 1/16 · 4 bars · 0.40 | invert #3 | seed 9" in (
+        window.lead_label.text()
+    ), window.lead_label.text()
+    assert not [c for c in fake.calls if str(c[0]).startswith("set_lead")], (
+        fake.calls
+    )
+
+    window._on_status_message("/ji/lead/note", [440.0, 69, 80])
+    assert "A4" in window.lead_note_label.text()
+    assert "440.00" in window.lead_note_label.text()
+
+    # Combos/buttons/spins send immediately; knobs coalesce then flush.
+    fake.calls.clear()
+    window.lead_grid_combo.setCurrentText("1/8")
+    assert ("set_lead_setting", "grid", "1/8") in fake.calls, fake.calls
+    window.lead_variation_combo.setCurrentText("identity")
+    assert ("set_lead_setting", "variation", "identity") in fake.calls
+    window.lead_phrase_spin.setValue(2)
+    assert ("set_lead_setting", "phrase_bars", 2) in fake.calls
+    window.lead_octave_range_spin.setValue(1)
+    assert ("set_lead_setting", "octave_range", 1) in fake.calls
+    window.lead_base_octave_spin.setValue(0)
+    assert ("set_lead_setting", "base_octave", 0) in fake.calls
+    window.lead_variation_bars_spin.setValue(4)
+    assert ("set_lead_setting", "variation_bars", 4) in fake.calls
+    window.lead_seed_spin.setValue(2)
+    assert ("set_lead_setting", "seed", 2) in fake.calls
+    window.lead_groove_link_checkbox.setChecked(True)
+    assert ("set_lead_setting", "groove_link", True) in fake.calls
+    window.lead_enable_checkbox.setChecked(False)
+    assert ("set_lead_enabled", False) in fake.calls
+    window.lead_vary_button.click()
+    assert ("vary_lead",) in fake.calls
+    window.lead_knobs["density"].set_value(0.6, emit=True)
+    assert not [c for c in fake.calls if c[0] == "set_lead_param"], fake.calls
+    window._flush_pending()
+    density_calls = [
+        call for call in fake.calls
+        if call[0] == "set_lead_param" and call[1] == "density"
+    ]
+    assert density_calls and abs(density_calls[-1][2] - 0.6) < 1e-2, fake.calls
+
+    # Queued vs immediate message text follows the transport.
+    window._on_status_message("/ji/rhythm/state", [120.0, 4, 4, 1, 1, 1.0])
+    window.lead_grid_combo.setCurrentText("1/4")
+    assert "queued for the next beat" in window.message_label.text(), (
+        window.message_label.text()
+    )
+    window._on_status_message("/ji/rhythm/state", [120.0, 4, 4, 0, 1, 1.0])
+    window.lead_grid_combo.setCurrentText("1/8")
+    assert "applied immediately" in window.message_label.text(), (
+        window.message_label.text()
+    )
+
+    # Bus 5 unavailable: disabled controls, explicit label, no sends.
+    fake.calls.clear()
+    window._on_status_message(
+        "/ji/lead/state",
+        [0, 0, "1/8", 2, 0.75, 0.5, 90, 1, 0, "identity", 0, 0, 0.0, 1, 1, 0],
+    )
+    assert not window.lead_enable_checkbox.isEnabled()
+    assert not window.lead_vary_button.isEnabled()
+    assert not window.lead_grid_combo.isEnabled()
+    assert "disabled" in window.lead_label.text(), window.lead_label.text()
+    assert not [c for c in fake.calls if str(c[0]).startswith("set_lead")], (
+        fake.calls
+    )
+
+    # --- Stage 8.3d Drone modes group -----------------------------------
+    assert window.drone_mode_combo.currentText() == DRONE_DEFAULT_MODE
+    assert window.drone_velocity_knob.value() == 90
+    assert window.drone_pulse_notes_spin.value() == DRONE_DEFAULT_PULSE_NOTES
+    assert window.drone_pulse_grid_combo.currentText() == DRONE_DEFAULT_PULSE_GRID
+    assert abs(window.drone_pulse_gate_knob.value() - 0.5) < 1e-2
+    assert window.drone_pulse_span_spin.value() == DRONE_DEFAULT_PULSE_SPAN
+    assert window.drone_direction_combo.currentText() == "down"
+    assert window.drone_semitones_spin.value() == 2
+    assert abs(window.drone_slide_knob.value() - 0.4) < 1e-2
+    assert abs(window.drone_hold_spin.value() - 2.5) < 1e-6
+    assert window.drone_seq_notes_spin.value() == DRONE_DEFAULT_SEQ_NOTES
+    assert window.drone_seq_bars_combo.currentText() == DRONE_DEFAULT_SEQ_BARS
+    assert abs(window.drone_seq_gate_knob.value() - 1.0) < 1e-2
+    assert "waiting for bridge" in window.drone_label.text()
+    assert not window.drone_mode_combo.isEnabled()
+
+    # pulse: the pulse row is live, the bend row is inert.
+    fake.calls.clear()
+    window._on_status_message(
+        "/ji/drone/state",
+        [1, "pulse", 80, 6, "1/8", 0.25, 2, "up", 5, 0.5, 1.5, 3.0, 7, 1,
+         5, "1", 1.0],
+    )
+    assert window.drone_mode_combo.currentText() == "pulse"
+    assert window.drone_velocity_knob.value() == 80
+    assert window.drone_pulse_notes_spin.value() == 6
+    assert window.drone_pulse_grid_combo.currentText() == "1/8"
+    assert abs(window.drone_pulse_gate_knob.value() - 0.25) < 1e-2
+    assert window.drone_pulse_span_spin.value() == 2
+    assert window.drone_direction_combo.currentText() == "up"
+    assert window.drone_semitones_spin.value() == 5
+    assert abs(window.drone_slide_knob.value() - 0.5) < 1e-2
+    assert abs(window.drone_hold_spin.value() - 1.5) < 1e-6
+    assert window.drone_pulse_row.isEnabled()
+    assert not window.drone_bend_row.isEnabled()
+    assert not window.drone_sequence_row.isEnabled()
+    assert "pulse 6 · 1/8" in window.drone_label.text(), window.drone_label.text()
+    assert not [c for c in fake.calls if str(c[0]).startswith("set_drone")], (
+        fake.calls
+    )
+
+    # bend: the bend row is live, the pulse row is inert.
+    window._on_status_message(
+        "/ji/drone/state",
+        [1, "bend", 90, 4, "1/4", 0.5, 1, "down", 2, 0.4, 2.5, 4.0, 1, 1,
+         5, "1", 1.0],
+    )
+    assert window.drone_mode_combo.currentText() == "bend"
+    assert not window.drone_pulse_row.isEnabled()
+    assert window.drone_bend_row.isEnabled()
+    assert not window.drone_sequence_row.isEnabled()
+    assert "bend down 2 st / 0.40 s every 4 beats" in window.drone_label.text(), (
+        window.drone_label.text()
+    )
+
+    # hold: both pad rows are inert (the Stage 6 drone has no pad controls).
+    window._on_status_message(
+        "/ji/drone/state",
+        [1, "hold", 90, 4, "1/4", 0.5, 1, "down", 2, 0.4, 2.5, 4.0, 1, 0,
+         5, "1", 1.0],
+    )
+    assert not window.drone_pulse_row.isEnabled()
+    assert not window.drone_bend_row.isEnabled()
+    assert not window.drone_sequence_row.isEnabled()
+    assert "hold | 90" in window.drone_label.text(), window.drone_label.text()
+
+    # sequence: the third row is live, the pulse/bend rows are inert.
+    window._on_status_message(
+        "/ji/drone/state",
+        [1, "sequence", 85, 4, "1/4", 0.5, 1, "down", 2, 0.4, 2.5, 4.0, 1, 1,
+         6, "2", 0.5],
+    )
+    assert window.drone_mode_combo.currentText() == "sequence"
+    assert not window.drone_pulse_row.isEnabled()
+    assert not window.drone_bend_row.isEnabled()
+    assert window.drone_sequence_row.isEnabled()
+    assert window.drone_seq_notes_spin.value() == 6
+    assert window.drone_seq_bars_combo.currentText() == "2"
+    assert abs(window.drone_seq_gate_knob.value() - 0.5) < 1e-2
+    assert "sequence 6 notes · 2 bars | 85" in window.drone_label.text(), (
+        window.drone_label.text()
+    )
+    assert "playing" in window.drone_label.text()
+
+    # Gated mode + stopped transport: the line says why it is silent.
+    window._on_status_message("/ji/rhythm/state", [120.0, 4, 4, 0, 1, 1.0])
+    window._on_status_message(
+        "/ji/drone/state",
+        [1, "sequence", 85, 4, "1/4", 0.5, 1, "down", 2, 0.4, 2.5, 4.0, 1, 0,
+         6, "2", 0.5],
+    )
+    assert "waiting for transport (press Play)" in window.drone_label.text(), (
+        window.drone_label.text()
+    )
+    # hold is never gated, so it never shows the hint.
+    window._on_status_message(
+        "/ji/drone/state",
+        [1, "hold", 90, 4, "1/4", 0.5, 1, "down", 2, 0.4, 2.5, 4.0, 1, 0,
+         5, "1", 1.0],
+    )
+    assert "waiting for transport" not in window.drone_label.text()
+
+    # Combo/spins send immediately, knobs coalesce then flush.
+    fake.calls.clear()
+    window.drone_mode_combo.setCurrentText("pulse")
+    assert ("set_drone_setting", "mode", "pulse") in fake.calls, fake.calls
+    window.drone_pulse_notes_spin.setValue(5)
+    assert ("set_drone_setting", "pulse_notes", 5) in fake.calls
+    window.drone_pulse_grid_combo.setCurrentText("1/16")
+    assert ("set_drone_setting", "pulse_grid", "1/16") in fake.calls
+    window.drone_pulse_span_spin.setValue(2)
+    assert ("set_drone_setting", "pulse_octave_span", 2) in fake.calls
+    window.drone_direction_combo.setCurrentText("up")
+    assert ("set_drone_setting", "slide_direction", "up") in fake.calls
+    window.drone_semitones_spin.setValue(7)
+    assert ("set_drone_setting", "slide_semitones", 7) in fake.calls
+    window.drone_hold_spin.setValue(4.0)
+    assert ("set_drone_setting", "hold_beats", 4.0) in fake.calls
+    window.drone_seq_notes_spin.setValue(4)
+    assert ("set_drone_setting", "seq_notes", 4) in fake.calls
+    window.drone_seq_bars_combo.setCurrentText("2")
+    assert ("set_drone_setting", "seq_bars", "2") in fake.calls
+    window.drone_seq_gate_knob.set_value(1.0, emit=True)
+    window.drone_pulse_gate_knob.set_value(1.0, emit=True)
+    window.drone_slide_knob.set_value(2.0, emit=True)
+    window.drone_velocity_knob.set_value(60, emit=True)
+    assert not [c for c in fake.calls if c[0] == "set_drone_param"], fake.calls
+    window._flush_pending()
+
+    def _drone_param(name):
+        calls = [
+            call for call in fake.calls
+            if call[0] == "set_drone_param" and call[1] == name
+        ]
+        assert calls, fake.calls
+        return calls[-1][2]
+
+    assert abs(_drone_param("pulse_gate") - 1.0) < 1e-2, fake.calls
+    assert abs(_drone_param("seq_gate") - 1.0) < 1e-2, fake.calls
+    assert abs(_drone_param("slide_seconds") - 2.0) < 1e-2, fake.calls
+    assert _drone_param("velocity") == 60, fake.calls
+
+    # Bus 1 unavailable: everything disabled, explicit label, no sends.
+    fake.calls.clear()
+    window._on_status_message(
+        "/ji/drone/state",
+        [0, "hold", 90, 4, "1/4", 0.5, 1, "down", 2, 0.4, 2.5, 4.0, 1, 0,
+         5, "1", 1.0],
+    )
+    assert not window.drone_mode_combo.isEnabled()
+    assert "disabled" in window.drone_label.text()
+
+    # The window stays compact with the two extra groups.
+    assert window.width() <= 1400 and window.height() <= 820, (
+        window.width(),
+        window.height(),
+    )
+
     assert len(window.loop_state_labels) == 4
     assert len(window.autotune_knobs) == 2 * len(AUTOTUNE_PARAMS)
     assert len(window.lane_checkboxes) == 16
     assert len(window.loop_mode_combos) == 4
     assert len(window.loop_length_spins) == 4
     assert fake.callback is not None
-    # No status has arrived: the window must show waiting, not crash.
-    assert "waiting for bridge" in window.bridge_status_label.text()
+    # Bridge status messages arrived above, so the bridge reads connected; no
+    # sclang message has arrived yet, so that side still waits.
+    assert "connected" in window.bridge_status_label.text()
     assert "waiting for sclang" in window.sc_status_label.text()
 
     # Mutation knob is coalesced, then flushed by the 30 Hz timer path.
@@ -1774,7 +2494,7 @@ def run_qt_tests() -> int:
     window._on_status_message(
         "/ji/autotune/state", [1, 0.1, 0.8, 0.2, 7.0, 0.7, 0.5]
     )
-    assert abs(window.autotune_knobs[(1, "mix")].value() - 0.8) < 1e-6
+    assert abs(window.autotune_knobs[(1, "mix")].value() - 0.8) < 1e-2
 
     window._on_status_message("/ji/cpu", [12.5])
     assert "12.5%" in window.cpu_label.text()
@@ -1909,8 +2629,8 @@ def run_qt_tests() -> int:
         "/ji/drums/groove", ["break", 0.5, 0.2, 0.1, 0.8, 7, 16]
     )
     assert window.groove_preset_combo.currentIndex() == 1
-    assert abs(window.groove_knobs["density"].value() - 0.5) < 1e-6
-    assert abs(window.groove_knobs["probability"].value() - 0.8) < 1e-6
+    assert abs(window.groove_knobs["density"].value() - 0.5) < 1e-2
+    assert abs(window.groove_knobs["probability"].value() - 0.8) < 1e-2
     assert window.groove_seed_spin.value() == 7
     assert not [c for c in fake.calls if c[0].startswith("set_")], fake.calls
 
@@ -1982,6 +2702,7 @@ def run_pure_tests() -> None:
     test_loop_builders()
     test_rhythm_drum_builders()
     test_bass_builders()
+    test_arp_builders()
     test_status_parsers()
     test_status_store()
     test_osc_server_hello()

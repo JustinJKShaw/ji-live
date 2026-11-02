@@ -40,7 +40,19 @@ Stage 8.3a adds the optional monophonic bass voice (``--bass``, default
 ``IAC Driver Bus 4``) and its ``/ji/bass/*`` request/status surface.  Bass
 enable/preset/grid/length/density/syncopation/swing/gate/accent/root/pitch/
 movement/octave/seed/base/sub changes use the same next-quarter-beat queue with
-``PHASE_BASS`` between drums and MIDI.
+``PHASE_BASS`` between drums and arp.
+
+Stage 8.3b adds mutable arp parameters (``/ji/arp/set_*``) and the
+``/ji/arp/state`` status message.  Step/gate/velocity/octave/shared-mode/order/
+seed changes are queued on ``PHASE_ARP`` (after bass, before the MIDI enables)
+while the transport runs and apply immediately while it is stopped.  The Stage
+7.1 Drone/Arp switches remain the only enable/disable path.
+
+Stage 8.3d adds the optional lead/melody voice (``--lead``, default
+``IAC Driver Bus 5``) and the drone pad modes (``hold``/``pulse``/``bend`` on the
+existing Bus 1).  ``/ji/lead/set_*``, ``/ji/lead/vary``, ``/ji/drone/set_*`` and
+the two state messages use ``PHASE_LEAD`` and ``PHASE_DRONE`` (between arp and
+the MIDI enables).  The lead degrades alone when Bus 5 is missing.
 """
 
 from __future__ import annotations
@@ -49,20 +61,27 @@ import argparse
 import math
 import sys
 import threading
+import time
 from typing import Any, Callable
 
 from pythonosc.udp_client import SimpleUDPClient
 
 try:  # Support both ``python -m control.ji_bridge`` and direct execution.
+    from . import arp as arp_module
     from . import bass as bass_module
+    from . import drone as drone_module
+    from . import lead as lead_module
     from .drums import DEFAULT_LANE_MASK, DRUM_RATE_DEFAULT
     from .groove import Groove, validate_preset
     from .mutation import MutationBatch, MutationEngine, MutationEvent, OctaveEvent
     from .osc_server import MutationOSCServer
     from .quantize import (
+        PHASE_ARP,
         PHASE_BASS,
+        PHASE_DRONE,
         PHASE_DRUMS,
         PHASE_GROOVE,
+        PHASE_LEAD,
         PHASE_MIDI,
         PHASE_MUTATION,
         PHASE_OCTAVE,
@@ -70,7 +89,10 @@ try:  # Support both ``python -m control.ji_bridge`` and direct execution.
     )
     from .rhythm import RhythmEngine, RhythmState
 except ImportError:  # pragma: no cover - exercised only by direct execution
+    import arp as arp_module  # type: ignore[no-redef]
     import bass as bass_module  # type: ignore[no-redef]
+    import drone as drone_module  # type: ignore[no-redef]
+    import lead as lead_module  # type: ignore[no-redef]
     from drums import DEFAULT_LANE_MASK, DRUM_RATE_DEFAULT  # type: ignore[no-redef]
     from groove import Groove, validate_preset  # type: ignore[no-redef]
     from mutation import (  # type: ignore[no-redef]
@@ -81,9 +103,12 @@ except ImportError:  # pragma: no cover - exercised only by direct execution
     )
     from osc_server import MutationOSCServer  # type: ignore[no-redef]
     from quantize import (  # type: ignore[no-redef]
+        PHASE_ARP,
         PHASE_BASS,
+        PHASE_DRONE,
         PHASE_DRUMS,
         PHASE_GROOVE,
+        PHASE_LEAD,
         PHASE_MIDI,
         PHASE_MUTATION,
         PHASE_OCTAVE,
@@ -106,6 +131,10 @@ DRUMS_GRID_ADDRESS = "/ji/drums/grid"
 QUANTIZE_STATE_ADDRESS = "/ji/quantize/state"
 BASS_STATE_ADDRESS = "/ji/bass/state"
 BASS_NOTE_ADDRESS = "/ji/bass/note"
+ARP_STATE_ADDRESS = "/ji/arp/state"
+LEAD_STATE_ADDRESS = "/ji/lead/state"
+LEAD_NOTE_ADDRESS = "/ji/lead/note"
+DRONE_STATE_ADDRESS = "/ji/drone/state"
 MAX_RATIOS = 12
 
 
@@ -166,6 +195,9 @@ class JIBridge:
         rhythm_config: str | None = None,
         bass: bool = False,
         bass_config: str | None = None,
+        lead: bool = False,
+        lead_config: str | None = None,
+        drone_config: str | None = None,
     ) -> None:
         self.sc_host = str(sc_host)
         self.sc_port = int(sc_port)
@@ -224,6 +256,10 @@ class JIBridge:
             on_drums_seed=self._on_drums_seed,
             on_drums_reset_grid=self._on_drums_reset_grid,
             on_bass_change=self._on_bass_change,
+            on_arp_change=self._on_arp_change,
+            on_lead_change=self._on_lead_change,
+            on_lead_vary=self._on_lead_vary,
+            on_drone_change=self._on_drone_change,
         )
         # Stage 2 API: this is the glide carried by every subsequent event.
         self.server.set_glide_time(glide_time)
@@ -235,8 +271,10 @@ class JIBridge:
         # MIDIRig.start().
         self.mpe_config = mpe_config
         self.bass_config = bass_config
+        self.lead_config = lead_config
+        self.drone_config = drone_config
         self.midi = None
-        if midi or drums or bass:
+        if midi or drums or bass or lead:
             try:
                 from .midi_rig import MIDIRig
             except ImportError:  # pragma: no cover - direct execution
@@ -252,6 +290,9 @@ class JIBridge:
                     drum_config=rhythm_config,
                     bass=bass,
                     bass_config=bass_config,
+                    lead=lead,
+                    lead_config=lead_config,
+                    drone_config=drone_config,
                 )
             except Exception as exc:
                 if not drums:
@@ -267,7 +308,10 @@ class JIBridge:
                     drums=False,
                     bass=bass,
                     bass_config=bass_config,
-                ) if (midi or bass) else None
+                    lead=lead,
+                    lead_config=lead_config,
+                    drone_config=drone_config,
+                ) if (midi or bass or lead) else None
 
         # When drums are configured, their config supplies the initial rhythm
         # defaults (120 BPM, 4/4 by default).  Explicit changes arrive later
@@ -292,6 +336,13 @@ class JIBridge:
         self._bass_default_state = bass_module.BassEngine(
             bass_module.BassConfig()
         ).state_args(False)
+        # Same idea for the arp: a well-formed /ji/arp/state when --midi is off.
+        self._arp_default_state = arp_module.ArpSettings().state_args(False, False)
+        # Stage 8.3d: well-formed lead/drone state when the buses are off.
+        self._lead_default_state = lead_module.LeadSettings().state_args(
+            False, False
+        )
+        self._drone_default_state = drone_module.DroneSettings().state_args(False)
 
     # ------------------------------------------------------------------
     # Lifecycle / transport
@@ -314,7 +365,11 @@ class JIBridge:
         if self.midi is not None:
             self.midi.start()
             self._midi_call("set_bass_note_callback", self._on_bass_note)
+            self._midi_call("set_lead_note_callback", self._on_lead_note)
         self._sync_drums_context()
+        # If the arp is configured beat-synced, start it on the grid rather
+        # than at an arbitrary phase.
+        self._realign_arp()
         # Broadcast the canonical tempo even if the UI was not running when
         # the bridge started.  A control surface installed later asks for a
         # resync with /ji/rhythm/request.
@@ -325,10 +380,18 @@ class JIBridge:
         self._send_groove_state()
         self._send_grid_state()
         self._send_bass_state()
+        self._send_arp_state()
+        self._send_lead_state()
+        self._send_drone_state()
         if self._bass_rig() is None:
             print(
                 "[BASS] not configured; start the bridge with --bass "
                 "(default port IAC Driver Bus 4)"
+            )
+        if self._lead_rig() is None:
+            print(
+                "[LEAD] not configured; start the bridge with --lead "
+                "(default port IAC Driver Bus 5)"
             )
         self.quantizer.start()
         self._send_quantize_state()
@@ -470,10 +533,13 @@ class JIBridge:
             try:
                 self.midi.set_drone_enabled(drone)
                 self.midi.set_arp_enabled(arp)
+                if arp:
+                    self._realign_arp()
             except Exception as exc:  # MIDI is non-critical; keep alive
                 print(f"[MIDI] UI toggle failed: {exc}", file=sys.stderr)
             finally:
                 self._send_midi_state()
+                self._send_arp_state()
 
         self.quantizer.schedule(
             ("midi", "enabled"),
@@ -534,6 +600,9 @@ class JIBridge:
         self._send_groove_state()
         self._send_grid_state()
         self._send_bass_state()
+        self._send_arp_state()
+        self._send_lead_state()
+        self._send_drone_state()
         self._send_quantize_state()
 
     def _drums_snapshot(self) -> tuple[bool, bool, float, int]:
@@ -596,6 +665,277 @@ class JIBridge:
             [float(hz), int(midi_note), int(velocity)],
         )
 
+    # -- Stage 8.3b arp state --------------------------------------------
+
+    def _arp_rig(self) -> Any:
+        return getattr(self.midi, "arp", None)
+
+    def _send_arp_state(self) -> None:
+        """Send one ``/ji/arp/state`` snapshot (never raises, never floods)."""
+
+        if self._arp_rig() is None:
+            args: list[Any] = list(self._arp_default_state)
+        else:
+            try:
+                args = list(self.midi.arp_state())
+            except Exception as exc:  # keep the UI status alive
+                print(f"[ARP] state failed: {exc}", file=sys.stderr)
+                args = list(self._arp_default_state)
+        self._send_ui_message(ARP_STATE_ADDRESS, args)
+
+    def _realign_arp(self) -> None:
+        """Snap a beat-synced arp to the next division boundary.
+
+        Called when sync is turned on, the division changes, the transport
+        starts, and when the Drone/Arp switch re-enables the bus.  Free mode is
+        a no-op, so the free arp never re-phases by itself.
+        """
+
+        rig = self._arp_rig()
+        if rig is None:
+            return
+        try:
+            settings = rig.settings
+            quantum = arp_module.division_quarters(settings.division)
+        except (TypeError, ValueError) as exc:
+            print(f"[ARP] sync skipped: {exc}", file=sys.stderr)
+            return
+        if settings.sync_mode != "beat":
+            return
+        if self.rhythm.running:
+            now = time.monotonic()
+            target = float(self.rhythm.next_beat_time(quantum, at=now))
+            delay = max(0.0, target - now)
+            print(
+                f"[ARP] sync: snapping to the next {settings.division} "
+                f"boundary in {delay:.3f} s"
+            )
+        else:
+            delay = 0.0
+            print(
+                f"[ARP] sync: transport stopped; the {settings.division} "
+                "grid starts now"
+            )
+        self._midi_call("sync_arp_phase", delay)
+
+    def _on_arp_change(self, name: str, value: Any) -> None:
+        """Queue one validated arp setting for the next quarter beat."""
+
+        rig = self._arp_rig()
+        midi_enabled = (
+            self.midi is not None
+            and bool(getattr(self.midi, "midi_enabled", True))
+        )
+        if rig is None or not midi_enabled:
+            print(
+                "[MIDI] arp unavailable: start the bridge with --midi and a "
+                "configured IAC Driver Bus 2",
+                file=sys.stderr,
+            )
+            self._send_arp_state()
+            return
+        if not bool(getattr(self.midi, "arp_port_ok", False)):
+            print(
+                "[MIDI] arp unavailable: IAC Driver Bus 2 is not open; "
+                "drone/drums/bass continue",
+                file=sys.stderr,
+            )
+            self._send_arp_state()
+            return
+
+        try:
+            # Validate before queueing so a bad value cannot poison the queue.
+            # Gate is clamped against the *live* step, not the shipped default.
+            key = arp_module.normalize_setting_name(name)
+            rig.settings.with_change(key, value)
+        except (TypeError, ValueError) as exc:
+            print(f"[ARP] invalid {name}: {exc}", file=sys.stderr)
+            self._send_arp_state()
+            return
+
+        def apply() -> None:
+            try:
+                self._midi_call("set_arp_setting", key, value)
+            except (TypeError, ValueError, RuntimeError) as exc:
+                print(f"[ARP] {key} failed: {exc}", file=sys.stderr)
+            if key in ("sync_mode", "division"):
+                self._realign_arp()
+            self._send_arp_state()
+            if self.rhythm.running:
+                print(
+                    f"[ARP] applied at beat "
+                    f"{int(round(self.rhythm.beat_at()))}"
+                )
+
+        self.quantizer.schedule(
+            ("arp", key),
+            apply,
+            phase=PHASE_ARP,
+            label=f"arp {key}",
+        )
+
+    # -- Stage 8.3d lead --------------------------------------------------
+
+    def _lead_rig(self) -> Any:
+        return getattr(self.midi, "lead", None)
+
+    def _send_lead_state(self) -> None:
+        """One ``/ji/lead/state`` snapshot (never raises, never per note)."""
+
+        if self._lead_rig() is None:
+            args: list[Any] = list(self._lead_default_state)
+        else:
+            try:
+                args = list(self.midi.lead_state())
+            except Exception as exc:  # keep the UI status alive
+                print(f"[LEAD] state failed: {exc}", file=sys.stderr)
+                args = list(self._lead_default_state)
+        self._send_ui_message(LEAD_STATE_ADDRESS, args)
+
+    def _on_lead_note(self, hz: float, midi_note: int, velocity: int) -> None:
+        self._send_ui_message(
+            LEAD_NOTE_ADDRESS, [float(hz), int(midi_note), int(velocity)]
+        )
+
+    def _lead_available(self) -> bool:
+        rig = self._lead_rig()
+        return bool(rig is not None and getattr(rig, "port_ok", False))
+
+    def _on_lead_change(self, name: str, value: Any) -> None:
+        """Queue one validated lead setting for the next quarter beat."""
+
+        if not self._lead_available():
+            print(
+                "[LEAD] unavailable: start the bridge with --lead and a "
+                "configured IAC Driver Bus 5",
+                file=sys.stderr,
+            )
+            self._send_lead_state()
+            return
+        try:
+            # Validate before queueing so a bad value cannot poison the queue.
+            lead_module.LeadSettings().with_change(name, value)
+        except (TypeError, ValueError) as exc:
+            print(f"[LEAD] invalid {name}: {exc}", file=sys.stderr)
+            self._send_lead_state()
+            return
+
+        def apply() -> None:
+            try:
+                self._midi_call("set_lead_setting", name, value)
+            except (TypeError, ValueError, RuntimeError) as exc:
+                print(f"[LEAD] {name} failed: {exc}", file=sys.stderr)
+            self._send_lead_state()
+            if self.rhythm.running:
+                print(
+                    f"[LEAD] applied at beat "
+                    f"{int(round(self.rhythm.beat_at()))}"
+                )
+
+        self.quantizer.schedule(
+            ("lead", name),
+            apply,
+            phase=PHASE_LEAD,
+            label=f"lead {name}",
+        )
+
+    def _on_lead_vary(self) -> None:
+        """Manual variation: the next quarter beat, or immediate when stopped."""
+
+        if not self._lead_available():
+            print(
+                "[LEAD] unavailable: start the bridge with --lead and a "
+                "configured IAC Driver Bus 5",
+                file=sys.stderr,
+            )
+            self._send_lead_state()
+            return
+
+        def apply() -> None:
+            try:
+                self._midi_call("vary_lead")
+            except (TypeError, ValueError, RuntimeError) as exc:
+                print(f"[LEAD] vary failed: {exc}", file=sys.stderr)
+            self._send_lead_state()
+            if self.rhythm.running:
+                print(
+                    f"[LEAD] variation applied at beat "
+                    f"{int(round(self.rhythm.beat_at()))}"
+                )
+
+        self.quantizer.schedule(
+            ("lead", "vary"),
+            apply,
+            phase=PHASE_LEAD,
+            label="lead vary",
+        )
+
+    # -- Stage 8.3d drone modes -------------------------------------------
+
+    def _drone_rig(self) -> Any:
+        return getattr(self.midi, "drone_rig", None)
+
+    def _send_drone_state(self) -> None:
+        """One ``/ji/drone/state`` snapshot (never raises, never per note)."""
+
+        if self._drone_rig() is None:
+            args: list[Any] = list(self._drone_default_state)
+        else:
+            try:
+                args = list(self.midi.drone_state())
+            except Exception as exc:  # keep the UI status alive
+                print(f"[DRONE] state failed: {exc}", file=sys.stderr)
+                args = list(self._drone_default_state)
+        self._send_ui_message(DRONE_STATE_ADDRESS, args)
+
+    def _on_drone_change(self, name: str, value: Any) -> None:
+        """Queue one validated drone mode/pad setting for the next beat."""
+
+        if self._drone_rig() is None:
+            print(
+                "[MIDI] drone modes unavailable: start the bridge with --midi",
+                file=sys.stderr,
+            )
+            self._send_drone_state()
+            return
+        try:
+            drone_module.DroneSettings().with_change(name, value)
+        except (TypeError, ValueError) as exc:
+            print(f"[DRONE] invalid {name}: {exc}", file=sys.stderr)
+            self._send_drone_state()
+            return
+
+        def apply() -> None:
+            try:
+                self._midi_call("set_drone_setting", name, value)
+            except (TypeError, ValueError, RuntimeError) as exc:
+                print(f"[DRONE] {name} failed: {exc}", file=sys.stderr)
+            self._send_drone_state()
+            if self.rhythm.running:
+                print(
+                    f"[DRONE] applied at beat "
+                    f"{int(round(self.rhythm.beat_at()))}"
+                )
+
+        self.quantizer.schedule(
+            ("drone", name),
+            apply,
+            phase=PHASE_DRONE,
+            label=f"drone {name}",
+        )
+
+    def _push_lead_swing(self) -> None:
+        """Push the drum groove's swing to the lead (one call per change)."""
+
+        rig = self._lead_rig()
+        if rig is None:
+            return
+        try:
+            swing = float(self.groove.spec.swing)
+        except Exception:
+            return
+        self._midi_call("set_lead_groove_swing", swing)
+
     def _broadcast_rhythm(self) -> None:
         """Send the canonical tempo/meter/transport to sclang."""
 
@@ -623,6 +963,19 @@ class JIBridge:
         self._midi_call("set_bass_bpm", state.bpm)
         self._midi_call("set_bass_meter", state.meter_num, state.meter_den)
         self._midi_call("set_bass_transport", state.running)
+        # Stage 8.3c: the arp needs the canonical tempo for beat sync and for
+        # its evolve clock (it is otherwise independent of the transport).
+        self._midi_call("set_arp_bpm", state.bpm)
+        self._midi_call("set_arp_transport", state.running)
+        # Stage 8.3d: the lead shares the same clock domain (transport-gated,
+        # bar-locked) and the drone modes are quarter-note based.
+        self._midi_call("set_lead_bpm", state.bpm)
+        self._midi_call("set_lead_meter", state.meter_num, state.meter_den)
+        self._midi_call("set_lead_transport", state.running)
+        self._midi_call("set_drone_bpm", state.bpm)
+        self._midi_call("set_drone_meter", state.meter_num, state.meter_den)
+        self._midi_call("set_drone_transport", state.running)
+        self._push_lead_swing()
 
     def _midi_call(self, name: str, *args: Any) -> Any:
         """Call a MIDIRig drum method if the injected rig provides it."""
@@ -646,11 +999,19 @@ class JIBridge:
             return
         self._midi_call("set_drums_bpm", state.bpm)
         self._midi_call("set_bass_bpm", state.bpm)
+        self._midi_call("set_arp_bpm", state.bpm)
+        self._midi_call("set_lead_bpm", state.bpm)
+        self._midi_call("set_drone_bpm", state.bpm)
         # Recompute the pending actions' next beat at the new tempo; never drop
         # them and never apply them immediately just because the tempo moved.
         self.quantizer.tempo_changed()
         self._broadcast_rhythm()
         self._send_rhythm_state()
+        # The arp's derived beat-sync step depends on the BPM, so refresh its
+        # status once per tempo change (one small message, never per step).
+        self._send_arp_state()
+        # The derived bend cycle is tempo-dependent too; one small message.
+        self._send_drone_state()
         # A tempo change moves the next-beat countdown even with no pending
         # actions; send one fresh quantize state so the UI does not count down
         # against a stale interval.  (tempo_changed already sent one if pending.)
@@ -683,11 +1044,14 @@ class JIBridge:
             # DrumRig logs the reload; this also replaces manual grid edits.
             self._midi_call("set_drums_meter", state.meter_num, state.meter_den)
         self._midi_call("set_bass_meter", state.meter_num, state.meter_den)
+        self._midi_call("set_lead_meter", state.meter_num, state.meter_den)
+        self._midi_call("set_drone_meter", state.meter_num, state.meter_den)
         self._broadcast_rhythm()
         self._send_rhythm_state()
         self._send_groove_state()
         self._send_grid_state()
         self._send_bass_state()
+        self._send_lead_state()
         self._print_rhythm()
 
     def _on_rhythm_transport(self, running: bool) -> None:
@@ -701,9 +1065,19 @@ class JIBridge:
         # to step 0.  Drums run only while the transport is running.
         self._midi_call("set_drums_transport", state.running)
         self._midi_call("set_bass_transport", state.running)
+        self._midi_call("set_arp_transport", state.running)
+        # Stage 8.3d: the lead and the drone pulse/bend modes are gated by the
+        # transport (the Stage 6 hold drone deliberately is not).
+        self._midi_call("set_lead_transport", state.running)
+        self._midi_call("set_drone_transport", state.running)
+        if state.running:
+            # A beat-synced arp locks to the new transport origin.
+            self._realign_arp()
         self._broadcast_rhythm()
         self._send_rhythm_state()
         self._send_bass_state()
+        self._send_lead_state()
+        self._send_drone_state()
         self._send_quantize_state()
         self._print_rhythm()
 
@@ -869,6 +1243,8 @@ class JIBridge:
             self._log_groove()
             self._applied_groove_log()
             self._send_groove_state()
+            # Stage 8.3d: one swing push per groove change (never per note).
+            self._push_lead_swing()
             if send_grid:
                 self._send_grid_state()
 
@@ -1125,8 +1501,9 @@ def run_interactive(bridge: JIBridge) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Stage 3/6/7/8.1/8.3a bridge: mutation engine -> sclang /ji/freqset/update, "
-            "optional MPE MIDI rig, drum output, rhythm state, and UI status"
+            "Stage 3/6/7/8.1/8.3a/8.3b/8.3d bridge: mutation engine -> sclang "
+            "/ji/freqset/update, optional MPE MIDI rig (drone/arp parameters), "
+            "drum and bass outputs, rhythm state, and UI status"
         )
     )
     parser.add_argument("--sc-host", default="127.0.0.1")
@@ -1221,6 +1598,32 @@ def build_parser() -> argparse.ArgumentParser:
             "(default: config/bass_config.json next to the project)"
         ),
     )
+    parser.add_argument(
+        "--lead",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "enable the Stage 8.3d lead/melody output on IAC Driver Bus 5 "
+            "(default: off; works with or without --midi/--drums/--bass)"
+        ),
+    )
+    parser.add_argument(
+        "--lead-config",
+        default=None,
+        help=(
+            "lead config path "
+            "(default: config/lead_config.json next to the project)"
+        ),
+    )
+    parser.add_argument(
+        "--drone-config",
+        default=None,
+        help=(
+            "drone mode/pad config path "
+            "(default: config/drone_config.json next to the project; the bus "
+            "stays --mpe-config's drone_port)"
+        ),
+    )
     return parser
 
 
@@ -1265,6 +1668,9 @@ def main(argv: list[str] | None = None) -> int:
         rhythm_config=args.rhythm_config,
         bass=args.bass,
         bass_config=args.bass_config,
+        lead=args.lead,
+        lead_config=args.lead_config,
+        drone_config=args.drone_config,
         ui_host=args.ui_host,
         ui_port=args.ui_port,
     )

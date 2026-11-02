@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Stage 7/8.2 performance GUI: one PyQt6 window.
+"""Stage 7/8.3b performance GUI: one PyQt6 window.
 
-Run from ``ji-live/`` after ``tests/sc/test_live_rig.scd`` and
-``ui/control_surface.scd`` are evaluated, and after the bridge is running::
+The supported one-command start (bridge + GUI) is ``run/ji_station.py``; see
+``docs/START_HERE.md``.  Running this module directly still works::
 
     uv run --with python-osc --with PyQt6 python ui/ji_ui.py
+
+It requires the sclang side (``ji_start.scd``) and the bridge to be running.
 
 The window is a control surface only.  It never talks to scsynth/Ableton
 directly, never starts or stops the audio/MIDI rig, and closing it stops only
@@ -15,8 +17,10 @@ its own OSC listener.  All ranges, message builders, and status parsing live in
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 import time
+from fractions import Fraction
 from typing import Any, Callable
 
 try:
@@ -51,6 +55,71 @@ except ImportError as exc:  # pragma: no cover - depends on the human's env
 if __package__:  # ``python -m ui.ji_ui`` and normal package imports
     from . import osc_control
     from .osc_control import (
+        ARP_DEFAULT_DIVISION,
+        ARP_DEFAULT_EVOLVE,
+        ARP_DEFAULT_EVOLVE_BEATS,
+        ARP_DEFAULT_OCTAVES,
+        ARP_DEFAULT_ORDER,
+        ARP_DEFAULT_SYNC,
+        ARP_DIVISIONS,
+        ARP_EVOLVE_BEATS_MAX,
+        ARP_EVOLVE_BEATS_MIN,
+        ARP_EVOLVE_DEPTH_PARAM,
+        ARP_SYNC_MODES,
+        ARP_DEFAULT_SEED,
+        ARP_OCTAVE_MAX,
+        ARP_OCTAVE_MIN,
+        ARP_ORDERS,
+        ARP_PARAMS,
+        ARP_SEED_MAX,
+        ARP_SHARED_MODES,
+        DRONE_DEFAULT_HOLD_BEATS,
+        DRONE_DEFAULT_SEQ_GATE,
+        DRONE_DEFAULT_SEQ_BARS,
+        DRONE_DEFAULT_SEQ_NOTES,
+        DRONE_SEQ_GATE_PARAM,
+        DRONE_SEQ_BARS,
+        DRONE_SEQ_NOTES_MAX,
+        DRONE_SEQ_NOTES_MIN,
+        DRONE_DEFAULT_MODE,
+        DRONE_DEFAULT_PULSE_GRID,
+        DRONE_DEFAULT_PULSE_NOTES,
+        DRONE_DEFAULT_PULSE_SPAN,
+        DRONE_DEFAULT_SLIDE_DIRECTION,
+        DRONE_DEFAULT_SLIDE_SEMITONES,
+        DRONE_HOLD_BEATS_MAX,
+        DRONE_HOLD_BEATS_MIN,
+        DRONE_MODES,
+        DRONE_PULSE_GATE_PARAM,
+        DRONE_PULSE_GRIDS,
+        DRONE_PULSE_NOTES_MAX,
+        DRONE_PULSE_NOTES_MIN,
+        DRONE_PULSE_SPAN_MAX,
+        DRONE_PULSE_SPAN_MIN,
+        DRONE_SLIDE_DIRECTIONS,
+        DRONE_SLIDE_PARAM,
+        DRONE_SLIDE_SEMITONES_MAX,
+        DRONE_SLIDE_SEMITONES_MIN,
+        DRONE_VELOCITY_PARAM,
+        LEAD_BASE_OCTAVE_MAX,
+        LEAD_BASE_OCTAVE_MIN,
+        LEAD_DEFAULT_BASE_OCTAVE,
+        LEAD_DEFAULT_GRID,
+        LEAD_DEFAULT_OCTAVE_RANGE,
+        LEAD_DEFAULT_PHRASE_BARS,
+        LEAD_DEFAULT_SEED,
+        LEAD_DEFAULT_VARIATION,
+        LEAD_DEFAULT_VARIATION_BARS,
+        LEAD_GRIDS,
+        LEAD_OCTAVE_RANGE_MAX,
+        LEAD_OCTAVE_RANGE_MIN,
+        LEAD_PARAMS,
+        LEAD_PHRASE_BARS_MAX,
+        LEAD_PHRASE_BARS_MIN,
+        LEAD_SEED_MAX,
+        LEAD_VARIATIONS,
+        LEAD_VARIATION_BARS_MAX,
+        LEAD_VARIATION_BARS_MIN,
         AUTOTUNE_CHANNELS,
         AUTOTUNE_PARAMS,
         BPM_DEFAULT,
@@ -106,6 +175,71 @@ if __package__:  # ``python -m ui.ji_ui`` and normal package imports
 else:  # pragma: no cover - direct ``python ui/ji_ui.py``
     import osc_control  # type: ignore[no-redef]
     from osc_control import (  # type: ignore[no-redef]
+        ARP_DEFAULT_DIVISION,
+        ARP_DEFAULT_EVOLVE,
+        ARP_DEFAULT_EVOLVE_BEATS,
+        ARP_DEFAULT_OCTAVES,
+        ARP_DEFAULT_ORDER,
+        ARP_DEFAULT_SYNC,
+        ARP_DIVISIONS,
+        ARP_EVOLVE_BEATS_MAX,
+        ARP_EVOLVE_BEATS_MIN,
+        ARP_EVOLVE_DEPTH_PARAM,
+        ARP_SYNC_MODES,
+        ARP_DEFAULT_SEED,
+        ARP_OCTAVE_MAX,
+        ARP_OCTAVE_MIN,
+        ARP_ORDERS,
+        ARP_PARAMS,
+        ARP_SEED_MAX,
+        ARP_SHARED_MODES,
+        DRONE_DEFAULT_HOLD_BEATS,
+        DRONE_DEFAULT_SEQ_GATE,
+        DRONE_DEFAULT_SEQ_BARS,
+        DRONE_DEFAULT_SEQ_NOTES,
+        DRONE_SEQ_GATE_PARAM,
+        DRONE_SEQ_BARS,
+        DRONE_SEQ_NOTES_MAX,
+        DRONE_SEQ_NOTES_MIN,
+        DRONE_DEFAULT_MODE,
+        DRONE_DEFAULT_PULSE_GRID,
+        DRONE_DEFAULT_PULSE_NOTES,
+        DRONE_DEFAULT_PULSE_SPAN,
+        DRONE_DEFAULT_SLIDE_DIRECTION,
+        DRONE_DEFAULT_SLIDE_SEMITONES,
+        DRONE_HOLD_BEATS_MAX,
+        DRONE_HOLD_BEATS_MIN,
+        DRONE_MODES,
+        DRONE_PULSE_GATE_PARAM,
+        DRONE_PULSE_GRIDS,
+        DRONE_PULSE_NOTES_MAX,
+        DRONE_PULSE_NOTES_MIN,
+        DRONE_PULSE_SPAN_MAX,
+        DRONE_PULSE_SPAN_MIN,
+        DRONE_SLIDE_DIRECTIONS,
+        DRONE_SLIDE_PARAM,
+        DRONE_SLIDE_SEMITONES_MAX,
+        DRONE_SLIDE_SEMITONES_MIN,
+        DRONE_VELOCITY_PARAM,
+        LEAD_BASE_OCTAVE_MAX,
+        LEAD_BASE_OCTAVE_MIN,
+        LEAD_DEFAULT_BASE_OCTAVE,
+        LEAD_DEFAULT_GRID,
+        LEAD_DEFAULT_OCTAVE_RANGE,
+        LEAD_DEFAULT_PHRASE_BARS,
+        LEAD_DEFAULT_SEED,
+        LEAD_DEFAULT_VARIATION,
+        LEAD_DEFAULT_VARIATION_BARS,
+        LEAD_GRIDS,
+        LEAD_OCTAVE_RANGE_MAX,
+        LEAD_OCTAVE_RANGE_MIN,
+        LEAD_PARAMS,
+        LEAD_PHRASE_BARS_MAX,
+        LEAD_PHRASE_BARS_MIN,
+        LEAD_SEED_MAX,
+        LEAD_VARIATIONS,
+        LEAD_VARIATION_BARS_MAX,
+        LEAD_VARIATION_BARS_MIN,
         AUTOTUNE_CHANNELS,
         AUTOTUNE_PARAMS,
         BPM_DEFAULT,
@@ -286,6 +420,21 @@ class Knob(QWidget):
 # ---------------------------------------------------------------------------
 
 
+def _ratio_label(ratio: float) -> str:
+    """``1.5 -> 3/2`` for the drone status line (else ``1.500``)."""
+
+    try:
+        value = float(ratio)
+    except (TypeError, ValueError):
+        return "?"
+    if not math.isfinite(value) or value <= 0.0:
+        return "?"
+    fraction = Fraction(value).limit_denominator(64)
+    if abs(float(fraction) - value) <= max(1e-6, abs(value) * 1e-6):
+        return f"{fraction.numerator}/{fraction.denominator}"
+    return f"{value:.3f}"
+
+
 class _StatusRelay(QObject):
     """Carries status messages from the OSC thread to the Qt main thread."""
 
@@ -298,7 +447,7 @@ class _StatusRelay(QObject):
 
 
 class MainWindow(QMainWindow):
-    """One-screen performance surface: Mutation, Autotune, Loops, Rhythm, Groove, Bass, Status."""
+    """One screen: Mutation, Autotune, Loops, Rhythm, Groove, Bass, Arp, Drone, Lead, Status."""
 
     def __init__(
         self,
@@ -320,6 +469,9 @@ class MainWindow(QMainWindow):
         self._loop_custom: set[int] = set()
         self._groove_sync = False
         self._bass_sync = False
+        self._arp_sync = False
+        self._lead_sync = False
+        self._drone_sync = False
         self._grid_sync = False
         self._grid_built_steps = 0
         self.step_cells: dict[tuple[int, int], QPushButton] = {}
@@ -332,7 +484,7 @@ class MainWindow(QMainWindow):
         )
         self._wire_controller_callback()
 
-        self.setWindowTitle("JI Station - Stage 8.3a Performance")
+        self.setWindowTitle("JI Station - Stage 8.3d Performance")
         self.resize(1280, 720)
         self.setMinimumSize(1080, 600)
         compact = QFont()
@@ -355,6 +507,12 @@ class MainWindow(QMainWindow):
         outer.addWidget(self._build_rhythm_group())
         outer.addWidget(self._build_groove_group())
         outer.addWidget(self._build_bass_group())
+        arp_drone_row = QHBoxLayout()
+        arp_drone_row.setSpacing(4)
+        arp_drone_row.addWidget(self._build_arp_group(), 3)
+        arp_drone_row.addWidget(self._build_drone_group(), 2)
+        outer.addLayout(arp_drone_row)
+        outer.addWidget(self._build_lead_group())
         outer.addWidget(self._build_status_group())
         outer.addStretch(1)
 
@@ -433,6 +591,14 @@ class MainWindow(QMainWindow):
             self._sync_bass_controls()
         if address == osc_control.BASS_NOTE:
             self._update_bass_label()
+        if address == osc_control.ARP_STATE:
+            self._sync_arp_controls()
+        if address == osc_control.LEAD_STATE:
+            self._sync_lead_controls()
+        if address == osc_control.LEAD_NOTE:
+            self._update_lead_label()
+        if address == osc_control.DRONE_STATE:
+            self._sync_drone_controls()
 
         self._refresh_status_labels()
 
@@ -1048,6 +1214,188 @@ class MainWindow(QMainWindow):
         ]
         return group
 
+    def _build_arp_group(self) -> QGroupBox:
+        """Stage 8.3b/c compact arp group (three rows incl. the status line)."""
+
+        group = QGroupBox("Arp")
+        layout = QVBoxLayout(group)
+        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setSpacing(2)
+
+        row = QHBoxLayout()
+        row.setSpacing(2)
+        self.arp_knobs: dict[str, Knob] = {}
+        for spec in ARP_PARAMS:
+            steps = (
+                int(round(spec.high - spec.low))
+                if spec.integer
+                else 1000
+            )
+            knob = Knob(
+                spec.label,
+                spec.low,
+                spec.high,
+                spec.default,
+                steps=steps,
+                integer=spec.integer,
+                fmt=spec.fmt,
+                suffix=spec.suffix,
+            )
+            knob.valueChanged.connect(
+                lambda value, key=spec.key: self._on_arp_knob(key, value)
+            )
+            self.arp_knobs[spec.key] = knob
+            row.addWidget(knob)
+
+        row.addWidget(QLabel("Sync"))
+        self.arp_sync_combo = QComboBox()
+        self.arp_sync_combo.addItems(list(ARP_SYNC_MODES))
+        self.arp_sync_combo.setCurrentText(ARP_DEFAULT_SYNC)
+        self.arp_sync_combo.setToolTip(
+            "free = the Step knob sets the step in seconds (Stage 6/8.3b). "
+            "beat = the step is the chosen division of the bridge BPM and the "
+            "next step snaps to the beat."
+        )
+        self.arp_sync_combo.currentIndexChanged.connect(
+            self._on_arp_sync_changed
+        )
+        row.addWidget(self.arp_sync_combo)
+
+        row.addWidget(QLabel("Div"))
+        self.arp_division_combo = QComboBox()
+        self.arp_division_combo.addItems(list(ARP_DIVISIONS))
+        self.arp_division_combo.setCurrentText(ARP_DEFAULT_DIVISION)
+        self.arp_division_combo.setToolTip(
+            "Beat-mode step: 1/4, 1/8, 1/16 or 1/8T of the bridge tempo. "
+            "1/8 at 120 BPM = 0.25 s, the free-mode default."
+        )
+        self.arp_division_combo.currentIndexChanged.connect(
+            self._on_arp_division_changed
+        )
+        row.addWidget(self.arp_division_combo)
+
+        row.addWidget(QLabel("Order"))
+        self.arp_order_combo = QComboBox()
+        self.arp_order_combo.addItems(list(ARP_ORDERS))
+        self.arp_order_combo.setCurrentText(ARP_DEFAULT_ORDER)
+        self.arp_order_combo.setToolTip(
+            "forward = A1 A2 A3 B1 B2 B3; reverse = backwards; pingpong = "
+            "forward then back without repeating the endpoints; random = a "
+            "seeded permutation of the six steps."
+        )
+        self.arp_order_combo.currentIndexChanged.connect(
+            self._on_arp_order_changed
+        )
+        row.addWidget(self.arp_order_combo)
+
+        row.addWidget(QLabel("Shared"))
+        self.arp_shared_combo = QComboBox()
+        self.arp_shared_combo.addItems(list(ARP_SHARED_MODES))
+        self.arp_shared_combo.setToolTip(
+            "anchor = use the current anchor when it is in the set, else a "
+            "seeded class; random = always a seeded class."
+        )
+        self.arp_shared_combo.currentIndexChanged.connect(
+            self._on_arp_shared_changed
+        )
+        row.addWidget(self.arp_shared_combo)
+        row.addStretch(1)
+        layout.addLayout(row)
+
+        row2 = QHBoxLayout()
+        row2.setSpacing(3)
+        self.arp_evolve_checkbox = QCheckBox("Evolve")
+        self.arp_evolve_checkbox.setChecked(ARP_DEFAULT_EVOLVE)
+        self.arp_evolve_checkbox.setToolTip(
+            "Regenerate the pattern on its own from the current set — no "
+            "mutation needed. Depth 0 only re-picks the free notes; higher "
+            "depth also lets the shared note and the octaves drift."
+        )
+        self.arp_evolve_checkbox.toggled.connect(self._on_arp_evolve_toggled)
+        row2.addWidget(self.arp_evolve_checkbox)
+
+        row2.addWidget(QLabel("Every"))
+        self.arp_evolve_beats_spin = QSpinBox()
+        self.arp_evolve_beats_spin.setRange(
+            ARP_EVOLVE_BEATS_MIN, ARP_EVOLVE_BEATS_MAX
+        )
+        self.arp_evolve_beats_spin.setValue(int(ARP_DEFAULT_EVOLVE_BEATS))
+        self.arp_evolve_beats_spin.setFixedWidth(48)
+        self.arp_evolve_beats_spin.setSuffix(" b")
+        self.arp_evolve_beats_spin.setToolTip(
+            "Evolve every N quarter beats (1..64). 4 beats = one 4/4 bar."
+        )
+        self.arp_evolve_beats_spin.valueChanged.connect(
+            self._on_arp_evolve_beats
+        )
+        row2.addWidget(self.arp_evolve_beats_spin)
+
+        self.arp_depth_knob = Knob(
+            ARP_EVOLVE_DEPTH_PARAM.label,
+            ARP_EVOLVE_DEPTH_PARAM.low,
+            ARP_EVOLVE_DEPTH_PARAM.high,
+            ARP_EVOLVE_DEPTH_PARAM.default,
+            steps=1000,
+            fmt=ARP_EVOLVE_DEPTH_PARAM.fmt,
+        )
+        self.arp_depth_knob.setToolTip(
+            "How much one evolution changes: 0 keeps the shared note and the "
+            "octaves; 1 lets the shared note move freely and nudges an octave."
+        )
+        self.arp_depth_knob.valueChanged.connect(self._on_arp_depth_knob)
+        row2.addWidget(self.arp_depth_knob)
+
+        row2.addWidget(QLabel("Oct"))
+        self.arp_octave_spins: list[QSpinBox] = []
+        for label, default in zip(
+            ("sh", "1", "2"), ARP_DEFAULT_OCTAVES
+        ):
+            row2.addWidget(QLabel(label))
+            spin = QSpinBox()
+            spin.setRange(ARP_OCTAVE_MIN, ARP_OCTAVE_MAX)
+            spin.setValue(int(default))
+            spin.setFixedWidth(44)
+            spin.setToolTip(
+                "Positional octave offsets (shared, non-shared 1, non-shared "
+                "2), -8..+8. The shared offset is identical in groups A and B."
+            )
+            spin.valueChanged.connect(self._on_arp_octaves)
+            self.arp_octave_spins.append(spin)
+            row2.addWidget(spin)
+
+        row2.addWidget(QLabel("Seed"))
+        self.arp_seed_spin = QSpinBox()
+        self.arp_seed_spin.setRange(0, int(ARP_SEED_MAX))
+        self.arp_seed_spin.setValue(int(ARP_DEFAULT_SEED))
+        self.arp_seed_spin.setFixedWidth(90)
+        self.arp_seed_spin.setToolTip(
+            "Same seed + same set + same settings reproduce the same pattern, "
+            "the same random order, and the same evolution sequence."
+        )
+        self.arp_seed_spin.valueChanged.connect(self._on_arp_seed)
+        row2.addWidget(self.arp_seed_spin)
+        row2.addStretch(1)
+        layout.addLayout(row2)
+
+        self.arp_label = QLabel("Arp: waiting for bridge")
+        layout.addWidget(self.arp_label)
+
+        self.arp_controls: list[QWidget] = [
+            self.arp_sync_combo,
+            self.arp_division_combo,
+            self.arp_order_combo,
+            self.arp_shared_combo,
+            self.arp_evolve_checkbox,
+            self.arp_evolve_beats_spin,
+            self.arp_depth_knob,
+            self.arp_seed_spin,
+            *self.arp_octave_spins,
+            *self.arp_knobs.values(),
+        ]
+        # Nothing has arrived yet: show the waiting state with controls off.
+        self._update_arp_label()
+        return group
+
     # -- Stage 8.2 groove grid ------------------------------------------
 
     def _grid_steps(self) -> int:
@@ -1336,6 +1684,150 @@ class MainWindow(QMainWindow):
                 f"Last: {note.note_name} {note.hz:.2f} Hz"
             )
 
+    # -- Stage 8.3b arp controls ----------------------------------------
+
+    def _arp_message(self, label: str) -> None:
+        self._set_message(
+            f"{label} queued for the next beat"
+            if self._transport_running()
+            else f"{label} applied immediately (transport stopped)"
+        )
+
+    def _on_arp_knob(self, key: str, value: float) -> None:
+        # Knobs coalesce at ~30 Hz through the shared pending timer.
+        self._pending[("arp", key)] = value
+
+    def _on_arp_order_changed(self, position: int) -> None:
+        if self._arp_sync:
+            return
+        if not 0 <= position < len(ARP_ORDERS):
+            return
+        order = ARP_ORDERS[position]
+        self._guard(self.controller.set_arp_order, order)
+        self._arp_message(f"Arp order {order}")
+
+    def _on_arp_shared_changed(self, position: int) -> None:
+        if self._arp_sync:
+            return
+        if not 0 <= position < len(ARP_SHARED_MODES):
+            return
+        mode = ARP_SHARED_MODES[position]
+        self._guard(self.controller.set_arp_shared_mode, mode)
+        self._arp_message(f"Arp shared mode {mode}")
+
+    def _on_arp_octaves(self, _value: int = 0) -> None:
+        if self._arp_sync:
+            return
+        offsets = [spin.value() for spin in self.arp_octave_spins]
+        self._guard(self.controller.set_arp_octaves, *offsets)
+        self._arp_message(
+            "Arp octaves " + ",".join(str(item) for item in offsets)
+        )
+
+    def _on_arp_sync_changed(self, position: int) -> None:
+        if self._arp_sync:
+            return
+        if not 0 <= position < len(ARP_SYNC_MODES):
+            return
+        mode = ARP_SYNC_MODES[position]
+        self._guard(self.controller.set_arp_sync, mode)
+        self._arp_message(f"Arp sync {mode}")
+
+    def _on_arp_division_changed(self, position: int) -> None:
+        if self._arp_sync:
+            return
+        if not 0 <= position < len(ARP_DIVISIONS):
+            return
+        division = ARP_DIVISIONS[position]
+        self._guard(self.controller.set_arp_division, division)
+        self._arp_message(f"Arp division {division}")
+
+    def _on_arp_evolve_toggled(self, checked: bool) -> None:
+        if self._arp_sync:
+            return
+        self._guard(self.controller.set_arp_evolve, bool(checked))
+        self._arp_message(f"Arp evolve {'on' if checked else 'off'}")
+
+    def _on_arp_evolve_beats(self, value: int) -> None:
+        if self._arp_sync:
+            return
+        self._guard(self.controller.set_arp_evolve_beats, int(value))
+        self._arp_message(f"Arp evolve every {int(value)} beats")
+
+    def _on_arp_depth_knob(self, value: float) -> None:
+        self._pending[("arp", "evolve_depth")] = value
+
+    def _on_arp_seed(self, value: int) -> None:
+        if self._arp_sync:
+            return
+        self._guard(self.controller.set_arp_seed, int(value))
+        self._arp_message(f"Arp seed {int(value)}")
+
+    def _sync_arp_controls(self) -> None:
+        """Reflect ``/ji/arp/state`` with signals blocked (no feedback OSC)."""
+
+        arp = self.store.arp
+        if arp is None:
+            return
+        self._arp_sync = True
+        try:
+            for spec in ARP_PARAMS:
+                knob = self.arp_knobs.get(spec.key)
+                if knob is not None:
+                    knob.set_value(getattr(arp, spec.key), emit=False)
+            order = arp.order if arp.order in ARP_ORDERS else ARP_DEFAULT_ORDER
+            self.arp_order_combo.setCurrentText(order)
+            sync = (
+                arp.sync_mode
+                if arp.sync_mode in ARP_SYNC_MODES
+                else ARP_DEFAULT_SYNC
+            )
+            self.arp_sync_combo.setCurrentText(sync)
+            division = (
+                arp.division
+                if arp.division in ARP_DIVISIONS
+                else ARP_DEFAULT_DIVISION
+            )
+            self.arp_division_combo.setCurrentText(division)
+            self.arp_evolve_checkbox.setChecked(bool(arp.evolve))
+            self.arp_evolve_beats_spin.setValue(int(arp.evolve_beats))
+            self.arp_depth_knob.set_value(arp.evolve_depth, emit=False)
+            shared = (
+                arp.shared_mode
+                if arp.shared_mode in ARP_SHARED_MODES
+                else ARP_SHARED_MODES[0]
+            )
+            self.arp_shared_combo.setCurrentText(shared)
+            for spin, value in zip(self.arp_octave_spins, arp.octave_offsets):
+                spin.setValue(int(value))
+            self.arp_seed_spin.setValue(int(arp.seed))
+        finally:
+            self._arp_sync = False
+        self._update_arp_label()
+
+    def _update_arp_label(self) -> None:
+        arp = self.store.arp
+        if arp is None:
+            self.arp_label.setText("Arp: waiting for bridge")
+            for widget in self.arp_controls:
+                widget.setEnabled(False)
+            return
+        available = bool(arp.port_ok)
+        for widget in self.arp_controls:
+            widget.setEnabled(available)
+        if not available:
+            self.arp_label.setText(
+                "Arp: disabled (MIDI/Bus 2 not available; see bridge log)"
+            )
+            return
+        # The step knob only matters when free-running; the division only in
+        # beat mode; the evolve rate/depth only while evolving.
+        self.arp_knobs["step_seconds"].setEnabled(not arp.synced)
+        self.arp_division_combo.setEnabled(arp.synced)
+        self.arp_evolve_beats_spin.setEnabled(bool(arp.evolve))
+        self.arp_depth_knob.setEnabled(bool(arp.evolve))
+        self.arp_label.setText("Arp: " + arp.status_line())
+
     def _sync_grid(self) -> None:
         if not self.grid_scroll.isVisible():
             return
@@ -1372,6 +1864,714 @@ class MainWindow(QMainWindow):
         self.quantize_label.setText(
             f"Next beat: {remaining:.2f} s | {self._quantize_pending} pending"
         )
+
+    # -- Stage 8.3d lead controls ----------------------------------------
+
+    def _lead_message(self, label: str) -> None:
+        self._set_message(
+            f"{label} queued for the next beat"
+            if self._transport_running()
+            else f"{label} applied immediately (transport stopped)"
+        )
+
+    def _on_lead_enabled(self, checked: bool) -> None:
+        if self._lead_sync:
+            return
+        self._guard(self.controller.set_lead_enabled, bool(checked))
+        self._lead_message(f"Lead {'on' if checked else 'off'}")
+
+    def _on_lead_grid_changed(self, position: int) -> None:
+        if self._lead_sync:
+            return
+        if not 0 <= position < len(LEAD_GRIDS):
+            return
+        self._guard(self.controller.set_lead_setting, "grid", LEAD_GRIDS[position])
+        self._lead_message(f"Lead grid {LEAD_GRIDS[position]}")
+
+    def _on_lead_variation_changed(self, position: int) -> None:
+        if self._lead_sync:
+            return
+        if not 0 <= position < len(LEAD_VARIATIONS):
+            return
+        name = LEAD_VARIATIONS[position]
+        self._guard(self.controller.set_lead_setting, "variation", name)
+        self._lead_message(f"Lead variation {name}")
+
+    def _on_lead_phrase_bars(self, value: int) -> None:
+        if self._lead_sync:
+            return
+        self._guard(self.controller.set_lead_setting, "phrase_bars", int(value))
+        self._lead_message(f"Lead phrase {int(value)} bars")
+
+    def _on_lead_vary(self) -> None:
+        self._guard(self.controller.vary_lead)
+        self._lead_message("Lead vary")
+
+    def _on_lead_knob(self, key: str, value: float) -> None:
+        # Knobs coalesce at ~30 Hz through the shared pending timer.
+        self._pending[("lead", key)] = value
+
+    def _on_lead_octave_range(self, value: int) -> None:
+        if self._lead_sync:
+            return
+        self._guard(
+            self.controller.set_lead_setting, "octave_range", int(value)
+        )
+        self._lead_message(f"Lead octave range {int(value)}")
+
+    def _on_lead_base_octave(self, value: int) -> None:
+        if self._lead_sync:
+            return
+        self._guard(
+            self.controller.set_lead_setting, "base_octave", int(value)
+        )
+        self._lead_message(f"Lead base octave {int(value):+d}")
+
+    def _on_lead_seed(self, value: int) -> None:
+        if self._lead_sync:
+            return
+        self._guard(self.controller.set_lead_setting, "seed", int(value))
+        self._lead_message(f"Lead seed {int(value)}")
+
+    def _on_lead_variation_bars(self, value: int) -> None:
+        if self._lead_sync:
+            return
+        self._guard(
+            self.controller.set_lead_setting, "variation_bars", int(value)
+        )
+        self._lead_message(f"Lead vary every {int(value)} bars")
+
+    def _on_lead_groove_link(self, checked: bool) -> None:
+        if self._lead_sync:
+            return
+        self._guard(
+            self.controller.set_lead_setting, "groove_link", bool(checked)
+        )
+        self._lead_message(
+            f"Lead groove link {'on' if checked else 'off'}"
+        )
+
+    def _sync_lead_controls(self) -> None:
+        """Reflect ``/ji/lead/state`` with signals blocked (no feedback OSC)."""
+
+        lead = self.store.lead
+        if lead is None:
+            return
+        self._lead_sync = True
+        try:
+            self.lead_enable_checkbox.setChecked(bool(lead.enabled))
+            if lead.grid in LEAD_GRIDS:
+                self.lead_grid_combo.setCurrentText(lead.grid)
+            self.lead_phrase_spin.setValue(int(lead.phrase_bars))
+            variation = (
+                lead.variation
+                if lead.variation in LEAD_VARIATIONS
+                else LEAD_VARIATIONS[0]
+            )
+            self.lead_variation_combo.setCurrentText(variation)
+            for spec in LEAD_PARAMS:
+                knob = self.lead_knobs.get(spec.key)
+                if knob is not None:
+                    knob.set_value(getattr(lead, spec.key), emit=False)
+            self.lead_octave_range_spin.setValue(int(lead.octave_range))
+            self.lead_base_octave_spin.setValue(int(lead.base_octave))
+            self.lead_seed_spin.setValue(int(lead.seed))
+            self.lead_variation_bars_spin.setValue(int(lead.variation_bars))
+            self.lead_groove_link_checkbox.setChecked(bool(lead.groove_link))
+        finally:
+            self._lead_sync = False
+        self._update_lead_label()
+
+    def _update_lead_label(self) -> None:
+        lead = self.store.lead
+        if lead is None:
+            self.lead_label.setText("Lead: waiting for bridge")
+            self.lead_note_label.setText("Last: --")
+            for widget in self.lead_controls:
+                widget.setEnabled(False)
+            return
+        available = bool(lead.port_ok)
+        for widget in self.lead_controls:
+            widget.setEnabled(available)
+        if not available:
+            self.lead_label.setText(
+                "Lead: disabled (Bus 5 not available; start with --lead)"
+            )
+        else:
+            self.lead_label.setText("Lead: " + lead.status_line())
+        note = self.store.lead_note
+        if note is None:
+            self.lead_note_label.setText("Last: --")
+        else:
+            self.lead_note_label.setText(
+                f"Last: {note.note_name} {note.hz:.2f} Hz"
+            )
+
+    # -- Stage 8.3d drone mode controls ----------------------------------
+
+    def _drone_message(self, label: str) -> None:
+        self._set_message(
+            f"{label} queued for the next beat"
+            if self._transport_running()
+            else f"{label} applied immediately (transport stopped)"
+        )
+
+    def _drone_set(self, name: str, value: Any, label: str) -> None:
+        if self._drone_sync:
+            return
+        self._guard(self.controller.set_drone_setting, name, value)
+        self._drone_message(label)
+
+    def _on_drone_mode_changed(self, position: int) -> None:
+        if self._drone_sync:
+            return
+        if not 0 <= position < len(DRONE_MODES):
+            return
+        self._drone_set("mode", DRONE_MODES[position], f"Drone {DRONE_MODES[position]}")
+
+    def _on_drone_knob(self, key: str, value: float) -> None:
+        self._pending[("drone", key)] = value
+
+    def _on_drone_pulse_notes(self, value: int) -> None:
+        self._drone_set("pulse_notes", int(value), f"Drone notes {int(value)}")
+
+    def _on_drone_pulse_grid(self, position: int) -> None:
+        if not 0 <= position < len(DRONE_PULSE_GRIDS):
+            return
+        grid = DRONE_PULSE_GRIDS[position]
+        self._drone_set("pulse_grid", grid, f"Drone grid {grid}")
+
+    def _on_drone_pulse_span(self, value: int) -> None:
+        self._drone_set("pulse_octave_span", int(value), f"Drone span {int(value)}")
+
+    def _on_drone_seq_notes(self, value: int) -> None:
+        self._drone_set(
+            "seq_notes", int(value), f"Drone sequence {int(value)} notes"
+        )
+
+    def _on_drone_seq_bars(self, position: int) -> None:
+        if not 0 <= position < len(DRONE_SEQ_BARS):
+            return
+        bars = DRONE_SEQ_BARS[position]
+        unit = "bar" if position <= 2 else "bars"
+        self._drone_set(
+            "seq_bars", bars, f"Drone sequence {bars} {unit} per note"
+        )
+
+    def _on_drone_slide_direction(self, position: int) -> None:
+        if not 0 <= position < len(DRONE_SLIDE_DIRECTIONS):
+            return
+        direction = DRONE_SLIDE_DIRECTIONS[position]
+        self._drone_set(
+            "slide_direction", direction, f"Drone slide {direction}"
+        )
+
+    def _on_drone_slide_semitones(self, value: int) -> None:
+        self._drone_set(
+            "slide_semitones", int(value), f"Drone slide {int(value)} st"
+        )
+
+    def _on_drone_hold_beats(self, value: float) -> None:
+        self._drone_set(
+            "hold_beats", float(value), f"Drone hold {float(value):.2f} beats"
+        )
+
+    def _sync_drone_controls(self) -> None:
+        """Reflect ``/ji/drone/state`` with signals blocked."""
+
+        drone = self.store.drone
+        if drone is None:
+            return
+        self._drone_sync = True
+        try:
+            if drone.mode in DRONE_MODES:
+                self.drone_mode_combo.setCurrentText(drone.mode)
+            self.drone_velocity_knob.set_value(drone.velocity, emit=False)
+            self.drone_pulse_notes_spin.setValue(int(drone.pulse_notes))
+            if drone.pulse_grid in DRONE_PULSE_GRIDS:
+                self.drone_pulse_grid_combo.setCurrentText(drone.pulse_grid)
+            self.drone_pulse_gate_knob.set_value(drone.pulse_gate, emit=False)
+            self.drone_pulse_span_spin.setValue(int(drone.pulse_octave_span))
+            if drone.slide_direction in DRONE_SLIDE_DIRECTIONS:
+                self.drone_direction_combo.setCurrentText(drone.slide_direction)
+            self.drone_semitones_spin.setValue(int(drone.slide_semitones))
+            self.drone_slide_knob.set_value(drone.slide_seconds, emit=False)
+            self.drone_hold_spin.setValue(float(drone.hold_beats))
+            self.drone_seq_notes_spin.setValue(int(drone.seq_notes))
+            if drone.seq_bars in DRONE_SEQ_BARS:
+                self.drone_seq_bars_combo.setCurrentText(drone.seq_bars)
+            self.drone_seq_gate_knob.set_value(drone.seq_gate, emit=False)
+        finally:
+            self._drone_sync = False
+        self._update_drone_label()
+
+    def _update_drone_label(self) -> None:
+        drone = self.store.drone
+        if drone is None:
+            self.drone_label.setText("Drone: waiting for bridge")
+            for widget in self.drone_controls:
+                widget.setEnabled(False)
+            return
+        available = bool(drone.port_ok)
+        for widget in self.drone_controls:
+            widget.setEnabled(available)
+        if not available:
+            self.drone_label.setText(
+                "Drone: disabled (Bus 1 not available; see bridge log)"
+            )
+            return
+        anchor_label = None
+        freqset = self.store.freqset
+        if freqset is not None and freqset.anchor is not None:
+            anchor_label = _ratio_label(freqset.anchor)
+        text = "Drone: " + drone.status_line(anchor_label)
+        # pulse/bend/sequence are transport-gated: say so instead of going
+        # silent with no explanation.
+        if drone.playing:
+            text += " | playing"
+        elif drone.gated:
+            rhythm = self.store.rhythm
+            if rhythm is not None and not rhythm.running:
+                text += " | waiting for transport (press Play)"
+            else:
+                text += " | armed"
+        self.drone_label.setText(text)
+        # Only the controls that matter for the current mode stay live.
+        self.drone_pulse_row.setEnabled(available and drone.mode == "pulse")
+        self.drone_bend_row.setEnabled(available and drone.mode == "bend")
+        self.drone_sequence_row.setEnabled(
+            available and drone.mode == "sequence"
+        )
+
+    def _build_lead_group(self) -> QGroupBox:
+        """Stage 8.3d compact lead group (two rows + status line)."""
+
+        group = QGroupBox("Lead")
+        layout = QVBoxLayout(group)
+        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setSpacing(2)
+
+        # QComboBox.addItems selects index 0 and emits currentIndexChanged;
+        # build silently so construction never sends control OSC.
+        self._lead_sync = True
+        row = QHBoxLayout()
+        row.setSpacing(3)
+        self.lead_enable_checkbox = QCheckBox("Lead on")
+        self.lead_enable_checkbox.toggled.connect(self._on_lead_enabled)
+        row.addWidget(self.lead_enable_checkbox)
+
+        row.addWidget(QLabel("Grid"))
+        self.lead_grid_combo = QComboBox()
+        self.lead_grid_combo.addItems(list(LEAD_GRIDS))
+        self.lead_grid_combo.setCurrentText(LEAD_DEFAULT_GRID)
+        self.lead_grid_combo.setToolTip(
+            "Phrase resolution: 1/4, 1/8, 1/16 or 1/8T of the bridge tempo."
+        )
+        self.lead_grid_combo.currentIndexChanged.connect(
+            self._on_lead_grid_changed
+        )
+        row.addWidget(self.lead_grid_combo)
+
+        row.addWidget(QLabel("Variation"))
+        self.lead_variation_combo = QComboBox()
+        self.lead_variation_combo.addItems(list(LEAD_VARIATIONS))
+        self.lead_variation_combo.setCurrentText(LEAD_DEFAULT_VARIATION)
+        self.lead_variation_combo.setToolTip(
+            "identity = as generated; transpose/invert/retrograde/thin/"
+            "ornament/rhythm transform the current line; random = a fresh "
+            "seeded line. Seeded by (seed, variation index)."
+        )
+        self.lead_variation_combo.currentIndexChanged.connect(
+            self._on_lead_variation_changed
+        )
+        row.addWidget(self.lead_variation_combo)
+
+        row.addWidget(QLabel("Phrase"))
+        self.lead_phrase_spin = QSpinBox()
+        self.lead_phrase_spin.setRange(LEAD_PHRASE_BARS_MIN, LEAD_PHRASE_BARS_MAX)
+        self.lead_phrase_spin.setValue(LEAD_DEFAULT_PHRASE_BARS)
+        self.lead_phrase_spin.setFixedWidth(46)
+        self.lead_phrase_spin.setSuffix(" b")
+        self.lead_phrase_spin.setToolTip("Motif length in bars (1..8).")
+        self.lead_phrase_spin.valueChanged.connect(self._on_lead_phrase_bars)
+        row.addWidget(self.lead_phrase_spin)
+
+        self.lead_vary_button = QPushButton("Vary")
+        self.lead_vary_button.setMinimumHeight(24)
+        self.lead_vary_button.setMinimumWidth(56)
+        self.lead_vary_button.setToolTip(
+            "Advance one variation: next quarter beat while the transport "
+            "runs, immediate while it is stopped."
+        )
+        self.lead_vary_button.clicked.connect(self._on_lead_vary)
+        row.addWidget(self.lead_vary_button)
+        row.addStretch(1)
+        layout.addLayout(row)
+
+        row2 = QHBoxLayout()
+        row2.setSpacing(2)
+        self.lead_knobs: dict[str, Knob] = {}
+        for spec in LEAD_PARAMS:
+            knob = Knob(
+                spec.label,
+                spec.low,
+                spec.high,
+                spec.default,
+                steps=1000,
+                integer=spec.integer,
+                fmt=spec.fmt,
+                suffix=spec.suffix,
+            )
+            knob.valueChanged.connect(
+                lambda value, key=spec.key: self._on_lead_knob(key, value)
+            )
+            self.lead_knobs[spec.key] = knob
+            row2.addWidget(knob)
+
+        self.lead_groove_link_checkbox = QCheckBox("Groove link")
+        self.lead_groove_link_checkbox.setChecked(True)
+        self.lead_groove_link_checkbox.setToolTip(
+            "On: the lead uses the drum groove's current swing and moves with "
+            "it. Off: the lead's own Swing knob."
+        )
+        self.lead_groove_link_checkbox.toggled.connect(
+            self._on_lead_groove_link
+        )
+        row2.addWidget(self.lead_groove_link_checkbox)
+
+        row2.addWidget(QLabel("Oct"))
+        self.lead_octave_range_spin = QSpinBox()
+        self.lead_octave_range_spin.setRange(
+            LEAD_OCTAVE_RANGE_MIN, LEAD_OCTAVE_RANGE_MAX
+        )
+        self.lead_octave_range_spin.setValue(LEAD_DEFAULT_OCTAVE_RANGE)
+        self.lead_octave_range_spin.setFixedWidth(42)
+        self.lead_octave_range_spin.setToolTip(
+            "How far the line may travel in octaves (0..2)."
+        )
+        self.lead_octave_range_spin.valueChanged.connect(
+            self._on_lead_octave_range
+        )
+        row2.addWidget(self.lead_octave_range_spin)
+
+        row2.addWidget(QLabel("Base"))
+        self.lead_base_octave_spin = QSpinBox()
+        self.lead_base_octave_spin.setRange(
+            LEAD_BASE_OCTAVE_MIN, LEAD_BASE_OCTAVE_MAX
+        )
+        self.lead_base_octave_spin.setValue(LEAD_DEFAULT_BASE_OCTAVE)
+        self.lead_base_octave_spin.setFixedWidth(46)
+        self.lead_base_octave_spin.setToolTip(
+            "Whole octaves relative to the fundamental (-2..+2)."
+        )
+        self.lead_base_octave_spin.valueChanged.connect(
+            self._on_lead_base_octave
+        )
+        row2.addWidget(self.lead_base_octave_spin)
+
+        row2.addWidget(QLabel("Var every"))
+        self.lead_variation_bars_spin = QSpinBox()
+        self.lead_variation_bars_spin.setRange(
+            LEAD_VARIATION_BARS_MIN, LEAD_VARIATION_BARS_MAX
+        )
+        self.lead_variation_bars_spin.setValue(LEAD_DEFAULT_VARIATION_BARS)
+        self.lead_variation_bars_spin.setFixedWidth(48)
+        self.lead_variation_bars_spin.setSuffix(" b")
+        self.lead_variation_bars_spin.setToolTip(
+            "Apply the next variation every N bars while the transport runs "
+            "(0 = manual only)."
+        )
+        self.lead_variation_bars_spin.valueChanged.connect(
+            self._on_lead_variation_bars
+        )
+        row2.addWidget(self.lead_variation_bars_spin)
+
+        row2.addWidget(QLabel("Seed"))
+        self.lead_seed_spin = QSpinBox()
+        self.lead_seed_spin.setRange(0, int(LEAD_SEED_MAX))
+        self.lead_seed_spin.setValue(int(LEAD_DEFAULT_SEED))
+        self.lead_seed_spin.setFixedWidth(90)
+        self.lead_seed_spin.setToolTip(
+            "Same seed + same settings reproduce the same phrase and the same "
+            "variation sequence."
+        )
+        self.lead_seed_spin.valueChanged.connect(self._on_lead_seed)
+        row2.addWidget(self.lead_seed_spin)
+        row2.addStretch(1)
+        layout.addLayout(row2)
+
+        self.lead_label = QLabel("Lead: waiting for bridge")
+        self.lead_note_label = QLabel("Last: --")
+        status_row = QHBoxLayout()
+        status_row.setSpacing(8)
+        status_row.addWidget(self.lead_label)
+        status_row.addWidget(self.lead_note_label)
+        status_row.addStretch(1)
+        layout.addLayout(status_row)
+
+        self.lead_controls: list[QWidget] = [
+            self.lead_enable_checkbox,
+            self.lead_grid_combo,
+            self.lead_variation_combo,
+            self.lead_phrase_spin,
+            self.lead_vary_button,
+            self.lead_groove_link_checkbox,
+            self.lead_octave_range_spin,
+            self.lead_base_octave_spin,
+            self.lead_variation_bars_spin,
+            self.lead_seed_spin,
+            *self.lead_knobs.values(),
+        ]
+        self._lead_sync = False
+        self._update_lead_label()
+        return group
+
+    def _build_drone_group(self) -> QGroupBox:
+        """Stage 8.3d compact drone mode group (mode + pulse + bend rows)."""
+
+        group = QGroupBox("Drone modes")
+        layout = QVBoxLayout(group)
+        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setSpacing(2)
+
+        # As above: no control OSC while the widgets are being built.
+        self._drone_sync = True
+        top = QHBoxLayout()
+        top.setSpacing(3)
+        top.addWidget(QLabel("Mode"))
+        self.drone_mode_combo = QComboBox()
+        self.drone_mode_combo.addItems(list(DRONE_MODES))
+        self.drone_mode_combo.setCurrentText(DRONE_DEFAULT_MODE)
+        self.drone_mode_combo.setToolTip(
+            "hold = the Stage 6 sustained anchor (default). pulse = a repeating "
+            "N-note pattern on the anchor pitch class. sequence = a repeating "
+            "figure that climbs the current set from the anchor and comes back "
+            "(harmonic movement). bend = hold, then slide the pitch with one "
+            "continuous bend."
+        )
+        self.drone_mode_combo.currentIndexChanged.connect(
+            self._on_drone_mode_changed
+        )
+        top.addWidget(self.drone_mode_combo)
+
+        velocity = Knob(
+            DRONE_VELOCITY_PARAM.label,
+            DRONE_VELOCITY_PARAM.low,
+            DRONE_VELOCITY_PARAM.high,
+            DRONE_VELOCITY_PARAM.default,
+            steps=int(
+                DRONE_VELOCITY_PARAM.high - DRONE_VELOCITY_PARAM.low
+            ),
+            integer=True,
+            fmt=DRONE_VELOCITY_PARAM.fmt,
+        )
+        velocity.setToolTip("Drone note-on velocity (1..127).")
+        velocity.valueChanged.connect(
+            lambda value: self._on_drone_knob("velocity", value)
+        )
+        self.drone_velocity_knob = velocity
+        top.addWidget(velocity)
+        top.addStretch(1)
+        layout.addLayout(top)
+
+        pulse_row = QWidget()
+        pulse = QHBoxLayout(pulse_row)
+        pulse.setContentsMargins(0, 0, 0, 0)
+        pulse.setSpacing(3)
+        pulse.addWidget(QLabel("Notes"))
+        self.drone_pulse_notes_spin = QSpinBox()
+        self.drone_pulse_notes_spin.setRange(
+            DRONE_PULSE_NOTES_MIN, DRONE_PULSE_NOTES_MAX
+        )
+        self.drone_pulse_notes_spin.setValue(DRONE_DEFAULT_PULSE_NOTES)
+        self.drone_pulse_notes_spin.setFixedWidth(42)
+        self.drone_pulse_notes_spin.setToolTip("Pulse pattern length (2..8).")
+        self.drone_pulse_notes_spin.valueChanged.connect(
+            self._on_drone_pulse_notes
+        )
+        pulse.addWidget(self.drone_pulse_notes_spin)
+
+        pulse.addWidget(QLabel("Grid"))
+        self.drone_pulse_grid_combo = QComboBox()
+        self.drone_pulse_grid_combo.addItems(list(DRONE_PULSE_GRIDS))
+        self.drone_pulse_grid_combo.setCurrentText(DRONE_DEFAULT_PULSE_GRID)
+        self.drone_pulse_grid_combo.setToolTip(
+            "Pulse rhythm: 1/4, 1/8 or 1/16 of the bridge tempo."
+        )
+        self.drone_pulse_grid_combo.currentIndexChanged.connect(
+            self._on_drone_pulse_grid
+        )
+        pulse.addWidget(self.drone_pulse_grid_combo)
+
+        gate = Knob(
+            DRONE_PULSE_GATE_PARAM.label,
+            DRONE_PULSE_GATE_PARAM.low,
+            DRONE_PULSE_GATE_PARAM.high,
+            DRONE_PULSE_GATE_PARAM.default,
+            steps=1000,
+            fmt=DRONE_PULSE_GATE_PARAM.fmt,
+            suffix=DRONE_PULSE_GATE_PARAM.suffix,
+        )
+        gate.setToolTip("Pulse gate in beats (clamped to <= the grid step).")
+        gate.valueChanged.connect(
+            lambda value: self._on_drone_knob("pulse_gate", value)
+        )
+        self.drone_pulse_gate_knob = gate
+        pulse.addWidget(gate)
+
+        pulse.addWidget(QLabel("Span"))
+        self.drone_pulse_span_spin = QSpinBox()
+        self.drone_pulse_span_spin.setRange(
+            DRONE_PULSE_SPAN_MIN, DRONE_PULSE_SPAN_MAX
+        )
+        self.drone_pulse_span_spin.setValue(DRONE_DEFAULT_PULSE_SPAN)
+        self.drone_pulse_span_spin.setFixedWidth(42)
+        self.drone_pulse_span_spin.setToolTip(
+            "Pulse octave span: +/- octaves around the anchor (0..2)."
+        )
+        self.drone_pulse_span_spin.valueChanged.connect(
+            self._on_drone_pulse_span
+        )
+        pulse.addWidget(self.drone_pulse_span_spin)
+        pulse.addStretch(1)
+        self.drone_pulse_row = pulse_row
+        layout.addWidget(pulse_row)
+
+        bend_row = QWidget()
+        bend = QHBoxLayout(bend_row)
+        bend.setContentsMargins(0, 0, 0, 0)
+        bend.setSpacing(3)
+        bend.addWidget(QLabel("Dir"))
+        self.drone_direction_combo = QComboBox()
+        self.drone_direction_combo.addItems(list(DRONE_SLIDE_DIRECTIONS))
+        self.drone_direction_combo.setCurrentText(DRONE_DEFAULT_SLIDE_DIRECTION)
+        self.drone_direction_combo.setToolTip(
+            "Slide down or up at the end of the hold."
+        )
+        self.drone_direction_combo.currentIndexChanged.connect(
+            self._on_drone_slide_direction
+        )
+        bend.addWidget(self.drone_direction_combo)
+
+        bend.addWidget(QLabel("Semis"))
+        self.drone_semitones_spin = QSpinBox()
+        self.drone_semitones_spin.setRange(
+            DRONE_SLIDE_SEMITONES_MIN, DRONE_SLIDE_SEMITONES_MAX
+        )
+        self.drone_semitones_spin.setValue(DRONE_DEFAULT_SLIDE_SEMITONES)
+        self.drone_semitones_spin.setFixedWidth(46)
+        self.drone_semitones_spin.setSuffix(" st")
+        self.drone_semitones_spin.setToolTip(
+            "Slide size in semitones (1..12; the MPE bend range is 48 st)."
+        )
+        self.drone_semitones_spin.valueChanged.connect(
+            self._on_drone_slide_semitones
+        )
+        bend.addWidget(self.drone_semitones_spin)
+
+        slide = Knob(
+            DRONE_SLIDE_PARAM.label,
+            DRONE_SLIDE_PARAM.low,
+            DRONE_SLIDE_PARAM.high,
+            DRONE_SLIDE_PARAM.default,
+            steps=1000,
+            fmt=DRONE_SLIDE_PARAM.fmt,
+            suffix=DRONE_SLIDE_PARAM.suffix,
+        )
+        slide.setToolTip("Slide duration in seconds (0.05..4.0).")
+        slide.valueChanged.connect(
+            lambda value: self._on_drone_knob("slide_seconds", value)
+        )
+        self.drone_slide_knob = slide
+        bend.addWidget(slide)
+
+        bend.addWidget(QLabel("Hold"))
+        self.drone_hold_spin = QDoubleSpinBox()
+        self.drone_hold_spin.setRange(DRONE_HOLD_BEATS_MIN, DRONE_HOLD_BEATS_MAX)
+        self.drone_hold_spin.setSingleStep(0.25)
+        self.drone_hold_spin.setDecimals(2)
+        self.drone_hold_spin.setValue(DRONE_DEFAULT_HOLD_BEATS)
+        self.drone_hold_spin.setFixedWidth(64)
+        self.drone_hold_spin.setSuffix(" b")
+        self.drone_hold_spin.setToolTip(
+            "Hold before the slide, in quarter beats. The cycle length is "
+            "derived (hold + slide, rounded up to the next beat)."
+        )
+        self.drone_hold_spin.valueChanged.connect(self._on_drone_hold_beats)
+        bend.addWidget(self.drone_hold_spin)
+        bend.addStretch(1)
+        self.drone_bend_row = bend_row
+        layout.addWidget(bend_row)
+
+        sequence_row = QWidget()
+        sequence = QHBoxLayout(sequence_row)
+        sequence.setContentsMargins(0, 0, 0, 0)
+        sequence.setSpacing(3)
+        sequence.addWidget(QLabel("Seq notes"))
+        self.drone_seq_notes_spin = QSpinBox()
+        self.drone_seq_notes_spin.setRange(
+            DRONE_SEQ_NOTES_MIN, DRONE_SEQ_NOTES_MAX
+        )
+        self.drone_seq_notes_spin.setValue(DRONE_DEFAULT_SEQ_NOTES)
+        self.drone_seq_notes_spin.setFixedWidth(42)
+        self.drone_seq_notes_spin.setToolTip(
+            "How many notes in the repeating figure (2..8). It climbs the "
+            "current set from the anchor and comes back to it; each note is "
+            "held for the Length below."
+        )
+        self.drone_seq_notes_spin.valueChanged.connect(
+            self._on_drone_seq_notes
+        )
+        sequence.addWidget(self.drone_seq_notes_spin)
+
+        sequence.addWidget(QLabel("Length"))
+        self.drone_seq_bars_combo = QComboBox()
+        self.drone_seq_bars_combo.addItems(list(DRONE_SEQ_BARS))
+        self.drone_seq_bars_combo.setCurrentText(DRONE_DEFAULT_SEQ_BARS)
+        self.drone_seq_bars_combo.setToolTip(
+            "How long each note is held: 1/4, 1/2, 1, 2 or 4 bars. One bar or "
+            "more makes the figure a slowly moving pad."
+        )
+        self.drone_seq_bars_combo.currentIndexChanged.connect(
+            self._on_drone_seq_bars
+        )
+        sequence.addWidget(self.drone_seq_bars_combo)
+
+        seq_gate = Knob(
+            DRONE_SEQ_GATE_PARAM.label,
+            DRONE_SEQ_GATE_PARAM.low,
+            DRONE_SEQ_GATE_PARAM.high,
+            DRONE_SEQ_GATE_PARAM.default,
+            steps=1000,
+            fmt=DRONE_SEQ_GATE_PARAM.fmt,
+            suffix=DRONE_SEQ_GATE_PARAM.suffix,
+        )
+        seq_gate.setToolTip(
+            "How much of each note sounds: 100% is legato (a tiny gap before "
+            "the next note), 50% leaves a rest."
+        )
+        seq_gate.valueChanged.connect(
+            lambda value: self._on_drone_knob("seq_gate", value)
+        )
+        self.drone_seq_gate_knob = seq_gate
+        sequence.addWidget(seq_gate)
+        sequence.addStretch(1)
+        self.drone_sequence_row = sequence_row
+        layout.addWidget(sequence_row)
+
+        self.drone_label = QLabel("Drone: waiting for bridge")
+        layout.addWidget(self.drone_label)
+
+        self.drone_controls: list[QWidget] = [
+            self.drone_mode_combo,
+            self.drone_velocity_knob,
+            self.drone_pulse_row,
+            self.drone_bend_row,
+            self.drone_sequence_row,
+        ]
+        self._drone_sync = False
+        self._update_drone_label()
+        return group
 
     def _build_status_group(self) -> QGroupBox:
         group = QGroupBox("Status")
@@ -1658,6 +2858,12 @@ class MainWindow(QMainWindow):
                 self._guard(self.controller.set_groove_modifier, key[1], value)
             elif key[0] == "bass":
                 self._guard(self.controller.set_bass_param, key[1], value)
+            elif key[0] == "arp":
+                self._guard(self.controller.set_arp_param, key[1], value)
+            elif key[0] == "lead":
+                self._guard(self.controller.set_lead_param, key[1], value)
+            elif key[0] == "drone":
+                self._guard(self.controller.set_drone_param, key[1], value)
 
     def _guard(self, action: Callable[..., Any], *args: Any) -> None:
         try:
@@ -1861,6 +3067,8 @@ class MainWindow(QMainWindow):
 
         self._refresh_rhythm_labels()
         self._update_bass_label()
+        self._update_lead_label()
+        self._update_drone_label()
 
         for index in range(1, 5):
             self._refresh_loop_label(index)
@@ -1893,7 +3101,7 @@ class MainWindow(QMainWindow):
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Stage 7/8.2 performance GUI (PyQt6, one window)"
+        description="Stage 7/8.3b performance GUI (PyQt6, one window)"
     )
     parser.add_argument("--bridge-host", default="127.0.0.1")
     parser.add_argument("--bridge-port", type=int, default=9000)
@@ -1917,7 +3125,7 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(f"{label} must be between 1 and 65535")
 
     app = QApplication(sys.argv[:1])
-    app.setApplicationName("JI Station Stage 8.2")
+    app.setApplicationName("JI Station Stage 8.3b")
 
     controller = OSCController(
         bridge_host=args.bridge_host,
@@ -1934,7 +3142,7 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         message = f"Could not start the UI OSC listener:\n{exc}"
         print(f"[UI] {message}", file=sys.stderr)
-        QMessageBox.critical(None, "JI Stage 8.2 UI", message)
+        QMessageBox.critical(None, "JI Stage 8.3b UI", message)
         window.close()
         return 1
 
