@@ -90,10 +90,13 @@ from pythonosc.udp_client import SimpleUDPClient
 try:  # Support both ``python -m control.ji_bridge`` and direct execution.
     from . import arp as arp_module
     from . import bass as bass_module
+    from . import breath as breath_module
     from . import drone as drone_module
     from . import glide as glide_module
     from . import home as home_module
     from . import lead as lead_module
+    from . import lead_input as lead_input_module
+    from . import melody as melody_module
     from . import state as state_module
     from .drums import DEFAULT_LANE_MASK, DRUM_RATE_DEFAULT, LANE_COUNT
     from .groove import Groove, validate_preset
@@ -119,14 +122,17 @@ try:  # Support both ``python -m control.ji_bridge`` and direct execution.
         PHASE_STATE,
         BeatQuantizer,
     )
-    from .rhythm import RhythmEngine, RhythmState
+    from .rhythm import RhythmEngine, RhythmState, bar_quarters
 except ImportError:  # pragma: no cover - exercised only by direct execution
     import arp as arp_module  # type: ignore[no-redef]
     import bass as bass_module  # type: ignore[no-redef]
+    import breath as breath_module  # type: ignore[no-redef]
     import drone as drone_module  # type: ignore[no-redef]
     import glide as glide_module  # type: ignore[no-redef]
     import home as home_module  # type: ignore[no-redef]
     import lead as lead_module  # type: ignore[no-redef]
+    import lead_input as lead_input_module  # type: ignore[no-redef]
+    import melody as melody_module  # type: ignore[no-redef]
     import state as state_module  # type: ignore[no-redef]
     from drums import (  # type: ignore[no-redef]
         DEFAULT_LANE_MASK,
@@ -156,7 +162,7 @@ except ImportError:  # pragma: no cover - exercised only by direct execution
         PHASE_STATE,
         BeatQuantizer,
     )
-    from rhythm import RhythmEngine, RhythmState  # type: ignore[no-redef]
+    from rhythm import RhythmEngine, RhythmState, bar_quarters  # type: ignore[no-redef]
 
 FUNDAMENTAL = 220.0
 INITIAL_RATIOS = [1.0, 9.0 / 8.0, 5.0 / 4.0, 4.0 / 3.0, 3.0 / 2.0, 5.0 / 3.0, 15.0 / 8.0]
@@ -172,10 +178,15 @@ DRUMS_GROOVE_ADDRESS = "/ji/drums/groove"
 DRUMS_GRID_ADDRESS = "/ji/drums/grid"
 QUANTIZE_STATE_ADDRESS = "/ji/quantize/state"
 BASS_STATE_ADDRESS = "/ji/bass/state"
+BASS_HITS_ADDRESS = "/ji/bass/hits"
 BASS_NOTE_ADDRESS = "/ji/bass/note"
+BREATH_STATE_ADDRESS = "/ji/breath/state"
 ARP_STATE_ADDRESS = "/ji/arp/state"
 LEAD_STATE_ADDRESS = "/ji/lead/state"
 LEAD_NOTE_ADDRESS = "/ji/lead/note"
+LEAD_INPUT_STATE_ADDRESS = "/ji/lead/input/state"
+LEAD_MELODY_LIST_ADDRESS = "/ji/lead/melody/list"
+LEAD_MELODY_STATE_ADDRESS = "/ji/lead/melody/state"
 DRONE_STATE_ADDRESS = "/ji/drone/state"
 HOME_STATE_ADDRESS = "/ji/home/state"
 STATE_LIST_ADDRESS = "/ji/state/list"
@@ -284,6 +295,10 @@ class JIBridge:
         drone_config: str | None = None,
         home_config: str | None = None,
         state_dir: str | None = None,
+        lead_in: bool = False,
+        lead_in_config: str | None = None,
+        lead_in_port: str | None = None,
+        melody_dir: str | None = None,
     ) -> None:
         self.sc_host = str(sc_host)
         self.sc_port = int(sc_port)
@@ -310,6 +325,9 @@ class JIBridge:
         # is 120 BPM, 4/4, transport stopped.  A rhythm config's bpm/meter are
         # applied below when drums are configured.
         self.rhythm = RhythmEngine()
+        # Stage 8.7: one breath clock, shared (by reference) with every voice
+        # scheduler.  It never touches BeatClock, the quantizer or the state.
+        self.breath = breath_module.BreathClock(bpm=self.rhythm.bpm)
         # Stage 8.2: major state changes are queued to the next quarter beat
         # while the transport runs.  The worker thread starts in start(), never
         # here, so constructing a bridge in a pure test creates no threads.
@@ -345,6 +363,37 @@ class JIBridge:
         self._state_last_saved = ""
         self._state_last_loaded = ""
         self._state_message = ""
+        # Stage 9.1: the melody library is always constructed (file ops are
+        # harmless without --lead); the MIDI input rig is built in start()
+        # only when --lead-in and --lead are both on.
+        self.melody_dir = melody_module.resolve_melody_dir(melody_dir)
+        self.melodies = melody_module.MelodyLibrary(self.melody_dir)
+        self._melody_lock = threading.RLock()
+        self._melody_last_saved = ""
+        self._melody_last_loaded = ""
+        self._melody_message = ""
+        self.lead_in_requested = bool(lead_in and lead)
+        self.lead_in_config = lead_in_config
+        self.lead_in_port = lead_in_port
+        self.lead_input = None
+        if lead_in and not lead:
+            print("[LEAD-IN] --lead-in ignored: start with --lead for Bus 5")
+        self._lead_input_default_state = [
+            0,
+            0,
+            "",
+            1.0,
+            lead_input_module.DEFAULT_COUNT_IN,
+            2,
+            0,
+            0.0,
+            0,
+            "generated",
+            "",
+            -1,
+            -1,
+            0.0,
+        ]
         self.server = MutationOSCServer(
             self.engine,
             listen_host=self.listen_host,
@@ -371,9 +420,29 @@ class JIBridge:
             on_drums_seed=self._on_drums_seed,
             on_drums_reset_grid=self._on_drums_reset_grid,
             on_bass_change=self._on_bass_change,
+            on_bass_hits_enabled=self._on_bass_hits_enabled,
+            on_bass_hit=self._on_bass_hit,
+            on_bass_clear_hits=self._on_bass_clear_hits,
+            on_bass_copy_hits=self._on_bass_copy_hits,
+            on_breath_change=self._on_breath_change,
             on_arp_change=self._on_arp_change,
             on_lead_change=self._on_lead_change,
             on_lead_vary=self._on_lead_vary,
+            on_lead_input_enabled=self._on_lead_input_enabled,
+            on_lead_input_quantize=self._on_lead_input_quantize,
+            on_lead_input_count_in=self._on_lead_input_count_in,
+            on_lead_input_bars=self._on_lead_input_bars,
+            on_lead_input_note_on=self._on_lead_input_note_on,
+            on_lead_input_note_off=self._on_lead_input_note_off,
+            on_lead_input_record=self._on_lead_input_record,
+            on_lead_input_stop=self._on_lead_input_stop,
+            on_lead_input_revert=self._on_lead_input_revert,
+            on_lead_input_clear=self._on_lead_input_clear,
+            on_lead_input_refresh=self._on_lead_input_refresh,
+            on_lead_melody_save=self._on_lead_melody_save,
+            on_lead_melody_load=self._on_lead_melody_load,
+            on_lead_melody_delete=self._on_lead_melody_delete,
+            on_lead_melody_request=self._on_lead_melody_request,
             on_drone_change=self._on_drone_change,
             on_home_capture=self.request_home_capture,
             on_home_clear=self.request_home_clear,
@@ -457,6 +526,12 @@ class JIBridge:
             self.groove = Groove(
                 meter_num=state.meter_num, meter_den=state.meter_den
             )
+        # Stage 8.7: the breath clock follows the canonical tempo/meter that was
+        # just established (a config change re-anchors without a jump).
+        initial = self.rhythm.state
+        self.breath.set_tempo(
+            initial.bpm, initial.meter_num, initial.meter_den
+        )
         # A status payload for the no-bass case, so the GUI always receives a
         # well-formed /ji/bass/state snapshot.
         self._bass_default_state = bass_module.BassEngine(
@@ -516,6 +591,7 @@ class JIBridge:
             self.midi.start()
             self._midi_call("set_bass_note_callback", self._on_bass_note)
             self._midi_call("set_lead_note_callback", self._on_lead_note)
+        self._start_lead_input()
         self._sync_drums_context()
         # If the arp is configured beat-synced, start it on the grid rather
         # than at an arbitrary phase.
@@ -525,13 +601,19 @@ class JIBridge:
         # resync with /ji/rhythm/request.
         self._broadcast_rhythm()
         self._print_rhythm()
+        self._print_breath()
         self._send_rhythm_state()
         self._send_drums_state()
         self._send_groove_state()
         self._send_grid_state()
         self._send_bass_state()
+        self._send_bass_hits()
+        self._send_breath_state()
         self._send_arp_state()
         self._send_lead_state()
+        self._send_lead_input_state()
+        self._send_melody_list()
+        self._send_melody_state()
         self._send_drone_state()
         self._send_home_state()
         self._print_state_dir()
@@ -551,6 +633,13 @@ class JIBridge:
         self._send_quantize_state()
 
     def stop(self) -> None:
+        # Release the lead input before the MIDI buses close, so no played
+        # note can be left hanging.
+        if self.lead_input is not None:
+            try:
+                self.lead_input.stop()
+            except Exception as exc:  # input is never fatal
+                print(f"[LEAD-IN] stop failed: {exc}", file=sys.stderr)
         # Stop the queue first so no action fires while the server/MIDI rig is
         # shutting down.  (Pending actions are dropped and logged.)
         self.quantizer.stop()
@@ -873,8 +962,13 @@ class JIBridge:
         self._send_groove_state()
         self._send_grid_state()
         self._send_bass_state()
+        self._send_bass_hits()
+        self._send_breath_state()
         self._send_arp_state()
         self._send_lead_state()
+        self._send_lead_input_state()
+        self._send_melody_list()
+        self._send_melody_state()
         self._send_drone_state()
         self._send_home_state()
         self._send_state_list()
@@ -940,6 +1034,133 @@ class JIBridge:
             BASS_NOTE_ADDRESS,
             [float(hz), int(midi_note), int(velocity)],
         )
+
+    # -- Stage 8.7 breath status / controls ------------------------------
+
+    def _send_breath_state(self) -> None:
+        """Send one ``/ji/breath/state`` snapshot (never raises)."""
+
+        try:
+            args = self.breath.settings.state_args()
+        except Exception as exc:  # keep the UI status alive
+            print(f"[BREATH] state failed: {exc}", file=sys.stderr)
+            args = breath_module.BreathSettings().state_args()
+        self._send_ui_message(BREATH_STATE_ADDRESS, list(args))
+
+    def _print_breath(self) -> None:
+        settings = self.breath.settings
+        print(
+            f"[BREATH] {'on' if settings.enabled else 'off'} "
+            f"depth={settings.depth:.2f} period={settings.period_bars} bars "
+            f"shape={settings.shape} intensity={settings.intensity:.2f} "
+            f"arp_local={settings.arp_local:.2f} "
+            f"arp_sync={'on' if settings.arp_sync else 'off'}"
+        )
+
+    def _on_breath_change(self, name: str, value: Any) -> None:
+        """Apply one immediate breath change, log it and echo the state."""
+
+        try:
+            settings = self.breath.settings.with_change(name, value)
+            self.breath.set_settings(settings)
+        except (TypeError, ValueError) as exc:
+            print(f"[BREATH] invalid {name}: {exc}", file=sys.stderr)
+            self._send_breath_state()
+            return
+        self._print_breath()
+        self._send_breath_state()
+
+    # -- Stage 8.7 bass hit row ------------------------------------------
+
+    def _bass_hits_payload(self) -> list[int]:
+        """``[enabled, count, hit_...]``; a well-formed ``[0, 0]`` without a rig."""
+
+        rig = self._bass_rig()
+        if rig is None:
+            return [0, 0]
+        getter = getattr(rig, "hits_payload", None)
+        if not callable(getter):
+            getter = getattr(self.midi, "bass_hits_payload", None)
+        if not callable(getter):
+            return [0, 0]
+        try:
+            payload = list(getter())
+        except Exception as exc:  # keep the UI status alive
+            print(f"[BASS] hits state failed: {exc}", file=sys.stderr)
+            return [0, 0]
+        return [int(item) for item in payload]
+
+    def _send_bass_hits(self) -> None:
+        self._send_ui_message(BASS_HITS_ADDRESS, self._bass_hits_payload())
+
+    def _print_bass_hits(self, label: str) -> None:
+        rig = self._bass_rig()
+        if rig is None:
+            return
+        try:
+            settings = rig.engine.settings
+            count = len(rig.engine.effective_hits())
+        except Exception:
+            return
+        print(
+            f"[BASS] {label} row={settings.grid} steps={count}"
+        )
+
+    def _on_bass_hits_enabled(self, enabled: bool) -> None:
+        """Enable/disable the hit row immediately (a performance gesture)."""
+
+        rig = self._bass_rig()
+        if rig is None:
+            print(
+                "[MIDI] bass unavailable: start the bridge with --bass and a "
+                "configured IAC Driver Bus 4",
+                file=sys.stderr,
+            )
+            self._send_bass_hits()
+            return
+        try:
+            self._midi_call("set_bass_hits_enabled", bool(enabled))
+        except (TypeError, ValueError, RuntimeError) as exc:
+            print(f"[BASS] hits enabled failed: {exc}", file=sys.stderr)
+        self._send_bass_hits()
+        self._send_bass_state()
+        self._print_bass_hits("hits enabled" if enabled else "hits off")
+
+    def _on_bass_hit(self, index: int, on: bool) -> None:
+        rig = self._bass_rig()
+        if rig is None:
+            self._send_bass_hits()
+            return
+        try:
+            self._midi_call("set_bass_hit", int(index), bool(on))
+        except (TypeError, ValueError, RuntimeError) as exc:
+            print(f"[BASS] hit {index} failed: {exc}", file=sys.stderr)
+        self._send_bass_hits()
+        self._print_bass_hits(f"hit {int(index)} {'on' if on else 'off'}")
+
+    def _on_bass_clear_hits(self) -> None:
+        rig = self._bass_rig()
+        if rig is None:
+            self._send_bass_hits()
+            return
+        try:
+            self._midi_call("clear_bass_hits")
+        except (TypeError, ValueError, RuntimeError) as exc:
+            print(f"[BASS] clear hits failed: {exc}", file=sys.stderr)
+        self._send_bass_hits()
+        self._print_bass_hits("hits cleared")
+
+    def _on_bass_copy_hits(self) -> None:
+        rig = self._bass_rig()
+        if rig is None:
+            self._send_bass_hits()
+            return
+        try:
+            self._midi_call("copy_bass_hits")
+        except (TypeError, ValueError, RuntimeError) as exc:
+            print(f"[BASS] copy hits failed: {exc}", file=sys.stderr)
+        self._send_bass_hits()
+        self._print_bass_hits("hits copied")
 
     # -- Stage 8.3b arp state --------------------------------------------
 
@@ -1101,6 +1322,12 @@ class JIBridge:
                 self._midi_call("set_lead_setting", name, value)
             except (TypeError, ValueError, RuntimeError) as exc:
                 print(f"[LEAD] {name} failed: {exc}", file=sys.stderr)
+            if (
+                name == "enabled"
+                and not bool(value)
+                and self.lead_input is not None
+            ):
+                self.lead_input.release_all()
             self._send_lead_state()
             if self.rhythm.running:
                 print(
@@ -1145,6 +1372,446 @@ class JIBridge:
             phase=PHASE_LEAD,
             label="lead vary",
         )
+
+    # -- Stage 9.1 lead input and melodies --------------------------------
+
+    def _melody_dir_label(self) -> str:
+        directory = self.melodies.directory
+        try:
+            relative = directory.relative_to(state_module.PROJECT_ROOT)
+        except ValueError:
+            return str(directory)
+        return f"{relative}/"
+
+    def _print_melody_dir(self) -> None:
+        print(
+            f"[LEAD-IN] melody dir={self._melody_dir_label()} "
+            f"melodies={self.melodies.count()}"
+        )
+
+    def _lead_input_settings(self) -> Any:
+        try:
+            settings = lead_input_module.load_config(self.lead_in_config)
+            if self.lead_in_port:
+                settings = settings.with_change("port", self.lead_in_port)
+            return settings
+        except (OSError, TypeError, ValueError) as exc:
+            print(f"[LEAD-IN] disabled: {exc}", file=sys.stderr)
+            return None
+
+    def _start_lead_input(self) -> None:
+        """Build and open the input rig (only with --lead-in and --lead)."""
+
+        if not self.lead_in_requested:
+            return
+        rig = self._lead_rig()
+        if rig is None or not bool(getattr(rig, "port_ok", False)):
+            print("[LEAD-IN] unavailable: start with --lead for Bus 5")
+            return
+        settings = self._lead_input_settings()
+        if settings is None:
+            return
+        try:
+            self.lead_input = lead_input_module.LeadInputRig(
+                rig,
+                self.rhythm,
+                settings,
+                library=self.melodies,
+                on_change=self._on_lead_input_change,
+                on_note=self._on_lead_note,
+            )
+        except (TypeError, ValueError) as exc:
+            print(f"[LEAD-IN] disabled: {exc}", file=sys.stderr)
+            self.lead_input = None
+            return
+        self.lead_input.start()
+        self._print_melody_dir()
+
+    def _on_lead_input_change(self) -> None:
+        """One status pair per record/settings change (never per note)."""
+
+        self._send_lead_state()
+        self._send_lead_input_state()
+
+    def _send_lead_input_state(self) -> None:
+        rig = self.lead_input
+        if rig is not None:
+            try:
+                args: list[Any] = list(rig.state_args())
+            except Exception as exc:  # keep the UI status alive
+                print(f"[LEAD-IN] state failed: {exc}", file=sys.stderr)
+                args = list(self._lead_input_default_state)
+        else:
+            args = list(self._lead_input_default_state)
+            lead = self._lead_rig()
+            if lead is not None:
+                args[9] = lead.source
+        self._send_ui_message(LEAD_INPUT_STATE_ADDRESS, args)
+
+    def _on_lead_input_enabled(self, enabled: bool) -> None:
+        """The Live toggle: immediate, and the scheduler is stopped not muted."""
+
+        rig = self._lead_rig()
+        if self.lead_input is None or rig is None:
+            print(
+                "[LEAD-IN] input unavailable: start with --lead-in --lead",
+                file=sys.stderr,
+            )
+            self._send_lead_input_state()
+            return
+        if enabled:
+            rig.set_source("live")
+        else:
+            if self.lead_input is not None:
+                self.lead_input.release_all()
+            name = "played" if rig.engine.motif.source == "played" else "generated"
+            at_time: float | None = None
+            if self.rhythm.running:
+                state = self.rhythm.state
+                bar = max(1e-9, bar_quarters(state.meter_num, state.meter_den))
+                target = math.ceil(
+                    (self.rhythm.beat_at() + 1e-9) / bar
+                ) * bar
+                at_time = self.rhythm.clock.time_of_beat(target)
+                print(
+                    f"[LEAD-IN] live off; phrase resumes at bar "
+                    f"{int(round(target / bar)) + 1}"
+                )
+            else:
+                print("[LEAD-IN] live off; phrase resumes on Play")
+            rig.set_source(name, at_time=at_time)
+        self._send_lead_state()
+        self._send_lead_input_state()
+
+    def _set_lead_input_setting(
+        self, name: str, value: Any, label: str
+    ) -> None:
+        if self.lead_input is None:
+            print("[LEAD-IN] input unavailable", file=sys.stderr)
+            self._send_lead_input_state()
+            return
+        try:
+            self.lead_input.set_setting(name, value)
+        except (TypeError, ValueError) as exc:
+            print(f"[LEAD-IN] invalid {label}: {exc}", file=sys.stderr)
+            self._send_lead_input_state()
+            return
+        print(f"[LEAD-IN] {label}={value}")
+        self._send_lead_input_state()
+
+    def _on_lead_input_quantize(self, value: float) -> None:
+        self._set_lead_input_setting("quantize", value, "quantize")
+
+    def _on_lead_input_count_in(self, value: str) -> None:
+        self._set_lead_input_setting("count_in", value, "count-in")
+
+    def _on_lead_input_bars(self, value: int) -> None:
+        self._set_lead_input_setting("bars", value, "bars")
+
+    def _on_lead_input_note_on(self, midi: int, velocity: int) -> None:
+        if self.lead_input is None:
+            return
+        try:
+            self.lead_input.note_on(midi, velocity)
+        except (TypeError, ValueError) as exc:
+            print(f"[LEAD-IN] invalid note-on: {exc}", file=sys.stderr)
+
+    def _on_lead_input_note_off(self, midi: int) -> None:
+        if self.lead_input is None:
+            return
+        try:
+            self.lead_input.note_off(midi)
+        except (TypeError, ValueError) as exc:
+            print(f"[LEAD-IN] invalid note-off: {exc}", file=sys.stderr)
+
+    def _on_lead_input_record(self) -> None:
+        if self.lead_input is None:
+            print(
+                "[LEAD-IN] record unavailable: start with --lead-in --lead",
+                file=sys.stderr,
+            )
+            self._send_lead_input_state()
+            return
+        try:
+            self.lead_input.start_record()
+        except Exception as exc:  # the record supervisor is non-critical
+            print(f"[LEAD-IN] record failed: {exc}", file=sys.stderr)
+        self._send_lead_input_state()
+
+    def _on_lead_input_stop(self) -> None:
+        if self.lead_input is None:
+            return
+        self.lead_input.stop_record("user")
+        self._send_lead_input_state()
+
+    def _on_lead_input_refresh(self) -> None:
+        """Close and re-open the configured input device (the GUI Refresh)."""
+
+        if self.lead_input is None:
+            print("[LEAD-IN] input unavailable", file=sys.stderr)
+            self._send_lead_input_state()
+            return
+        try:
+            self.lead_input.refresh()
+        except Exception as exc:  # input is never fatal
+            print(f"[LEAD-IN] refresh failed: {exc}", file=sys.stderr)
+        self._send_lead_state()
+        self._send_lead_input_state()
+
+    def _on_lead_input_revert(self) -> None:
+        """Revert to the recorded base: next beat or immediate when stopped."""
+
+        if not self._lead_available():
+            print(
+                "[LEAD] unavailable: start the bridge with --lead and a "
+                "configured IAC Driver Bus 5",
+                file=sys.stderr,
+            )
+            self._send_lead_state()
+            return
+
+        def apply() -> None:
+            rig = self._lead_rig()
+            if rig is not None and rig.engine.motif.source == "played":
+                rig.revert()
+            else:
+                print("[LEAD-IN] no played line to revert", file=sys.stderr)
+            self._send_lead_state()
+            self._send_lead_input_state()
+
+        self.quantizer.schedule(
+            ("lead", "revert"), apply, phase=PHASE_LEAD, label="lead revert"
+        )
+
+    def _on_lead_input_clear(self) -> None:
+        """Clear the melody and return to the generated line."""
+
+        if not self._lead_available():
+            self._send_lead_state()
+            return
+
+        def apply() -> None:
+            rig = self._lead_rig()
+            if self.lead_input is not None:
+                self.lead_input.release_all()
+            if rig is not None:
+                rig.clear_melody()
+                rig.set_source("generated")
+            print("[LEAD-IN] cleared the melody; generated line restored")
+            self._send_lead_state()
+            self._send_lead_input_state()
+
+        self.quantizer.schedule(
+            ("lead", "clear"), apply, phase=PHASE_LEAD, label="lead clear"
+        )
+
+    # -- melody library --------------------------------------------------
+
+    def _set_melody_status(
+        self,
+        message: str | None = None,
+        *,
+        saved: str | None = None,
+        loaded: str | None = None,
+    ) -> None:
+        with self._melody_lock:
+            if message is not None:
+                self._melody_message = str(message)
+            if saved is not None:
+                self._melody_last_saved = str(saved)
+            if loaded is not None:
+                self._melody_last_loaded = str(loaded)
+
+    def _send_melody_list(self) -> None:
+        try:
+            names = list(self.melodies.names())
+        except Exception as exc:
+            print(f"[LEAD-IN] melody list failed: {exc}", file=sys.stderr)
+            names = []
+        self._send_ui_message(
+            LEAD_MELODY_LIST_ADDRESS, [len(names), *names]
+        )
+
+    def _send_melody_state(self) -> None:
+        with self._melody_lock:
+            saved = self._melody_last_saved
+            loaded = self._melody_last_loaded
+            message = self._melody_message
+        self._send_ui_message(
+            LEAD_MELODY_STATE_ADDRESS,
+            [int(self.melodies.count()), saved, loaded, message],
+        )
+
+    def _reply_melody(
+        self,
+        message: str | None = None,
+        *,
+        saved: str | None = None,
+        loaded: str | None = None,
+    ) -> None:
+        self._set_melody_status(message, saved=saved, loaded=loaded)
+        self._send_melody_list()
+        self._send_melody_state()
+
+    def _on_lead_melody_request(self) -> None:
+        self._reply_melody("refreshed")
+
+    def _on_lead_melody_save(self, name: str) -> None:
+        """Save the current played take (immediate file op)."""
+
+        try:
+            valid = melody_module.validate_melody_name(name)
+        except melody_module.MelodyError as exc:
+            print(f"[LEAD-IN] invalid melody name {name!r}: {exc}")
+            self._reply_melody(f"invalid melody: {exc}")
+            return
+        rig = self._lead_rig()
+        if rig is None or not bool(getattr(rig, "port_ok", False)):
+            print("[LEAD-IN] no lead output to save from", file=sys.stderr)
+            self._reply_melody("lead unavailable")
+            return
+        motif = rig.engine.motif
+        if motif.source != "played" or not motif.base_notes:
+            print("[LEAD-IN] no played line to save", file=sys.stderr)
+            self._reply_melody("no played line")
+            return
+        settings = rig.engine.settings
+        quantize = (
+            self.lead_input.settings.quantize
+            if self.lead_input is not None
+            else 1.0
+        )
+        try:
+            melody = melody_module.Melody(
+                name=valid,
+                grid=settings.grid,
+                phrase_bars=settings.phrase_bars,
+                meter_num=motif.meter_num,
+                meter_den=motif.meter_den,
+                bpm=self.rhythm.bpm,
+                quantize=quantize,
+                swing=rig.engine.effective_swing(),
+                notes=motif.notes,
+                base_notes=motif.base_notes,
+                history=motif.history,
+                variation=motif.variation,
+                variation_index=motif.variation_index,
+                ratios=rig.engine.ratios,
+                fundamental=rig.engine.fundamental,
+            )
+            self.melodies.save(melody)
+        except (melody_module.MelodyError, TypeError, ValueError) as exc:
+            print(f"[LEAD-IN] melody save failed: {exc}", file=sys.stderr)
+            self._reply_melody(f"save failed: {exc}")
+            return
+        rig.engine.set_melody_name(valid)
+        print(
+            f'[LEAD-IN] melody saved "{valid}" ({len(melody.notes)} notes, '
+            f"{self._melody_dir_label()})"
+        )
+        self._reply_melody("saved", saved=valid)
+        self._send_lead_state()
+        self._send_lead_input_state()
+
+    def _on_lead_melody_load(self, name: str) -> None:
+        """Load a melody: beat-quantized while running, immediate when stopped."""
+
+        try:
+            valid = melody_module.validate_melody_name(name)
+        except melody_module.MelodyError as exc:
+            print(f"[LEAD-IN] invalid melody name {name!r}: {exc}")
+            self._reply_melody(f"invalid melody: {exc}")
+            return
+        self.quantizer.schedule(
+            ("melody", "load"),
+            lambda: self._apply_melody_load(valid),
+            phase=PHASE_LEAD,
+            label=f"melody load {valid}",
+        )
+
+    def _apply_melody_load(self, name: str) -> None:
+        try:
+            melody = self.melodies.load(name)
+        except melody_module.MelodyError as exc:
+            if exc.kind == "missing":
+                print(
+                    f'[LEAD-IN] gap: no melody named "{name}" '
+                    f"({self.melodies.count()} saved)"
+                )
+                self._reply_melody("no such melody")
+            else:
+                print(f'[LEAD-IN] invalid melody "{name}": {exc}')
+                self._reply_melody(f"invalid melody: {exc}")
+            return
+        rig = self._lead_rig()
+        if rig is None or not bool(getattr(rig, "port_ok", False)):
+            print("[LEAD] unavailable: start the bridge with --lead", file=sys.stderr)
+            return
+        meter = self.rhythm.state
+        if (melody.meter_num, melody.meter_den) != (
+            meter.meter_num,
+            meter.meter_den,
+        ):
+            print(
+                f"[LEAD-IN] melody meter {melody.meter_num}/{melody.meter_den} "
+                f"differs from the bridge {meter.meter}; it will not align to "
+                "the bar"
+            )
+        rig.load_motif(
+            melody.notes,
+            grid=melody.grid,
+            phrase_bars=melody.phrase_bars,
+            meter_num=melody.meter_num,
+            meter_den=melody.meter_den,
+            name=melody.name,
+            base_notes=melody.base_notes,
+            history=melody.history,
+            variation=melody.variation,
+            variation_index=melody.variation_index,
+        )
+        if self.lead_input is not None:
+            self.lead_input.release_all()
+        rig.set_source("played")
+        print(
+            f'[LEAD-IN] melody loaded "{melody.name}" ({len(melody.notes)} '
+            f"notes, grid {melody.grid}, {melody.phrase_bars} bars)"
+        )
+        self._reply_melody("loaded", loaded=melody.name)
+        self._send_lead_state()
+        self._send_lead_input_state()
+
+    def _on_lead_melody_delete(self, name: str) -> None:
+        try:
+            valid = melody_module.validate_melody_name(name)
+        except melody_module.MelodyError as exc:
+            print(f"[LEAD-IN] invalid melody name {name!r}: {exc}")
+            self._reply_melody(f"invalid melody: {exc}")
+            return
+        try:
+            deleted = self.melodies.delete(valid)
+        except melody_module.MelodyError as exc:
+            print(f"[LEAD-IN] melody delete failed: {exc}", file=sys.stderr)
+            self._reply_melody(f"delete failed: {exc}")
+            return
+        if not deleted:
+            print(
+                f'[LEAD-IN] gap: no melody named "{valid}" '
+                f"({self.melodies.count()} saved)"
+            )
+            self._reply_melody("no such melody")
+            return
+        with self._melody_lock:
+            if self._melody_last_saved.casefold() == valid.casefold():
+                self._melody_last_saved = ""
+            if self._melody_last_loaded.casefold() == valid.casefold():
+                self._melody_last_loaded = ""
+        rig = self._lead_rig()
+        if rig is not None and rig.engine.motif.melody_name == valid:
+            rig.engine.set_melody_name("")
+        print(f'[LEAD-IN] melody deleted "{valid}"')
+        self._reply_melody("deleted")
+        self._send_lead_state()
+        self._send_lead_input_state()
 
     # -- Stage 8.3d drone modes -------------------------------------------
 
@@ -1251,6 +1918,10 @@ class JIBridge:
         self._midi_call("set_drone_bpm", state.bpm)
         self._midi_call("set_drone_meter", state.meter_num, state.meter_den)
         self._midi_call("set_drone_transport", state.running)
+        # Stage 8.7: the one breath clock, shared with every voice scheduler.
+        # Idempotent and safe to call again when a rig is created later.
+        self.breath.set_tempo(state.bpm, state.meter_num, state.meter_den)
+        self._midi_call("set_breath", self.breath)
         self._push_lead_swing()
 
     def _midi_call(self, name: str, *args: Any) -> Any:
@@ -1278,6 +1949,8 @@ class JIBridge:
         self._midi_call("set_arp_bpm", state.bpm)
         self._midi_call("set_lead_bpm", state.bpm)
         self._midi_call("set_drone_bpm", state.bpm)
+        # Stage 8.7: re-anchor the breath phase at the new period (no jump).
+        self.breath.set_tempo(state.bpm, state.meter_num, state.meter_den)
         # Recompute the pending actions' next beat at the new tempo; never drop
         # them and never apply them immediately just because the tempo moved.
         self.quantizer.tempo_changed()
@@ -1322,11 +1995,15 @@ class JIBridge:
         self._midi_call("set_bass_meter", state.meter_num, state.meter_den)
         self._midi_call("set_lead_meter", state.meter_num, state.meter_den)
         self._midi_call("set_drone_meter", state.meter_num, state.meter_den)
+        # The breath period is in bars and the bass hit row is one bar long, so
+        # both follow a meter change.
+        self.breath.set_tempo(state.bpm, state.meter_num, state.meter_den)
         self._broadcast_rhythm()
         self._send_rhythm_state()
         self._send_groove_state()
         self._send_grid_state()
         self._send_bass_state()
+        self._send_bass_hits()
         self._send_lead_state()
         self._print_rhythm()
 
@@ -1340,6 +2017,10 @@ class JIBridge:
             # queue cannot carry stale state into the next start.
             self.quantizer.flush("transport stop")
         state = self.rhythm.set_running(bool(running))
+        if not running and self.lead_input is not None:
+            # A transport stop finishes an in-flight take (kept), never restarts
+            # the sequencer (owner decision 2: live keeps monitoring).
+            self.lead_input.transport_stopped()
         if not running:
             # A flushed go/return may have started a return while the transport
             # was still running; drop its next step now.
@@ -1359,10 +2040,14 @@ class JIBridge:
         if state.running:
             # A beat-synced arp locks to the new transport origin.
             self._realign_arp()
+            # Stage 8.7: every take begins at the bottom of the inhale.  A stop
+            # does not freeze the clock (a free-running arp keeps breathing).
+            self.breath.reset()
         self._broadcast_rhythm()
         self._send_rhythm_state()
         self._send_bass_state()
         self._send_lead_state()
+        self._send_lead_input_state()
         self._send_drone_state()
         self._send_home_state()
         self._send_quantize_state()
@@ -1898,6 +2583,9 @@ class JIBridge:
                 print(f"[BASS] {name} failed: {exc}", file=sys.stderr)
             self._send_bass_state()
             self._print_bass_state()
+            # A subdivision or preset change re-shapes the hit row to the bar.
+            if str(name).strip().lower() in ("grid", "preset"):
+                self._send_bass_hits()
             if self.rhythm.running:
                 print(
                     f"[BASS] applied at beat "
@@ -2130,6 +2818,19 @@ class JIBridge:
             if lead_rig is not None
             else 0
         )
+        lead_play = state_module.LeadPlaySection.create()
+        if lead_rig is not None:
+            motif = lead_rig.engine.motif
+            if motif.source == "played" and motif.notes:
+                # Self-contained: the take travels inline, so a recall needs no
+                # melody file (owner decision 5).
+                lead_play = state_module.LeadPlaySection.create(
+                    notes=motif.notes,
+                    base_notes=motif.base_notes or motif.notes,
+                    history=motif.history,
+                    melody=motif.melody_name,
+                    source="played",
+                )
         return state_module.PerformanceState.create(
             name=name,
             snapshot=self.engine.snapshot(),
@@ -2174,6 +2875,7 @@ class JIBridge:
             ),
             lead=lead_settings,
             lead_variation_index=lead_index,
+            lead_play=lead_play,
             drone=(
                 drone_rig.settings
                 if drone_rig is not None
@@ -2335,6 +3037,9 @@ class JIBridge:
         self._midi_call("set_bass_meter", current.meter_num, current.meter_den)
         self._midi_call("set_lead_meter", current.meter_num, current.meter_den)
         self._midi_call("set_drone_meter", current.meter_num, current.meter_den)
+        self.breath.set_tempo(
+            current.bpm, current.meter_num, current.meter_den
+        )
         self._broadcast_rhythm()
 
     def _restore_groove(self, state: state_module.PerformanceState) -> None:
@@ -2456,6 +3161,51 @@ class JIBridge:
                 "the rest of the state is applied"
             )
 
+    def _restore_lead_play(self, state: state_module.PerformanceState) -> None:
+        """Recall the inline played line (or fall back to a generated one).
+
+        Order matters (Stage 9.1): the settings/grid/phrase were applied by
+        ``_restore_voices``; the motif is loaded here (the inline notes or the
+        melody win), then the saved variation index is replayed.  The single
+        ``send_set`` in ``_apply_state_load`` follows so the lead re-projects.
+        """
+
+        rig = self._lead_rig()
+        if rig is None or not bool(getattr(rig, "port_ok", False)):
+            return  # _restore_voices already logged the skipped lead
+        if self.lead_input is not None:
+            self.lead_input.release_all()
+        # The history replay derives its new ratio hints from the engine's
+        # current set, so give the lead the recalled set first.  ``send_set``
+        # later re-projects the same snapshot (no second sound change).
+        try:
+            rig.on_set(state.freqset.ratios, state.freqset.anchor, state.fundamental)
+        except Exception as exc:
+            print(f"[LEAD] set restore failed: {exc}", file=sys.stderr)
+        play = state.lead_play
+        if play.notes:
+            rig.load_motif(
+                play.notes,
+                grid=state.lead.grid,
+                phrase_bars=state.lead.phrase_bars,
+                meter_num=state.rhythm.meter_num,
+                meter_den=state.rhythm.meter_den,
+                name=play.melody,
+                base_notes=play.base_notes,
+                history=play.history,
+                variation=state.lead.variation,
+                variation_index=state.lead_variation_index,
+            )
+            rig.set_source("played")
+            print(
+                f"[LEAD] played line restored "
+                f"({len(play.notes)} notes, source=played)"
+            )
+        else:
+            rig.clear_melody()
+            rig.set_source("generated")
+        rig.set_variation_index(state.lead_variation_index, force=True)
+
     def _apply_state_values(self, state: state_module.PerformanceState) -> None:
         """Apply every restored value except the single set broadcast."""
 
@@ -2470,6 +3220,7 @@ class JIBridge:
         self._restore_groove(state)
         self._restore_drums(state)
         self._restore_voices(state)
+        self._restore_lead_play(state)
         self._push_lead_swing()
 
     def _apply_state_load(self, name: str) -> None:
@@ -2507,14 +3258,6 @@ class JIBridge:
             # Exactly one set update, with the recalled glide time (a jump, not
             # a smooth return).
             self.send_set(state.mutation.glide_time)
-            # The lead's on_set only re-projects an existing motif, so rebuild
-            # it once from the recalled set + saved variation index.
-            if self._lead_available():
-                self._midi_call(
-                    "set_lead_variation_index",
-                    state.lead_variation_index,
-                    True,
-                )
             self._record_set()
 
         self._send_home_state()
@@ -2523,8 +3266,11 @@ class JIBridge:
         self._send_groove_state()
         self._send_grid_state()
         self._send_bass_state()
+        self._send_bass_hits()
         self._send_arp_state()
         self._send_lead_state()
+        self._send_lead_input_state()
+        self._send_melody_list()
         self._send_drone_state()
 
         distance = self.home.distance(self.engine.snapshot())
@@ -2895,6 +3641,37 @@ def build_parser() -> argparse.ArgumentParser:
             "from the project root)"
         ),
     )
+    parser.add_argument(
+        "--lead-in",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "enable the Stage 9.1 MIDI/QWERTY input for the lead (default: "
+            "off; ignored unless --lead is on)"
+        ),
+    )
+    parser.add_argument(
+        "--lead-in-config",
+        default=None,
+        help=(
+            "lead input config path (default: config/lead_input_config.json: "
+            "port, match, channel, quantize, count_in, bars, velocity_scale, "
+            "octave_shift)"
+        ),
+    )
+    parser.add_argument(
+        "--lead-in-port",
+        default=None,
+        help="MIDI input name/substring (overrides the config's port)",
+    )
+    parser.add_argument(
+        "--melody-dir",
+        default=None,
+        help=(
+            "Stage 9.1 melody library directory (default: melodies/ next to "
+            "the project; a relative path resolves from the project root)"
+        ),
+    )
     return parser
 
 
@@ -2944,6 +3721,10 @@ def main(argv: list[str] | None = None) -> int:
         drone_config=args.drone_config,
         home_config=args.home_config,
         state_dir=args.state_dir,
+        lead_in=args.lead_in,
+        lead_in_config=args.lead_in_config,
+        lead_in_port=args.lead_in_port,
+        melody_dir=args.melody_dir,
         ui_host=args.ui_host,
         ui_port=args.ui_port,
     )

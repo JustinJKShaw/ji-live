@@ -29,7 +29,7 @@
 
 **Who it is for:** An improvising musician (the project owner) who wants harmonic constraint without losing spontaneity, working in an electroacoustic idiom where digital timbre manipulation is part of the aesthetic.
 
-**What is done:** Stage 0 (server skeleton, 2-channel I/O, Tartini pitch tracking verification), Stage 1 (static autotune to a hardcoded JI set, single channel), Stage 2 (decentralised pure-Python mutation engine, no audio), Stage 3 (mutation → autotune bridge), Stage 4 (dual-channel autotune + raw looper), Stage 5 (BlackHole 16ch + Ableton routing), Stage 5.5 (four-channel live rig), and Stage 6 (MPE MIDI anchor drone + set arp) are implemented. The owner confirmed Stage 6 on **2026-10-30**: both IAC buses, calibration, drone/arp, and stuck-note behavior passed, with the existing four-channel audio rig unchanged. **Stage 7 (minimal performance GUI), Stage 7.1 (Drone/Arp switches), Stage 8.1 (rhythm foundation + drum engine v1), and Stage 8.2 (groove + beat-quantized state) are implemented and owner-confirmed (2026-10-31). Stage 8.3a (monophonic bass) is implemented and owner-confirmed (2026-10-31). Stage 8.3b (arp parameters + one-entry startup) is next.**
+**What is done:** Stage 0 (server skeleton, 2-channel I/O, Tartini pitch tracking verification), Stage 1 (static autotune to a hardcoded JI set, single channel), Stage 2 (decentralised pure-Python mutation engine, no audio), Stage 3 (mutation → autotune bridge), Stage 4 (dual-channel autotune + raw looper), Stage 5 (BlackHole 16ch + Ableton routing), Stage 5.5 (four-channel live rig), and Stage 6 (MPE MIDI anchor drone + set arp) are implemented. The owner confirmed Stage 6 on **2026-10-30**: both IAC buses, calibration, drone/arp, and stuck-note behavior passed, with the existing four-channel audio rig unchanged. **Stage 7 (minimal performance GUI), Stage 7.1 (Drone/Arp switches), Stage 8.1 (rhythm foundation + drum engine v1), and Stage 8.2 (groove + beat-quantized state) are implemented and owner-confirmed (2026-10-31). Stage 8.3a (monophonic bass) is owner-confirmed (2026-10-31). Stages 8.3b, 8.3c, 8.3d, 8.4 (home sets/return), 8.4.1 (class glide) and 8.5 (performance states) are implemented and owner-approved on 2026-11-02. Stage 8.6 (loop editing) is next.**
 
 **What is built:** Stage 5 uses MiniFuse 2 input / BlackHole 16ch output, 2 in / 16 out, `tests/sc/test_ableton_routing.scd`, and the 8-pair map. Stage 5.5 adds `tests/sc/test_live_rig.scd`: two autotuned live inputs plus two loop voices on SC 0/1/2/3, with the Python mutation bridge. Stage 6 adds the MIDI-only rig: `control/mpe_output.py`, `control/drone.py`, `control/arp.py`, `control/midi_rig.py`, `config/mpe_config.json`, `tests/test_mpe.py`, and `README_mpe.md`. Stage 6 is owner-confirmed. Stage 7 adds the minimal performance GUI: `ui/ji_ui.py`, `ui/osc_control.py`, `ui/control_surface.scd`, `tests/test_ui.py`, `README_stage7.md`, additive `/ji/ui/hello` + UI-status support in `control/osc_server.py` / `control/ji_bridge.py`, and the UI status addresses in §7.1. It exposes the existing mutation, live-autotune, loop-transport/length, and status controls; no new audio DSP or MIDI voices were added. The owner confirmed the live GUI/audio/MIDI rig works, including the Drone/Arp switches. Stage 8.1 adds `control/rhythm.py`, `control/drums.py`, `config/rhythm_config.json`, `tests/test_rhythm.py`, and additive rhythm/drum support in the bridge, OSC server, UI, and sclang control surface: canonical quarter-note tempo/meter/transport, per-loop free/beat modes with beat quantization, and the optional four-on-the-floor drum voice on IAC Bus 3. It adds no audio DSP; Stage 8.1 is owner-confirmed. Stage 8.2 adds groove generation and the beat-quantized state queue; it is also owner-confirmed. Stage 8.3a adds `control/bass.py`, `config/bass_config.json`, `tests/test_bass.py`, an optional plain-MIDI Bus 4 voice (main channel 2 / sub 3), `/ji/bass/*` + `/ji/bass/state`, and the compact Bass GUI group; it adds no audio DSP and is owner-confirmed.
 
@@ -373,6 +373,13 @@ remains on pair 0/1 (Ableton track 1) for the first sound check. The loop and
 granular pairs are reserved for later routing (Stage 8 for loop
 transport/routing and Stage 9 for granular FX), not delivered as per-loop tracks in Stage 5.
 
+Stage 9.0 adds four **private mono audio buses** after the hardware I/O (18–21 on the owner's 2-in/16-out boot; the actual indices are reported)
+(`~ji_loop_fx1..4`). They are not in the 0–15 output map: they are the post-
+`PitchShift` sends from the four loop voices to their `\ji_harmonic_delay`
+instances. The FX writes wet back to the loop's existing output bus (SC 2/3),
+so the Ableton map above is unchanged. Each loop also owns a 2 s mono FX
+scratch buffer.
+
 ### 4.2.1 Live-rig four-channel map (Stage 5.5, implemented)
 
 `tests/sc/test_live_rig.scd` is the immediate product map: four **mono** outputs on the
@@ -396,7 +403,7 @@ channels. Loops 3/4 (optional Stage 4 extras) sum into SC 2/3. The Python
 ```
 ji-live/
 ├── README.md                              # layout + quick start
-├── startup.scd                            # entry: buses 0-18, MiniFuse 2 in / BlackHole 16ch out
+├── startup.scd                            # entry: control 0-18 + FX audio (reported; 18-21 on 2-in/16-out), 2 in / 16 out
 ├── synthdefs/
 │   ├── ji_tartini_debug.scd               # Stage 0
 │   ├── ji_autotune_ch.scd                 # Stage 1 ✅ (reused twice in Stage 4)
@@ -535,7 +542,7 @@ This contract applies to **all stages**. Included verbatim in every agent prompt
 | 11–14 | `~ji_loop_freq1..4` | 4 | Loop tracker freqs |
 | 15–18 | `~ji_loop_hasfreq1..4` | 4 | Loop confidences |
 
-**Audio bus allocation:** Stage 4 keeps 0–1 input and 0–1 output (SC reuses indices); mono loops sum to output 0 or 1, so no internal loop audio buses are allocated. Stage 5 sets 2 input / 16 output bus channels; output buses 0–15 are the eight stereo pairs routed to BlackHole. No internal loop audio buses are needed. VST/MPE do not consume global audio bus indices.
+**Audio bus allocation:** Stage 4 keeps 0–1 input and 0–1 output (SC reuses indices); mono loops sum to output 0 or 1, so no internal loop audio buses are allocated. Stage 5 sets 2 input / 16 output bus channels; output buses 0–15 are the eight stereo pairs routed to BlackHole. **Stage 9.0** allocates four private mono audio buses after the hardware I/O (`~ji_loop_fx1..4`; 18–21 on the owner's 2-in/16-out boot) as the loop FX sends; they are after the hardware outputs and are never hard-coded in SynthDefs. VST/MPE do not consume global audio bus indices.
 
 ### 5.3 Audio-thread rule (inviolable)
 
@@ -694,6 +701,119 @@ byte-identical; a return is planned as ordinary targeted `apply()` edits. The
 **Deferred:** stereo loop buffers, `~ji_buf_*` `.aiff` persistence via `Buffer.write`/`Buffer.read`, and per-loop output pairs beyond loops 1/2 are later-stage work (Stage 8 for stereo/per-loop routing and persistence formats). Stage 5 provides the 16-channel infrastructure and keeps `tests/sc/test_dual_loop.scd` on pair 0/1; Stage 5.5 gives loops 1/2 dedicated mono channels on SC 2/3.
 
 **Loop length:** `tests/sc/test_live_rig.scd` defaults to **8.0 s** per loop. `~ji_record_loop.(i)` uses `~ji_loop_default_seconds`; `~ji_record_loop.(i, seconds)` overrides one take; `~ji_set_loop_default.(seconds)` changes the default. Every recording reallocates a buffer of exactly the requested length. `tests/sc/test_dual_loop.scd` retains its original 4.0 s default.
+
+**Stage 8.6 — loop editing (implemented 2026-11-02, awaiting human acceptance).**
+Loops are still raw, mono, sclang-owned buffers, and playback still runs through
+the per-loop Tartini → nearest class → `PitchShift` chain. 8.6 adds:
+
+* **Memory slots A–D (session only).** Each slot holds a *copy* of a loop's
+  buffer plus its sound edit state and duration. `\ji_buf_copy` does the
+  server-side mono copy (`BufRd` → `BufWr` driven by a `Line`). No file, no
+  `Buffer.write`, no `loops/` folder; slots vanish on rig re-evaluation.
+  `count_in`/`auto_play` are record preferences and are not stored.
+* **Overdub.** `\ji_looper_recorder` gained additive `preLevel` / `loop`
+  arguments (defaults 0/0 = the accepted overwrite). `~ji_dub_loop` starts the
+  recorder on the same buffer with `preLevel: 1.0, recLevel: 1.0, loop: 1.0` and
+  stops it after one buffer duration; the player keeps running. `Rec` still
+  replaces.
+* **Reverse and varispeed.** `\ji_loop_voice` reads with
+  `BufRd(Phasor.ar(0, Lag.kr(rate * ±1, 0.02), 0, frames, 0), loop: 1,
+  interp: 4)` → `LeakDC`. `Phasor` wraps two-sidedly (`sc_wrap` per sample), so a
+  negative increment runs end → start and keeps running; a direction change only
+  changes the increment's sign (no read-head restart, no click). The 11
+  permitted ratios are `2/1, 3/2, 5/3, 5/4, 4/3, 1/1, 3/4, 4/5, 2/3, 3/5, 1/2`.
+* **Granular.** The same SynthDef's grain path is `TGrains` (mono) triggered by
+  `Impulse.kr(grainRate)` (free) or `Changed.kr(grainTrig)` (beat). Its
+  signature is `(numChannels, trigger, bufnum, rate, centerPos, dur, pan, amp,
+  interp)` — `pan` before `amp` — and `centerPos` is in **seconds**, so the
+  voice passes `pan:`/`amp:` by name and computes the centre from
+  `BufFrames / SampleRate`; with
+  rate/size/position/scatter/pitch and a per-grain reverse probability. sclang
+  sends an incrementing integer `grainTrig` once per subdivision (one OSC set =
+  one grain) on the tempo clock, so there is never a message per audio block.
+  Grains are clamped inside the buffer. The two paths are crossfaded with
+  `XFade2`.
+* **Per-loop gain** 0–1, default 0.70 (the old hardcoded value).
+* **Count-in** (`off` / `1 beat` / `1 bar` / `2 bars`) delays a Rec on the tempo
+  clock from the next beat; a bar is the current meter's bar in quarter beats.
+  It applies to Rec only, not to a dub.
+* **Auto-play** starts a loop at the exact end of a take (buffer full or
+  `Stop Rec`), never after the +0.15 s safety timer, so beat mode cannot flam.
+  The recorder Synth is the identity token for a pending auto-play.
+
+**Stage 8.6.1 — granular redesign (implemented 2026-11-03, awaiting human
+acceptance).** The owner rejected the 8.6 grain half as "annoying noises playing
+grains over and over": the read position was static, there was one grain per
+trigger with no jitter, the pitch was a raw ratio unrelated to the set, and GUI
+division edits were silently rejected. 8.6.1 changes the grain path only:
+
+* **Motion.** A control-rate phase (per-control-block increment
+  `grainSpeed * ControlDur`, i.e. `Speed` buffer lengths per second) maps
+  through `grainPos`/`grainDepth` to the read position: off (phase 0.5 = Pos),
+  forward, backward, pingpong (`Phasor 0..2` folded) and drift
+  (`LFNoise1.kr(grainSpeed)`).
+  `grainFreeze` scales the increment by `(1 - frozen)`, so the phase stops in
+  place and continues from there; off makes Depth a no-op.
+* **Cloud.** Defaults `grainRate 20`, `grainSize 120 ms`, `grainPos 0.5`,
+  `grainScatter 0.1`; per-grain size jitter (default 0.2) and pitch jitter
+  (default 0) multiply the duration/ratio; `grainRate`'s range widened to
+  0.5–80. One `TGrains` per loop.
+* **JI pitch snap.** sclang snaps the requested ratio to the nearest member of
+  the current set × octaves -3..+3 (0.25..4.0, log2 distance) and sends the
+  **effective** ratio as `grainPitch`; `/ji/freqset/update` re-snaps every
+  playing grain loop with Snap on. The status payload carries both the
+  requested (`grain_pitch`) and the effective (`effective_pitch`) ratio.
+* **Smear.** Two `AllpassC` stages (0.007 s / 0.011 s) after the autotune,
+  crossfaded at `grainSmear`; 0 % is exactly the accepted dry chain.
+* **Beat burst.** The beat clock is `Impulse.kr(grainRate * (1 + grainBurst *
+  Env.perc(0.001, 1.0, timeScale: grainDecay)))` triggered by
+  `Changed.kr(grainTrig)`: one OSC set still fires exactly one burst, and
+  sclang recomputes `grainDecay = 0.5 * divisionBeats * 60 / bpm` on every
+  grain start/restart.
+* **Retune floor.** In grain mode the autotune `Lag` is never faster than
+  0.15 s (normal mode keeps the accepted `retuneTime`).
+* **Normal-mode invariant.** The normal path, the mode crossfade, the tracker
+  buses and the autotune tail are untouched; at the defaults the output is the
+  accepted loop, bit for bit.
+
+**Stage 8.6.2 — Morph, Melt and the moving filter (implemented 2026-11-03,
+awaiting human acceptance).** The owner asked for a slider that walks the loop
+from its normal playback into a smeared/glitched version, a toggle that starts
+dry and progressively glitches, and moving filters that fuse the two:
+
+* **Morph.** The old binary mode crossfade became
+  `blend = mode * grainMorph` into the equal-power `XFade2(normal, grain, blend)`.
+  Morph 0 in grain mode is the dry path (the original loop through the autotune,
+  bit-identical to Grain off); Morph 1 is the full grain cloud. `mode` stays the
+  gate, so the 8.6/8.6.1 contract is unchanged.
+* **Blend-aware retune.** The grain retune floor is
+  `max(retuneTime, 0.15 * blend)` instead of a mode switch, so a mostly dry
+  morph keeps the accepted retune and a full cloud never glides faster than
+  0.15 s.
+* **Melt.** `grainMorph` is the target; `grainMelt = 1` ramps the voice's value
+  from 0 (or its current value) to the target over `~ji_loop_melt_seconds`
+  (4 s) at 30 Hz on AppClock, `grainMelt = 0` ramps back to 0. A Play with Melt
+  on always starts at 0, so the loop begins as the original. A per-loop
+  generation token cancels the ramp (Stop, mode change, memory recall), and a
+  Morph change while melting re-targets it.
+* **Melt filter.** Post-autotune, after the smear: a resonant lowpass
+  (700 Hz–6 kHz) and a low cut (90–420 Hz), each on its own slow `SinOsc.kr`
+  (rate and rate × 0.63 with a π offset) through `LinExp`, crossfaded in by
+  `grainFilter` (0 = exact bypass). It applies to the whole morph output, so
+  it fuses the dry and grain layers, and it works on the plain loop too.
+* **Normal-mode invariant.** Morph/Melt/Filter at their defaults are exact
+  bypasses; the accepted loop is unchanged.
+
+**The autotune stays in the chain (owner, 2026-11-02).** `mix` is fixed at 1.0
+in every mode; normal, reverse, varispeed and granular all feed the accepted
+Tartini → nearest-class → `PitchShift` graph. A varispeeded loop is re-analysed
+at its transposed pitch and the current set may pull it partly back toward a
+class; a grain cloud is re-projected note-by-note. That interaction is the
+intended "new material", not an exact repitch. `rate = 1/1`, normal, forward is
+the accepted loop. There is no tune toggle and no `tune_effective` field.
+
+**No loop persistence of any kind** and no loop data in a Stage 8.5 performance
+state (`docs/README_stage8_6.md`).
 
 ### 6.7 VST hosting (Stage 8, optional)
 
@@ -1085,6 +1205,67 @@ seconds; tempo changes do not time-stretch them. The UI sends
 half/double time works; beat-mode loop recording/playback is quantized and
 different loop lengths phase; free mode is unchanged; no audio/MIDI regressions.
 
+#### Breathing rhythm engine (Stage 8.7)
+
+The grid can breathe: events arrive early/late and velocities swell in a slow,
+physical cycle, while the canonical tempo and bar grid stay exact.
+
+**The curve.** The breath is a volume `V(φ) ∈ [0,1]` over one cycle
+`φ ∈ [0,1)`:
+
+```text
+_warp(shape, φ) = φ                                   (sine)
+                = 1 - |2φ - 1|                        (triangle)
+                = φ^0.6                               (inhale: fast fill)
+                = φ^1.6                               (exhale: slow fill)
+V(φ) = 0.5 - 0.5·cos(2π·_warp(shape, φ))
+```
+
+The timing follows the flow (the derivative `dV/dφ`): the music pushes while
+the diaphragm fills and relaxes while it empties. The slope is normalised so the
+peak shift is exactly half a 16th note at depth 1:
+
+```text
+offset_steps = depth · 0.5 · slope(φ) / max|slope|      (0 when depth 0)
+offset_s     = offset_steps · (60 / bpm / 4)
+```
+
+`V(1) == V(0)` for every shape, so the mean slope over a cycle is exactly zero:
+**no cumulative drift, ever.** The offset is clamped to ±45 % of the voice's own
+step and is added to the **sleep target only**; the nominal deadline of every
+scheduler still advances by exactly one step (the swing precedent). The
+canonical `BeatClock`, `RhythmEngine`, the quantizer queue, the mutation engine
+and the `/ji/rhythm/*` contract are untouched. Breath off (`enabled=False`) is
+exactly today's timing and velocity.
+
+**Voices.** Drums, bass, lead and drone use `depth` at phase `φ`; the **arp** is
+the only local voice: it uses `min(1, depth + arp_local)` with `arp_sync`
+selecting its phase. `arp_sync = False` (the default) uses `φ + 0.5`, so it
+breathes *against* the groove; `arp_sync = True` (8.7.1) uses the master `φ`,
+so the arp breathes **in sync** with the rest; `arp_local` still adds depth in
+both modes. The drone takes the velocity/expression delta only (its cycle
+timing stays quarter-note based). `velocity_delta` is
+`round(intensity · 14 · (2V - 1))`, 0 when disabled or at `V = 0.5`.
+
+**Clock.** One `control/breath.py:BreathClock` is owned by the bridge and
+shared by reference with every scheduler. Its period is
+`period_bars · bar_seconds(bpm, meter)`; a tempo/meter change re-anchors with
+the current phase (no jump); a transport **start** calls `reset()` so every take
+begins at the bottom of the inhale (a stop does not freeze a free-running arp).
+Changing `phase` rotates deliberately; changing any other value preserves the
+phase. The clock is **not** saved in a performance state: it is a live feel
+control.
+
+**Loop FX breath (sclang-local).** Independently of the bridge clock, each loop
+voice has its own `grainBreath`/`grainBreathRate` LFO inside
+`\ji_loop_voice`, modulating the free-grain density, the burst density and the
+grain size. `grainBreath = 0` is an exact bypass (factor 1). Loop timing,
+`~ji_tempo_clock` and the beat-grain scheduler are untouched.
+
+**Ranges/defaults:** depth 0..1 (0.35), period 1..32 bars (4), shape
+sine/triangle/inhale/exhale (inhale), intensity 0..1 (0.5), phase 0..1 (0.0),
+arp local 0..1 (0.0), arp sync off (the existing half-cycle local breath).
+
 ### 6.15 Groove generation and beat-quantized state (Stage 8.2, owner-confirmed 2026-10-31)
 
 **Goal:** turn the 8.1 drum foundation into a performable groove generator
@@ -1252,7 +1433,37 @@ stuck notes; sub on its own channel; beat-quantized changes while running and
 immediate while stopped; existing rig unchanged. The owner confirmed 8.3a
 (2026-10-31).
 
-### 6.17 One-entry startup (Stage 8.3b, built, awaiting human acceptance)
+#### Bass hit row (Stage 8.7)
+
+An optional, editable **one-row hit grid** for the bass: hits only (no pitch,
+no per-step velocity), one bar of the current grid, capped at 32 steps. The
+existing `grid` remains the subdivision (`1/4`, `1/8`, `1/16`); the new field is
+`hits` so the two names are never overloaded.
+
+- `hits_enabled: bool = False` and `hits: tuple[bool, ...] = ()` are optional
+  `BassSettings` keys with defaults, so old performance states and configs load
+  unchanged (format version stays 1).
+- The row length for the current grid/meter is
+  `bar_steps = clamp(round(bar_quarters · steps_per_beat), 1, 32)`:
+  4/8/16 cells in 4/4 for 1/4, 1/8, 1/16; 3/6/12 in 3/4.
+- `effective_hits()` pads/truncates the stored row to `bar_steps`. An **empty**
+  stored row behaves as step 0 on (a fresh loop still plays); a row the user
+  cleared is all `False` (deliberate silence).
+- While Hits is on, `BassEngine.pattern()` returns exactly the hit row with
+  `length_steps = bar_steps`: the row *is* one bar, so `Len` is not used.
+  Pitch picker, accent and gate are untouched; `note_at`, `velocity_for` and the
+  downbeat test work exactly as before.
+- Editing uses dedicated engine methods/addresses, never the beat-queued
+  `with_change` path: `set_hits_enabled` (enabling with an empty row first
+  copies the generated pattern), `set_hit(index, on)` (pads to the bar),
+  `clear_hits` (all off) and `copy_hits(bar_index)` (seed from the **generated**
+  pattern via `build_pattern`, never the cached hit row). A preset, meter or
+  subdivision change keeps the row and re-shapes it to the new bar.
+- `/ji/bass/hits [enabled, count, hit_0 … hit_{count-1}]` is sent at start, on
+  hello, after every hit change, and whenever the meter or `grid` changes the
+  row length. `/ji/bass/state` stays at its 20 values.
+
+### 6.17 One-entry startup (Stage 8.3b, owner-approved 2026-11-02)
 
 The daily path is **one sclang file + one Python command**; the older files
 stay valid and independently runnable for debugging and for the `tests/sc/*`
@@ -1310,7 +1521,7 @@ Flags: `--midi/--no-midi`, `--drums/--no-drums`, `--bass/--no-bass`,
 must be updated, together with the `--help` text, in the same change as every
 future feature; the old `START_HERE_stage*.txt` files are archival.
 
-### 6.18 Lead/melody voice + drone pad modes (Stage 8.3d, built, awaiting acceptance)
+### 6.18 Lead/melody voice + drone pad modes (Stage 8.3d, owner-approved 2026-11-02)
 
 **Goal:** add a melodic voice that (a) generates phrases, (b) locks with the
 groove, (c) produces deterministic *variations*, and (d) keeps a recognizable
@@ -1411,7 +1622,7 @@ shipped 2.5 beats + 0.4 s gives 4 beats. A mutation during the hold retunes like
 `PHASE_LEAD` (7) and `PHASE_DRONE` (8) sit between `arp` and `midi` (Stage 8.4
 inserted `PHASE_HOME` at 0 and shifted every later phase by one), so the order
 is `home, mutation, octave, groove, drums, bass, arp, lead, drone, midi`;
-stopped → immediate. `/ji/lead/state` (16 values) and `/ji/drone/state` (14 values) are
+stopped → immediate. `/ji/lead/state` (16 values; 9.1 appends `gate_mode` as 17) and `/ji/drone/state` (14 values; 8.3d.2 grew it to 17) are
 sent at start, on hello, after every applied change, after a transport change,
 after a variation, and (for the derived cycle) after a tempo change — one small
 message per event, never per note. The GUI gains a compact **Lead** group below
@@ -1632,6 +1843,312 @@ plus additive `tests/test_quantize.py` (state after midi at one beat),
 expectation in `tests/test_home.py`. Human acceptance stays in
 `docs/README_stage8_5.md` §10.
 
+### 6.21 Loop edit surface (Stage 8.6, redesigned in 8.6.1 and 8.6.2)
+
+**State.** `tests/sc/test_live_rig.scd` owns `~ji_loop_edit` (four events:
+`reverse`, `rate`, `gain`, `mode`, `sync`, `division`, `grainRate`,
+`grainSize`, `grainPos`, `grainScatter`, `grainPitch`, `grainReverse`,
+`countIn`, `autoPlay` and — 8.6.1 — `grainMotion`, `grainSpeed`,
+`grainDepth`, `grainSizeJitter`, `grainPitchJitter`, `grainPitchSnap`,
+`grainSmear`, `grainFreeze`, `grainBurst` and — 8.6.2 — `grainMorph`,
+`grainMelt`, `grainFilter`, `grainFilterRate`), the grain/count-in schedulers,
+the dub bookkeeping and `~ji_loop_mem`. 8.6.2 also owns
+`~ji_loop_morph_current`, `~ji_loop_melt_gen`, `~ji_loop_melt_seconds`,
+`~ji_loop_start_morph` and `~ji_loop_melt_to` (the ramp). `~ji_loop_edit_args.(i)` is the single place that turns that
+state plus the buffer, the tracker buses and `mix = 1.0` into `\ji_loop_voice`
+arguments; `~ji_play_loop` uses it and `~ji_loop_set_edit` re-`set`s one changed
+argument on a live player.
+
+**Literal note.** The internal division/count-in symbols are written as quoted
+symbols (`'1_16'`, `'1_8'`, `'1_4'`, `'1_2'`, `'1'`, `'1_beat'`, `'1_bar'`,
+`'2_bars'`): a bare `\1_16` does not lex in sclang (it becomes the symbol `\1`
+plus the primitive name `_16`), which is a parse error. The OSC values remain
+the strings `"1/16"` … `"1"` and `"off"`/`"1 beat"`/`"1 bar"`/`"2 bars"`.
+
+**Validation.** `~ji_loop_set_edit.(i, param, value)` clamps every numeric
+parameter (27 params), rejects an unknown `rate` / `mode` / `sync` /
+`division` / `count_in` / `grain_motion` with one line, updates the state,
+sets the live Synth argument, restarts or stops the beat-grain schedule when
+`mode`/`sync`/`division` changed, sends `/ji/loop/edit` and logs one
+`[LOOP i] edit …` line. A pitch or Snap change re-snaps and `set`s the
+**effective** ratio. **String lookups use value comparison**: SuperCollider's
+`Collection:indexOf` compares by identity (`===`), so a division or count-in
+String decoded from OSC never matched — that was the 8.6 "Div jumps back to
+1/16" bug. `~ji_loop_division_symbol` / `~ji_loop_count_in_symbol` now use
+`indexOfEqual`, and the string `mode`/`sync` branches use
+`indexOfEqual(...).notNil`; symbols are interned, so the symbol-direction
+lookups were already correct.
+
+**Morph / Melt.** `grain_morph` is the blend target; `grain_melt` starts a 30 Hz
+AppClock ramp of the voice's `grainMorph` from 0 (or its current value) to the
+target over `~ji_loop_melt_seconds`, and off ramps back to 0. `~ji_play_loop`
+sets the start value (0 when Melt is on) and starts the ramp; Stop, a mode
+change and a memory recall cancel it with a generation token. `grain_filter` /
+`grain_filter_rate` set the post-autotune moving filter.
+
+**JI snap.** `~ji_loop_snap_ratio.(ratio, ratios)` returns the nearest set
+ratio × octave (-3..+3, 0.25..4.0) by log2 distance;
+`~ji_loop_effective_pitch.(edit)` returns it when `grainPitchSnap = 1` and the
+clamped raw ratio otherwise. `~ji_loop_edit_args` passes the effective ratio as
+`\grainPitch`; the `/ji/freqset/update` receiver calls
+`~ji_loop_refresh_pitch.(ratios)` after `~ji_broadcast_glide`, which re-sets
+every playing grain loop with Snap on and logs one line per changed ratio.
+`~ji_loop_grain_decay.(i) = 0.5 * division * 60 / bpm` feeds the beat burst and
+is recomputed in `~ji_loop_grain_start` (the restart hook).
+
+**Count-in.** `~ji_record_loop_action` (control surface) either records
+immediately (`count_in = off`, exactly the accepted path) or schedules the take
+at `~ji_tempo_clock.beats.ceil + beats` with state `counting` and one
+`/ji/loop/count` per counted quarter beat; the take length is recomputed at fire
+time. A second Rec skips it (Stage 9.0 fixed the free-mode path, which used to
+restart the count); Stop Rec, Stop, Clear, Stop All and a new Dub cancel it and
+restore the last **non-counting** state without auto-play; in beat mode a
+transport stop also cancels it, while free mode keeps counting (free loops are
+not gated). No recorder runs before the target. Stage 9.0 also generation-checks
+every intermediate tick, never stores `\counting` as the previous state, and
+rounds a bar **up** to whole quarter beats (5/8 → 3, 7/8 → 4) in both sclang and
+`LoopEdit.count_in_beats`.
+
+**Auto-play.** One shared `~ji_after_record.(i)` is called from the early
+`~ji_stop_record` path and from the natural-completion timer; it refuses when
+the loop is already playing (a dub that keeps playing does not restart), when
+there is no valid buffer, and in beat mode when the transport is stopped (one
+`auto-play skipped` line).
+
+**Beat-grain clock.** Cancellation uses a per-loop generation token (a pending
+callback whose token is stale is a no-op), never `.stop` on the value returned
+by `TempoClock.schedAbs`. `~ji_loop_grain_schedule.(i, target, generation)` schedules on
+`~ji_tempo_clock`, sends one incrementing `grainTrig` and reschedules at
+`target + d` while the loop is playing, in grain mode, with `sync = beat` and a
+running transport. Transport stop parks a beat-synced grain loop even when the
+loop's own mode is `free`; a tempo change cancels and reschedules at the next
+boundary; transport start never auto-starts a loop.
+
+**Status.** `/ji/loop/edit` (**39 values**: the 15 of 8.6 plus size/pitch
+jitter, snap, smear, freeze, motion, speed, depth, burst, `effective_pitch`,
+— 8.6.2 — morph, melt, filter and filter rate, — 8.7 — the loop's own grain
+breath depth and rate, and — 9.0 — harm mode/mix/time/time-sync/steps/spacing/
+falloff/auto), `/ji/loop/mem` (4) and `/ji/loop/count` (2) are sent at
+control-surface install, on `/ji/status/query`, and after every change;
+`/ji/loop/state` gains `dubbing` and `counting`. The 2 Hz tick still sends only
+CPU + loop states.
+
+**GUI.** One `Loop edit` row (Loop selector, Rev, Rate, Gain, Count-in, Auto,
+Mem + Save/Recall/Clr, status line), one `Grain` row (Grain, Sync, Div, Rate,
+Size, Pos, Scatter, Pitch, Rev%), one `Grain motion` row (Motion, Speed, Depth,
+Size Jit, Pitch Jit, Snap, Smear, Freeze) and — 8.6.2 — one `Morph` row (Morph,
+Melt, Filter, F.Rate) for the selected loop; 8.7 adds `Breath` and `B.Rate` to
+that row and drops the old morph hint label,
+plus a `Dub` button per loop box. The rows are signal-blocked on incoming state
+and never echo OSC; an incoming echo only writes a widget when the value
+differs, so the Div combo cannot be knocked back by an unrelated edit. The
+status line shows `grain/beat`, `pos`, `motion`, the effective pitch and
+`snap`/`freeze` plus `morph`/`melt`/`filter`/`breath` when non-default. The
+window is 1280×966 (1280×1172 after 8.8 adds the Fretboard group).
+
+**Tests.** `tests/test_ui.py` (tables, builders, `LoopEdit`/`LoopMemory`,
+strict parsers, store, controller, Qt rows) and the human-run
+`tests/sc/test_loop_edit.scd`; audio acceptance stays in
+`docs/README_stage8_6.md` §12.
+
+### 6.22 Fretboard improvisation aid (Stage 8.8)
+
+**Why.** The owner noticed the guitar "only sounds good if played close to
+these notes". 8.8 is a **read-only** visual aid: for every ratio in the live JI
+set it shows the nearest 12-TET note and the signed cents, then marks every
+occurrence of those pitch classes on a guitar neck whose tuning is fully
+editable. It is a practice/performance aid, not a voice: no audio, MIDI, sclang,
+OSC or state path is added.
+
+**Pitch-class rule.** The set arrives octave-reduced in `[1, 2)`, but the aid
+does not choose a register: one `ScaleDegree` per 12-TET pitch class, marked at
+every octave on the board. It never suggests a voicing. The legend shows the
+set's one-octave frequencies (`fundamental × ratio`).
+
+**Maths.** `ui/fretboard.py` (pure, stdlib only):
+
+```python
+hz_to_midi_float(hz) = 69 + 12 * log2(hz / 440)
+nearest, cents       = floor(midi_float + 0.5), (midi_float - nearest) * 100
+pitch_class          = nearest % 12
+```
+
+Rounding is **half-up**, never banker's `round`, so `57.5 -> 58` and
+`58.5 -> 59`. Cents are signed: negative = the JI frequency is flat of the
+12-TET note, positive = sharp. Note names are sharps only with C4 = MIDI 60
+(`40 -> E2`, `127 -> G9`). For each pitch class the ratios are deduped within
+`1e-12`, sources are sorted by `abs(cents)` then ratio, and the closest source
+is the degree's headline; degrees are sorted by `(pc - root_pc) % 12`, where
+`root_pc` is the 12-TET class of the fundamental. A ratio near `2.0` rounds into
+the next octave and groups with the root. The worked example (`A = 220 Hz`,
+`1/1 9/8 5/4 4/3 3/2 5/3 15/8`) yields `A B C# D E F# G#` with cents
+`0, +3.91, -13.69, -1.96, +1.96, -15.64, -11.73`.
+
+**Tuning.** `GuitarTuning` is a frozen value object, low string → high, each
+0..127, 6–8 strings. `TUNING_PRESETS` (Standard E, Drop D, Drop C, DADGAD,
+Open G, Open D, Half-step down, 7-string B, 8-string F#) compare exactly;
+anything else is `Custom`. `with_count` grows by prepending a low fourth
+(Standard E → B1 → F#1, clamped at MIDI 0) and shrinks by dropping the lowest
+strings. `build_fretboard` returns `strings × (frets + 1)` `FretboardCell`s in
+string-major order with `degree=None` for unmarked positions and root/anchor
+flags on marked cells only.
+
+**GUI.** One full-width **Fretboard** group between Lead and Status (one
+control row plus the painted `FretboardWidget`), a set label and a word-wrapped
+degree legend. Every widget is populated signal-blocked; no handler calls the
+controller and there is no timer. `paintEvent` uses palette colours plus three
+fixed accents (root `#d9822b`, scale `#3d7ea6`, anchor ring `#8e44ad`), skip
+rather than clip marker text, and one `QToolTip` per marked cell. The default
+window grows to 1280×1172 (1198 after 9.0's Harm row); the scroll area stays
+the small-screen fallback.
+
+**State decision.** The tuning is **session-only**: it is not saved in a
+performance state, not written to `config/`, and resets to Standard E on a GUI
+restart. The aid is read-only, so it adds **no** OSC address, status message,
+state key or bridge change; it consumes the existing `/ji/freqset/changed`
+`[fundamental, anchor, ratio_1 … ratio_N]` and maps the ratios itself.
+
+**Tests.** `tests/test_fretboard.py` (pure: maths, rounding, the worked set,
+duplicates, 432 Hz, empty/invalid, tuning/presets, `with_count`, cells,
+summary) and the Qt additions in `tests/test_ui.py` (group, defaults, live
+A-major feed, open-G/G#/root, Drop D, Custom, 7 strings, 12 frets, Names off,
+height ≤ 1230, empty `FakeController.calls`). Acceptance stays in
+`docs/README_stage8_8.md` §11.
+
+### 6.23 Loop FX bus + harmonic-series delay (Stage 9.0)
+
+**Why.** The owner asked for a harmonic-series delay on the loops: "a buffer
+segment plays with delay ascending up the harmonic series", post-pitch-shift,
+with "some kind of effect bus feature". Stage 9.0 is the first Stage 9 FX and
+establishes a reusable **per-loop private audio bus**.
+
+**Signal flow.** Each `\ji_loop_voice` keeps its accepted dry `Out.ar(outBus)`
+and adds `Out.ar(fxBus, out * gain * env)` after the post-`PitchShift`/smear/
+melt-filter/gain/envelope stage. `fxBus` is one of four private mono audio buses
+(18–21 on the owner's 2-in/16-out boot; passed by `.index`). A separate
+`\ji_harmonic_delay` is created after the player
+(`Synth.new(..., player, \addAfter)`) when `harm_mode != off`; it reads
+`In.ar(fxBus, 1)` and writes **wet only** to the loop's output bus. No FX synth
+exists when off, so the default voice and CPU are unchanged.
+
+**DSP.** One 2 s mono scratch buffer per loop. Rates are exact integers
+`r_k = k` for `k = 1…steps`; amplitudes are
+`a_k = 1 / k^(0.5 + 1.5*falloff)`, times `mix`. **Cascade** freezes a captured
+segment on a Fire (a `trig` counter) or the Auto clock, snapshots the write head,
+and starts up to eight players reading the same frames at `k×`, player `k`
+entering `(k-1)*spacing` seconds later and lasting `time/k`. The write resumes
+after `max(time, (steps-1)*spacing + time/steps)` s. **Delay** writes
+continuously and reads taps at `k×`, starting `time` behind the initial write
+head and wrapping; the window drifts (varispeed harmonizer, not a fixed echo).
+`mix`/gate are smoothed; the read rate is never lagged. A Fire during a cascade
+restarts the same frozen segment (documented); Auto is suppressed during a
+manual cascade and its period exceeds the cascade.
+
+**Fixed time (owner follow-up).** `harm_time_sync` is `free` or a musical
+division (`1/32`…`1/1`, with `d` dotted and `t` triplet, plus `1 bar`).
+`seconds = beats * 60 / bpm`, clamped to `0.05…2.0 s`; `1 bar` uses the exact
+meter bar. A BPM change retimes active fixed FX; free time is unchanged. This is
+independent of the **ceil** count-in bar rule.
+
+**Edit surface.** Seven prompt values plus the owner's `harm_time_sync` are the
+new per-loop edit state (`harm_mode/mix/time/time_sync/steps/spacing/falloff/
+auto`). `/ji/loop/edit` grows from 31 to **39** values (8 appended);
+`LOOP_EDIT_PARAMS` has 37 editable params (index/effective_pitch are wire-only).
+`/ji/loop/fx_fire [index]` is UI→sclang only. `harm_mode/time/time_sync` restart
+the FX; the others `set` it. All values are session-only and excluded from
+performance states.
+
+**GUI.** One Harm row (Harm, Mix, Time + TimeSync, Steps, Space, Fall, Auto,
+Fire) after Morph; the status line moved there. Fire is enabled only in Cascade
+while the selected loop plays. Window 1280×1198, Qt bound 1230.
+
+**Count-in.** The same stage fixed A1 (free-mode second Rec), A2 (stale
+`\counting` previous state), A3 (ungenerated intermediate ticks) and A4 (ceil bar
+rounding). See `docs/README_stage9_0.md` §5.
+
+**Tests.** Pure: 37 params, exact defaults/ranges, the 39-value parser,
+fixed-time maths, count-in ceil cases, fx_fire routing, store apply. Qt (when
+available): row defaults/sends/fire/sync/height. Human: `test_loop_edit.scd`
+and `test_live_rig.scd`. Audio/sclang/Qt were not available to the agent.
+
+---
+
+### 6.24 Lead input, recording, quantisation and saved melodies (Stage 9.1)
+
+**Why.** The owner asked to "play midi with a midi controller or the keyboard,
+and have that output pitches in the pitch class … record that and have it
+quantized to the beat/groove … then they can be continually modified using the
+existing lead variation". 9.1 is a **lead/performance** increment (not the
+Stage 9 FX theme) and adds no sclang change, no bus and no audio DSP.
+
+**Pitch mapping (C1).** `control/lead_input.py::map_note`:
+`f_in = 440*2^((n-69)/12)`, `oct = floor(log2(f_in/F))`, `f_oct = f_in/2^oct`,
+`d(r) = 1200*log2(f_oct/(F*r))`, the ratio minimising `|d|` wins,
+`f_out = F*ratio*2^oct`, `degree = sorted_ratios.index(ratio)` and
+`note.octave = oct - base_octave`. A key on a class returns that float with
+0 cents, so `LeadEngine._project_locked` is bit-exact. `cycle`/`free`/`anchor`
+were deferred. Worked table (F = 220, just major): MIDI 61/64/69/66 →
+5/4 +13.7°/3/2 −1.9°/1/1 0.0°/5/3 +15.6°.
+
+**Live model.** `LeadRig.source` is `generated | played | live | record`.
+`live`/`record` stop (never mute) the scheduler; leaving them for
+`generated`/`played` starts at the next bar line via
+`LeadScheduler.start(at_time=…)`. One `_sync_scheduler()` is shared by
+`set_transport`, `set_enabled`, `set_source` and state recall, so no path can
+start the sequencer while the input monitors. A transport stop is **not** an
+exit path: live keeps monitoring; only an in-flight take finishes.
+
+**Recording and quantisation (C2, C3).** `LeadRecorder` captures `(midi,
+velocity, beat)`, reduces chords to the last note (`dropped`), closes a held
+note at the window end and returns quantised `LeadNote`s. The window is
+`start = ceil((now + count_in)/bar_quarters)*bar_quarters`,
+`end = start + bars*bar_quarters`; a bar is `ceil(bar_quarters)` whole quarters
+(5/8 → 3, 7/8 → 4). `quantize_step` applies `strength` toward the **swung**
+grid (`k + swing_offset(k)/step_seconds`) but stores the **unswung** integer:
+playback re-applies `bass.swing_offset`, so swing is never baked into a note.
+A ~5 ms supervisor thread with a generation token closes the take at the
+window end or on a transport stop (take kept). A second Rec during the count-in
+skips it; Stop during the count cancels silently; Stop while recording keeps
+the partial take.
+
+**Played motif inside `LeadEngine` (C5).** `LeadMotif` appends `source`,
+`base_notes`, `history` `((variation, index_used), …)` and `melody_name`.
+`load_motif` never generates; `revert()` restores the take; `clear_melody()`
+returns to the seeded line. A played motif never goes through
+`_GENERATION_KEYS` regeneration: grid rescales the base, phrase_bars crops/tiles,
+density logs a no-op, seed clears the history, octave_range clamps, a meter
+change resizes. `_vary_locked`/`set_setting("variation")` append to `history`
+and re-attach provenance after `random`. `set_variation_index` replays the
+stored `(name, index_used)` entries (filtered by applied index, so a combo
+change at the current index is included) and extends past the stored history
+with the selected variation. `gate_mode` (`beat|note`) is value 17 of
+`/ji/lead/state`; a recorded 2-beat note gets its own gate.
+
+**Melodies and states (C4).** `control/melody.py` writes
+`melodies/<name>.json` (`ji-lead-melody`, v1, atomic `.tmp`+fsync+replace,
+Stage 8.5 name rules) with the take (`base_notes`), the line at save time
+(`notes`), shape, tempo/meter, quantise/swing, set provenance and variation
+history. Performance states carry the take **inline** in the `lead` section
+(`notes`, `base_notes`, `history`, `melody`, `source`), so a self-contained
+state needs no melody file; old states load as generated lines and `version`
+stays 1.
+
+**GUI/OSC.** One compact Lead input group (port + Refresh, Keys/Live/Rec/Stop/
+Revert/Clear, Quant/Count-in/Bars, melody combo/name/Save/Load/Del, two status
+lines) and a `Note len` checkbox next to the Gate knob. Additive addresses:
+`/ji/lead/input/set_enabled|set_quantize|set_count_in|set_bars|note_on|note_off|
+record|stop|revert|clear|refresh`, `/ji/lead/melody/save|load|delete|request`,
+status `/ji/lead/input/state` (14 values), `/ji/lead/melody/list` and
+`/ji/lead/melody/state`. `revert`/`clear`/melody `load` are queued on
+`PHASE_LEAD` while running; Live/Rec/Stop/note events are immediate.
+
+**Tests / limits.** `tests/test_lead_input.py` (mapping, quantiser, recorder,
+key map, port, rig, record machine, melody library, policy, gate mode, inline
+states, lazy mido). Config `config/lead_input_config.json`; flags `--lead-in`,
+`--lead-in-port`, `--lead-in-config`, `--melody-dir`. No MIDI hardware, IAC,
+Ableton, audio or sclang was available to the agent; the stage awaits human
+acceptance. See `docs/README_stage9_1.md`.
+
 ---
 
 ## 7. Data Formats & Interfaces
@@ -1714,6 +2231,20 @@ expectation in `tests/test_home.py`. Human acceptance stays in
 | `/ji/bass/set_sub_octaves` | int 1..2 | UI → Bridge | 8.3a ✅ |
 | `/ji/bass/state` | [int enabled, int port_ok, string preset, string grid, int length_steps, float density, float syncopation, float swing, float gate_beats, float accent, string pitch_mode, float movement, int octave_range, float octave_jump, int seed, int base_octave, int sub_enabled, int sub_octaves, int main_channel, int sub_channel] | Bridge → UI | 8.3a ✅ |
 | `/ji/bass/note` | [float hz, int midi_note, int velocity] | Bridge → UI | 8.3a ✅ |
+| `/ji/bass/set_hits_enabled` | int 0/1 | UI → Bridge | 8.7 🟡 |
+| `/ji/bass/set_hit` | [int index 0..31, int on (0/1)] | UI → Bridge | 8.7 🟡 |
+| `/ji/bass/clear_hits` | none | UI → Bridge | 8.7 🟡 |
+| `/ji/bass/copy_hits` | none | UI → Bridge | 8.7 🟡 |
+| `/ji/bass/hits` | [int enabled, int count 0..32, int hit_0 … int hit_{count-1}] | Bridge → UI | 8.7 🟡 |
+| `/ji/breath/set_enabled` | int 0/1 | UI → Bridge | 8.7 🟡 |
+| `/ji/breath/set_depth` | float 0..1 | UI → Bridge | 8.7 🟡 |
+| `/ji/breath/set_period` | int bars 1..32 | UI → Bridge | 8.7 🟡 |
+| `/ji/breath/set_shape` | string (`sine`\|`triangle`\|`inhale`\|`exhale`) | UI → Bridge | 8.7 🟡 |
+| `/ji/breath/set_intensity` | float 0..1 | UI → Bridge | 8.7 🟡 |
+| `/ji/breath/set_phase` | float 0..1 | UI → Bridge | 8.7 🟡 |
+| `/ji/breath/set_arp_local` | float 0..1 | UI → Bridge | 8.7 🟡 |
+| `/ji/breath/set_arp_sync` | int 0/1 (0 = own half-cycle phase, 1 = master phase) | UI → Bridge | 8.7.1 🟡 |
+| `/ji/breath/state` | [int enabled, float depth, int period_bars, string shape, float intensity, float phase, float arp_local, int arp_sync] | Bridge → UI | 8.7 / 8.7.1 🟡 |
 | `/ji/arp/set_step` | float seconds 0.05..2.0 | UI → Bridge | 8.3b 🟡 |
 | `/ji/arp/set_gate` | float seconds 0.01..2.0 (clamped to ≤ step) | UI → Bridge | 8.3b 🟡 |
 | `/ji/arp/set_velocity` | int 1..127 | UI → Bridge | 8.3b 🟡 |
@@ -1740,8 +2271,27 @@ expectation in `tests/test_home.py`. Human acceptance stays in
 | `/ji/lead/set_swing` | float 0..1 (used when groove_link = 0) | UI → Bridge | 8.3d 🟡 |
 | `/ji/lead/set_groove_link` | int 0/1 | UI → Bridge | 8.3d 🟡 |
 | `/ji/lead/set_seed` | int 0..2^31−1 | UI → Bridge | 8.3d 🟡 |
+| `/ji/lead/set_gate_mode` | string (`beat`\|`note`) | UI → Bridge | 9.1 🟡 |
 | `/ji/lead/vary` | none (advance one variation) | UI → Bridge | 8.3d 🟡 |
-| `/ji/lead/state` | 16 values: enabled, port_ok, grid, phrase_bars, density, gate_beats, velocity, octave_range, base_octave, variation, variation_index, variation_bars, swing, groove_link, seed, playing | Bridge → UI | 8.3d 🟡 |
+| `/ji/lead/state` | 17 values: enabled, port_ok, grid, phrase_bars, density, gate_beats, velocity, octave_range, base_octave, variation, variation_index, variation_bars, swing, groove_link, seed, playing, gate_mode (`beat`\|`note`) | Bridge → UI | 8.3d / 9.1 🟡 |
+| `/ji/lead/input/set_enabled` | int 0/1 (Live) | UI → Bridge | 9.1 🟡 |
+| `/ji/lead/input/set_quantize` | float 0..1 | UI → Bridge | 9.1 🟡 |
+| `/ji/lead/input/set_count_in` | string (`off`\|`1 beat`\|`1 bar`\|`2 bars`) | UI → Bridge | 9.1 🟡 |
+| `/ji/lead/input/set_bars` | int 1..8 | UI → Bridge | 9.1 🟡 |
+| `/ji/lead/input/note_on` | [int midi 0..127, int velocity 0..127] | UI → Bridge | 9.1 🟡 |
+| `/ji/lead/input/note_off` | int midi 0..127 | UI → Bridge | 9.1 🟡 |
+| `/ji/lead/input/record` | none | UI → Bridge | 9.1 🟡 |
+| `/ji/lead/input/stop` | none | UI → Bridge | 9.1 🟡 |
+| `/ji/lead/input/revert` | none (PHASE_LEAD while running) | UI → Bridge | 9.1 🟡 |
+| `/ji/lead/input/clear` | none (PHASE_LEAD while running) | UI → Bridge | 9.1 🟡 |
+| `/ji/lead/input/refresh` | none | UI → Bridge | 9.1 🟡 |
+| `/ji/lead/input/state` | 14 values: live, port_ok, port_name, quantize, count_in, bars, recording, count_beats, note_count, source, melody_name, last_in_note, last_out_note, last_cents | Bridge → UI | 9.1 🟡 |
+| `/ji/lead/melody/save` | string name | UI → Bridge | 9.1 🟡 |
+| `/ji/lead/melody/load` | string name (PHASE_LEAD while running) | UI → Bridge | 9.1 🟡 |
+| `/ji/lead/melody/delete` | string name (immediate) | UI → Bridge | 9.1 🟡 |
+| `/ji/lead/melody/request` | none | UI → Bridge | 9.1 🟡 |
+| `/ji/lead/melody/list` | [int count, string name_1 … name_N] | Bridge → UI | 9.1 🟡 |
+| `/ji/lead/melody/state` | [int count, string last_saved, string last_loaded, string message] | Bridge → UI | 9.1 🟡 |
 | `/ji/lead/note` | [float hz, int midi_note, int velocity] | Bridge → UI | 8.3d 🟡 |
 | `/ji/drone/set_mode` | string (`hold`\|`pulse`\|`bend`\|`sequence`) | UI → Bridge | 8.3d 🟡 |
 | `/ji/drone/set_velocity` | int 1..127 | UI → Bridge | 8.3d 🟡 |
@@ -1776,6 +2326,15 @@ expectation in `tests/test_home.py`. Human acceptance stays in
 | `/ji/state/request` | none (fresh list + status; immediate) | UI → Bridge | 8.5 🟡 |
 | `/ji/state/list` | [int count, string name_1 … string name_N] (sorted) | Bridge → UI | 8.5 🟡 |
 | `/ji/state/state` | [int count, string last_saved, string last_loaded, string message] | Bridge → UI | 8.5 🟡 |
+| `/ji/loop/dub` | int index 1..4 | UI → sclang | 8.6 🟡 |
+| `/ji/loop/edit_set` | [int index 1..4, string param, value]; 37 params: `reverse`, `rate`, `gain`, `mode`, `sync`, `division`, `grain_rate`, `grain_size`, `grain_pos`, `grain_scatter`, `grain_pitch`, `grain_size_jitter`, `grain_pitch_jitter`, `grain_pitch_snap`, `grain_smear`, `grain_freeze`, `grain_motion`, `grain_speed`, `grain_depth`, `grain_burst`, `grain_morph`, `grain_melt`, `grain_filter`, `grain_filter_rate`, `grain_breath`, `grain_breath_rate`, `grain_reverse`, `count_in`, `auto_play`, `harm_mode`, `harm_mix`, `harm_time`, `harm_time_sync`, `harm_steps`, `harm_spacing`, `harm_falloff`, `harm_auto` | UI → sclang | 8.6 … 9.0 🟡 |
+| `/ji/loop/fx_fire` | int index 1..4 | UI → sclang | 9.0 🟡 |
+| `/ji/loop/mem_save` | [int slot 0..3, int index 1..4] | UI → sclang | 8.6 🟡 |
+| `/ji/loop/mem_recall` | [int slot 0..3, int index 1..4] | UI → sclang | 8.6 🟡 |
+| `/ji/loop/mem_clear` | int slot 0..3 | UI → sclang | 8.6 🟡 |
+| `/ji/loop/edit` | 39 values: index, reverse, rate, gain, mode, sync, division, grain_rate, grain_size_ms, grain_pos, grain_scatter, grain_pitch, grain_size_jitter, grain_pitch_jitter, grain_pitch_snap, grain_smear, grain_freeze, grain_motion, grain_speed, grain_depth, grain_burst, grain_reverse, count_in, auto_play, effective_pitch, grain_morph, grain_melt, grain_filter, grain_filter_rate, grain_breath, grain_breath_rate, harm_mode, harm_mix, harm_time, harm_time_sync, harm_steps, harm_spacing, harm_falloff, harm_auto | sclang → UI | 8.6 … 9.0 🟡 |
+| `/ji/loop/mem` | [int slot, int filled, int frames, float seconds] | sclang → UI | 8.6 🟡 |
+| `/ji/loop/count` | [int index 1..4, int beats_left 0..64] | sclang → UI | 8.6 🟡 |
 | `/ji/midi/map` | [int, string] | Control → Bridge | 8 |
 | `/ji/granular/trigger` | [float, float] | Control → Server | 9 |
 | `/ji/event/mutation` | [float, float, float[]] | Bridge → Visual | 11 |
@@ -1785,6 +2344,20 @@ expectation in `tests/test_home.py`. Human acceptance stays in
 | `/ji/event/drone` | float (Hz) | Bridge → Visual | 11 |
 
 Stage 3 does **not** send `/ji/mutation/apply` or any message directly to scsynth. The complete set is sent on `/ji/freqset/update`; sclang applies it to the verified nearest-class lookup. A multi-edit batch is one broadcast of the final set and one glide time, not unrelated intermediate sets. **Stage 8.4.1 refines this**: a stepwise/replaced event deliberately streams the moving class over the Glide knob time (30 Hz, `steps+1` bounded updates, `GLIDE_RATE_HZ`); pure add/remove edits still send exactly one update. **Stage 7 adds the UI control/status addresses above**: the GUI sends mutation controls to the bridge (9000), autotune/loop controls directly to sclang (57120), and listens for status on 9001. The Stage 3 `/ji/freqset/update` contract and Stage 6 MIDI path are unchanged. **Stage 8.2 adds the groove and quantize rows above**: UI groove edits and the existing mutation/MIDI/drum-toggle requests are queued to the next Python quarter beat while the transport runs, and applied immediately while it is stopped.
+
+**Stage 8.6 adds the eight loop rows above;** 8.6.1 widens `/ji/loop/edit_set`
+to 23 params and `/ji/loop/edit` to 25 values, 8.6.2 widens them to 27
+params / 29 values (morph, melt, filter, filter rate; no new address), and 8.7
+widens them to 29 params / 31 values (`grain_breath`, `grain_breath_rate`).
+**Stage 9.0** widens them to 37 params / 39 values (`harm_mode`, `harm_mix`,
+`harm_time`, `harm_time_sync`, `harm_steps`, `harm_spacing`, `harm_falloff`,
+`harm_auto`) and adds `/ji/loop/fx_fire [index]` (a one-shot Cascade trigger,
+no reply). They stay sclang-owned: the GUI sends loop-editing controls straight to sclang
+(57120), never to the bridge, and sclang replies with `/ji/loop/edit`,
+`/ji/loop/mem` and `/ji/loop/count`. Edit changes are immediate; Record/Play keep
+the Stage 8.1 free-immediate / beat-next-beat rule. The bridge,
+`/ji/freqset/update` message format and the state files are untouched by them
+(8.6.1 only calls an extra local hook after a set update).
 
 **Stage 8.5 adds the six `/ji/state/*` rows above.** Save/delete/list are
 immediate file operations (they change no sound); a **load** is queued on
@@ -1826,6 +2399,13 @@ channel 2/3) whose enable/preset/grid/length/density/syncopation/swing/gate/
 accent/root/pitch/movement/octave/seed/base/sub edits are queued on
 `PHASE_BASS` between drums and MIDI, and immediate while the transport is
 stopped. The bass is not an MPE zone; its pitch-bend range is 2 semitones.
+
+**Stage 8.8 adds no OSC address.** The fretboard improvisation aid is
+read-only and consumes only the existing `/ji/freqset/changed`
+`[fundamental, anchor, ratio_1 … ratio_N]` broadcast, mapping the ratios in the
+UI (`ui/fretboard.py`). Its tuning/string/fret/name controls are local Qt state:
+they send nothing, add no request/reply/status message, no config key and no
+performance-state key.
 
 ### 7.2 FrequencySet (control-layer object)
 
@@ -1954,6 +2534,22 @@ stays `mpe_config.json`'s `drone_port` (the Stage 6 contract):
   "seq_notes": 5, "seq_bars": "1", "seq_gate": 1.0
 }
 ```
+
+**Stage 9.1 adds `config/lead_input_config.json`** for the Python-only MIDI
+input (no bus, no sclang):
+
+```json
+{
+  "port": "Launchkey", "match": "contains", "channel": 0,
+  "quantize": 1.0, "count_in": "1 bar", "bars": 2,
+  "velocity_scale": 1.0, "octave_shift": 0
+}
+```
+
+`match` is `contains|exact`; `channel` 0 (omni) or 1–16; `bars` 1–8;
+`velocity_scale` 0.5–2.0; `octave_shift` −2..2. `--lead-in-port` overrides
+`port`. A bad value disables only the input. Melodies live in `melodies/`
+(`--melody-dir`), created on the first save.
 
 Both are additive: a missing/bad lead config disables only the lead; a missing
 drone config (or a bad one) gives the Stage 6 `hold` drone with
@@ -2279,12 +2875,18 @@ subphases between increments.
 |---|---|---|
 | 8.1 | Rhythm foundation + drum engine v1: transport, tempo, meter, free/beat loops, per-loop beat lengths/phasing, drum MIDI output, note map, four-on-the-floor, lane toggles, half/double time | ✅ Owner-confirmed 2026-10-31 |
 | 8.2 | Groove generation: pattern presets, density, syncopation, swing, probability, per-step lane grid — plus beat-quantized state changes (mutation, toggles, drum rate, groove edits land on the next quarter beat) | ✅ Owner-confirmed 2026-10-31 |
-| 8.3 | More MIDI voices: bass first (monophonic + optional sub channel), then arp parameters, a one-entry startup, a beat-synced/self-evolving arp, and the lead/melody engine + drone pad options; further buses later | 🟡 8.3a owner-confirmed; 8.3b/8.3c built, awaiting human acceptance; 8.3d built, awaiting human acceptance |
-| 8.4 | Home sets + deterministic journeys + smooth return: four slots, seeded journeys, optional drift cap, Back, beat-spaced minimal return (the frequency-set half of pattern/sequencing mutation) | 🟡 Built, awaiting human; MIDI pattern recall moved to 8.5 |
+| 8.3 | More MIDI voices: bass first (monophonic + optional sub channel), then arp parameters, a one-entry startup, a beat-synced/self-evolving arp, and the lead/melody engine + drone pad options; further buses later | ✅ 8.3a–8.3d owner-approved 2026-11-02 |
+| 8.4 | Home sets + deterministic journeys + smooth return: four slots, seeded journeys, optional drift cap, Back, beat-spaced minimal return (the frequency-set half of pattern/sequencing mutation) | ✅ Owner-approved 2026-11-02; pattern-level MIDI recall remains deferred |
 | 8.4.1 | Stepwise/replaced class glide: the replaced class melts from its old ratio to its new one over the Glide knob time, for every voice (MIDI included); pure add/remove snaps | ✅ Owner-confirmed 2026-11-02 |
-| 8.5 | Performance state save/recall: versioned JSON snapshot of frequency set, mutation controls, home slots, rhythm, drums, groove + grid, and every bass/arp/lead/drone setting; restore without restart, one set change. **Loops and autotune excluded by the owner**; transport and Back history not saved | 🟡 Built, awaiting human |
-| 8.6 | Loop options: more loops, per-loop routing/gain/overdub, loop-player autotune controls, loop-file persistence | ⬜ Planned |
-| 8.7 | Optional: MIDI-triggered mutation mapping and SC-side VST hosting | ⬜ Optional |
+| 8.5 | Performance state save/recall: versioned JSON snapshot of frequency set, mutation controls, home slots, rhythm, drums, groove + grid, and every bass/arp/lead/drone setting; restore without restart, one set change. **Loops and autotune excluded by the owner**; transport and Back history not saved | ✅ Owner-approved 2026-11-02 |
+| 8.6 | **Loop editing:** session-only memory slots (save/recall a loop's audio + edit state), overdub, reverse, varispeed playback at length ratios (2/1, 1/2, 2/3, 3/5 …) which repitches the loop but still runs through the JI autotune (partial re-pitching toward the set is intended new material), granular playback (free + beat-synced) with rate/size/position/scatter/pitch/per-grain-reverse parameters, a selectable count-in before a Rec, auto-play when a take ends, and per-loop gain | 🟡 Built 2026-11-02 — awaiting human acceptance (`docs/README_stage8_6.md`) |
+| 8.6.1 | **Granular redesign:** the grain read position travels through the buffer (off/forward/backward/pingpong/drift, speed, depth, freeze), a real cloud (density/size defaults, per-grain size and pitch jitter), JI-snapped grain pitch that follows set mutations, a post-autotune smear, a beat-mode burst envelope, and the fix for the `Div` combo resetting to 1/16 | 🟡 Built 2026-11-03 — awaiting human acceptance (`docs/README_stage8_6.md` §14) |
+| 8.6.2 | **Morph / melt / moving filter:** one Morph slider blends the original loop into the grain cloud (equal-power, blend-aware retune), Melt ramps a loop from the original into the grains (and back), and a post-autotune moving lowpass + low cut fuse the two layers | 🟡 Built 2026-11-03 — awaiting human acceptance (`docs/README_stage8_6.md` §15) |
+| 8.7 | **Breathing rhythm engine + bass hit row:** a master breath makes the played grid breathe (timing + velocity) while the canonical tempo/grid stay exact; local arp breath and a loop-FX grain breath; adjustable depth/period/shape/intensity/phase/arp-local; one editable, optional bass hit row per bar with copy/clear | 🟡 Built 2026-11-03 — awaiting human acceptance (`docs/README_stage8_7.md`) |
+| 8.8 | **Fretboard improvisation aid:** nearest 12-TET notes to the live JI set with signed cents plus a fully tunable guitar fretboard scale diagram (nine presets incl. Drop D, 6–8 strings, 0–24 frets). Read-only UI; no OSC/state/audio change; tuning is session-only. Prompt: `docs/prompts/PROMPT_stage8_8_fretboard.md` | 🟡 Built 2026-11-05 — awaiting human acceptance (`docs/README_stage8_8.md`) |
+| 8.9 | Optional: MIDI-triggered mutation mapping and SC-side VST hosting | ⬜ Optional |
+| 9.1 | **Lead input, recording, quantisation and saved melodies:** MIDI-controller + QWERTY play-in mapped to the nearest class of the current set, bar-aligned recording with a silent count-in, swing-aware quantisation storing unswung steps, `melodies/<name>.json` and inline notes in performance states, a played motif inside `LeadEngine` (destructive variations + `Revert`), `gate_mode`, and one compact Lead input GUI group. No sclang/audio change. Prompt: `docs/prompts/PROMPT_stage9_1_lead_input.md` | 🟡 Built 2026-11-14 — awaiting human acceptance (`docs/README_stage9_1.md`) |
+| 9.0 | **Loop FX bus + harmonic-series delay:** one private post-`PitchShift` FX send per loop, a separate `\ji_harmonic_delay` SynthDef with **Cascade** (captured segment, ascending 1×/2×/3×… with Fire/auto) and **Delay** (continuous harmonized buffer delay) modes, a fixed musical `TimeSync` (1/4, dotted, triplet, 1 bar), plus the count-in repair (free-mode second-Rec skip, state/generation bugs, ceil bar lengths). Prompt: `docs/prompts/PROMPT_stage9_0_harmonic_delay.md` | 🟡 Built 2026-11-09 — awaiting human acceptance (`docs/README_stage9_0.md`) |
 
 **8.1 — Rhythm foundation + drum engine v1 (owner-confirmed 2026-10-31):**
 
@@ -2435,7 +3037,7 @@ headless Qt test for the Bass group.
 techno bassline, and octave-wandering lines; the sub works on its own channel;
 tempo/meter/enable changes behave; no stuck notes; no regressions.
 
-**8.3a delivered (implemented, awaiting human acceptance):**
+**8.3a delivered (owner-approved 2026-11-02):**
 `control/bass.py` (validated `BassConfig`/`BassSettings`, deterministic
 `BassPattern`, seeded `BassPitchPicker` with root/anchor/walk/random/cycle,
 `BassOutput` on one lazy plain-MIDI port with main/sub channels, a
@@ -2454,7 +3056,7 @@ unchanged.
 `libEGL.so.1`). Audio/MIDI/Bus 4/Ableton/live GUI are human-only; 8.3a is not
 complete until the human confirms the bass and no regressions.
 
-**8.3b delivered (implemented, awaiting human acceptance):** mutable arp
+**8.3b delivered (owner-approved 2026-11-02):** mutable arp
 parameters plus a one-entry startup path.
 
 *Arp parameters:* `control/arp.py` gains an immutable `ArpSettings`
@@ -2507,7 +3109,7 @@ Audio/MIDI/Ableton/IAC/sclang timing/live GUI are human-only; 8.3b is not
 complete until the human confirms the startup path and the arp controls with no
 regressions.
 
-**8.3c delivered (implemented, awaiting human acceptance):** beat-synced arp +
+**8.3c delivered (owner-approved 2026-11-02):** beat-synced arp +
 self-evolution, both off by default.
 
 *Sync:* `control/arp.py` gains `sync_mode` (`free`/`beat`), `division`
@@ -2544,7 +3146,7 @@ group. All pure harnesses pass; the Qt test skips in the agent container (no Qt
 system libraries). Audio/MIDI/Ableton/IAC/sclang timing/live GUI are human-only;
 8.3c is not complete until the human confirms both behaviors with no regressions.
 
-**8.3d delivered (implemented, awaiting human acceptance):** lead/melody engine +
+**8.3d delivered (owner-approved 2026-11-02):** lead/melody engine +
 drone pad modes. `control/lead.py` adds `LeadConfig/LeadSettings/LeadNote/
 LeadMotif/LeadEngine/LeadScheduler/LeadRig`: a monophonic MPE voice on
 `IAC Driver Bus 5` (member 2, 48 st) with a deterministic set-relative motif
@@ -2559,7 +3161,7 @@ groove-linked swing, and one `[LEAD]` log line per phrase/variation change.
 (one held note whose pitch slides continuously to ±`slide_semitones`, with a
 derived `ceil(hold_beats + slide_seconds * bpm / 60)` cycle). `PHASE_LEAD` /
 `PHASE_DRONE` sit between `arp` and `midi`; `/ji/lead/*` (13 setters + `vary`),
-`/ji/drone/*` (11 setters), `/ji/lead/state` (16 values) and `/ji/drone/state`
+`/ji/drone/*` (11 setters), `/ji/lead/state` (16 values, 17 from 9.1) and `/ji/drone/state`
 (14 values) are wired through the OSC server, the bridge and the GUI; BPM/meter/
 transport and the groove swing are pushed once per change. `config/lead_config.json`
 and `config/drone_config.json` ship the documented defaults (`enabled: false`,
@@ -2571,7 +3173,7 @@ still passes unchanged.
 8.3d is not complete until the human confirms the lead and the drone modes with
 no audio/MIDI regressions (checklist: `docs/README_stage8_3d.md`).
 
-**8.4 delivered (implemented, awaiting human acceptance):** home sets,
+**8.4 delivered (owner-approved 2026-11-02):** home sets,
 deterministic journeys and smooth return. `control/mutation.py` gained
 `SetSnapshot` plus the additive `reseed()`/`snapshot()`/`apply_snapshot()`
 (validated, state untouched on error); `control/home.py` adds `HomeConfig`,
@@ -2597,6 +3199,26 @@ is unchanged until the player captures a home. `run/ji_station.py` gains
 8.4 is not complete until the human confirms the return is smooth, minimal and
 repeatable (checklist: `docs/README_stage8_4.md`).
 
+**8.6 delivered (built 2026-11-02).** `synthdefs/ji_loop_voice.scd` (normal /
+reverse / varispeed / granular into the accepted autotune), `synthdefs/ji_buf_copy.scd`
+(server-side mono copy for the slots), additive `preLevel`/`loop` arguments on
+`ji_looper_recorder.scd`, and in `tests/sc/test_live_rig.scd` the per-loop edit
+state, `~ji_loop_edit_args`, `~ji_dub_loop`, `~ji_after_record` (exact-end
+auto-play with a recorder identity token), the count-in bookkeeping helpers and
+`~ji_loop_mem_save|recall|clear` (session-only `Buffer` copies). `ui/control_surface.scd`
+gains `/ji/loop/dub|edit_set|mem_save|mem_recall|mem_clear`, the count-in
+scheduler, the beat-grain clock on `~ji_tempo_clock`, transport integration for
+beat-synced grains, and the three status messages. `ui/osc_control.py` and
+`ui/ji_ui.py` gain the tables, builders, `LoopEdit`/`LoopMemory`, strict parsers,
+store fields, controller methods, a `Dub` button per loop, one Loop edit row and
+one Grain row (1280×880). `ji_start.scd` requires both new SynthDefs. Everything
+ships at the accepted defaults (rate 1/1, normal, forward, gain 0.70, count-in
+off, auto-play off), so a loop still sounds exactly as before. No bridge,
+`/ji/freqset/update`, state-file, MPE or audio-map change; no loop persistence.
+
+8.6 is not complete until the human confirms the loop audio, the memory slots
+across a session and no regressions (`docs/README_stage8_6.md` §12).
+
 **8.2+ increments:** the remaining subphases extend the same state and GUI.
 Save/recall and seed-based reproduction must capture rhythm/drum state,
 frequency set, mutation controls, MIDI voice settings, and loop settings in a
@@ -2608,14 +3230,28 @@ the Stage 6 drone/arp or the Stage 5.5 audio map.
 map, the Stage 6 drone/arp contracts, the Stage 7/7.1 GUI/OSC contracts, and all
 existing tests. Extend the GUI incrementally; no big-bang rewrite.
 
-### 8.10 Stage 9 — Granular & Glitch FX ⬜ PLANNED
+### 8.10 Stage 9 — Granular & Glitch FX 🟡 IN PROGRESS (9.0 harmonic delay built; the loop granular voice shipped in 8.6/8.6.1)
 
 **Goal:** use the SuperCollider environment for the granular/glitch half of the
 project: `TGrains`/`GrainBuf` processing, pitch quantization to the current
 class set, gate/fade handling, and GUI controls for the useful parameters.
 
-**Deliverables:** `synthdefs/ji_granular_fx.scd`, `test_granular.scd`, GUI
-controls, `README_stage9.md`.
+**9.0 (built 2026-11-09, awaiting acceptance):** a per-loop, post-`PitchShift`
+**FX bus + `\ji_harmonic_delay`** with **Cascade** and **Delay** modes, exact
+integer harmonics, fixed or free musical time, and the count-in repair. It
+establishes the reusable private per-loop audio bus that later Stage 9
+FX can share. See §6.23 and `docs/README_stage9_0.md`.
+
+**9.1 (built 2026-11-14, awaiting acceptance):** a lead/performance increment
+rather than an FX one: MIDI/QWERTY play-in mapped to the nearest class of the
+current set, recording/quantisation to the beat/groove, a named melody library,
+inline notes in performance states, and the played phrase kept inside the
+existing lead Variation system with `Revert`. It adds no sclang/audio change
+(the input is Python-only and reuses Bus 5). See §6.24 and
+`docs/README_stage9_1.md`.
+
+**Remaining deliverables:** `synthdefs/ji_granular_fx.scd`, `test_granular.scd`,
+GUI controls, `README_stage9.md` (or later 9.x READMEs).
 
 **Acceptance:** audible granular processing on the live/loop material, grains
 quantized to the current set, no clicks at gate boundaries, CPU within the live
@@ -2664,14 +3300,21 @@ unchanged when no visual subscriber is present.
 | 5.5 | ✅ Complete | Live rig: two autotuned inputs + two loops on SC 0/1/2/3, Python mutation bridge; `tests/sc/test_live_rig.scd`, `config/live_rig_routing.json`, `README_live_rig.md`. Four mono tracks in Ableton. Owner reported all sound checks passed (2026-10-30), including the adjustable loop length (8 s default). |
 | 6 | ✅ Complete — owner-confirmed 2026-10-30 | Two monophonic MPE buses: anchor drone (Bus 1) + set arp (Bus 2). Owner confirmed ports, calibration, drone/arp, and no stuck notes; existing audio unchanged. Pure Python tests pass. |
 | 7 | ✅ Owner-confirmed 2026-10-31 | Minimal Performance GUI: one PyQt6 window for mutation, live autotune, loop transport/length, and status. Stage 7.1 adds Drone/Arp switches. |
-| 8 | 🟡 In progress (iterative) | Performance expansion. 8.1 (rhythm foundation + drum engine) and 8.2 (groove + beat-quantized state) are owner-confirmed; 8.3a (monophonic bass, `/ji/bass/*`, Bass GUI group) is owner-confirmed; 8.3b (arp parameters + one-entry startup), 8.3c (beat-synced arp + self-evolution) and 8.3d (lead/melody + drone pad modes) are implemented and agent-verified, awaiting human; 8.4 (home sets + smooth return) is implemented and agent-verified, awaiting human; 8.4.1 (stepwise/replaced class glide) is owner-confirmed (2026-11-02); 8.5 (performance state save/recall) is implemented and agent-verified, awaiting human; 8.6–8.7 remain. |
+| 8 | 🟡 In progress (iterative) | Performance expansion. 8.1 (rhythm foundation + drum engine) and 8.2 (groove + beat-quantized state) are owner-confirmed; 8.3a (monophonic bass) is owner-confirmed; 8.3b (arp parameters + one-entry startup), 8.3c (beat-synced arp + self-evolution), 8.3d (lead/melody + drone pad modes), 8.4 (home sets + smooth return), 8.4.1 (class glide) and 8.5 (performance state save/recall) are owner-approved (2026-11-02); 8.6/8.6.1/8.6.2 (loop editing) are built and awaiting the owner; 8.7 (breathing rhythm engine + bass hit row) is built and awaiting the owner; 8.8 (12-TET fretboard improvisation aid) is built and awaiting the owner. |
 | 8.1 | ✅ Owner-confirmed 2026-10-31 | Tempo/meter/transport, free/beat loops with per-loop lengths, drum MIDI on Bus 3, 16 lane toggles, half/normal/double time. |
 | 8.2 | ✅ Owner-confirmed 2026-10-31 | Groove presets/density/syncopation/swing/probability/seed, 16-lane step grid (32-column cap), and a next-quarter-beat state queue for mutation/octave/MIDI/drum enables, rate, lanes, and groove edits. Immediate while transport is stopped. Beat-mode loop scheduling fixed in 8.2.2. |
-| 8.3 | 🟡 8.3a owner-confirmed; 8.3b/8.3c/8.3d awaiting human | 8.3a: monophonic transport-synced JI bass on Bus 4, pulse/techno/chaos presets, pitch/rhythm controls, seeded line, optional sub channel, `/ji/bass/*` + Bass GUI group. 8.3b: mutable arp parameters (step/gate/velocity/octaves/shared mode/order/seed) with `/ji/arp/*` + `/ji/arp/state` + a compact Arp GUI group on `PHASE_ARP`, plus the one-sclang/one-Python startup path (`ji_start.scd`, `run/ji_station.py`, `docs/START_HERE.md`). 8.3c: `Sync free/beat` with `1/4`–`1/8T` divisions snapped to the bridge BPM, and `Evolve` every N beats with a depth control (both off by default). 8.3d: lead/melody voice on optional Bus 5 (set-relative motif + ratio hint so mutations keep the line, eight seeded variations, `Vary`/`variation_bars`, groove-linked swing, transport-gated) and drone pad modes `hold`/`pulse`/`bend` (derived bend cycle), with `/ji/lead/*`, `/ji/drone/*`, two state messages, and compact Lead + Drone modes GUI groups (`--lead` ships off). |
-| 8.4 | 🟡 Built — awaiting human | Home sets: four slots, deterministic seeded journeys, optional drift cap, Back, and a beat-spaced return that lands exactly home in `ceil(distance/max_changes)` beats. `/ji/home/*`, 13-value `/ji/home/state`, compact Home GUI group, `config/home_config.json`, `--home-config`. `PHASE_HOME` inserted first. |
-| 8.5 | 🟡 Built — awaiting human | Performance states: named, versioned JSON snapshots in `states/` (`--state-dir`), capturing frequency set + fundamental, mutation controls, the four home slots/active home/journey, bpm/meter, drums, groove + 32-int grid, and every bass/arp/lead/drone setting + lead variation index. `/ji/state/save|load|delete|request` + `/ji/state/list|state`, compact State GUI row. A load is one atomic set change (one `/ji/freqset/update`), immediate when stopped and on `PHASE_STATE` (last) while running; it cancels a pending return/glide first. Loops (owner) and autotune are excluded. |
+| 8.3 | ✅ Owner-approved 2026-11-02 (8.3a 2026-10-31) | 8.3a: monophonic transport-synced JI bass on Bus 4, pulse/techno/chaos presets, pitch/rhythm controls, seeded line, optional sub channel, `/ji/bass/*` + Bass GUI group. 8.3b: mutable arp parameters (step/gate/velocity/octaves/shared mode/order/seed) with `/ji/arp/*` + `/ji/arp/state` + a compact Arp GUI group on `PHASE_ARP`, plus the one-sclang/one-Python startup path (`ji_start.scd`, `run/ji_station.py`, `docs/START_HERE.md`). 8.3c: `Sync free/beat` with `1/4`–`1/8T` divisions snapped to the bridge BPM, and `Evolve` every N beats with a depth control (both off by default). 8.3d: lead/melody voice on optional Bus 5 (set-relative motif + ratio hint so mutations keep the line, eight seeded variations, `Vary`/`variation_bars`, groove-linked swing, transport-gated) and drone pad modes `hold`/`pulse`/`bend` (derived bend cycle), with `/ji/lead/*`, `/ji/drone/*`, two state messages, and compact Lead + Drone modes GUI groups (`--lead` ships off). |
+| 8.4 | ✅ Owner-approved 2026-11-02 | Home sets: four slots, deterministic seeded journeys, optional drift cap, Back, and a beat-spaced return that lands exactly home in `ceil(distance/max_changes)` beats. `/ji/home/*`, 13-value `/ji/home/state`, compact Home GUI group, `config/home_config.json`, `--home-config`. `PHASE_HOME` inserted first. |
+| 8.5 | ✅ Owner-approved 2026-11-02 | Performance states: named, versioned JSON snapshots in `states/` (`--state-dir`), capturing frequency set + fundamental, mutation controls, the four home slots/active home/journey, bpm/meter, drums, groove + 32-int grid, and every bass/arp/lead/drone setting + lead variation index. `/ji/state/save|load|delete|request` + `/ji/state/list|state`, compact State GUI row. A load is one atomic set change (one `/ji/freqset/update`), immediate when stopped and on `PHASE_STATE` (last) while running; it cancels a pending return/glide first. Loops (owner) and autotune are excluded. |
+| 8.6 | 🟡 Built 2026-11-02 — awaiting human acceptance | Loop editing: session-only memory slots A–D (audio + edit state, `ji_buf_copy`, no files), overdub (`preLevel 1`, one pass), reverse, varispeed at 11 fixed ratios (still through the JI autotune), granular free/beat (`TGrains`, one incrementing `grainTrig` per subdivision), per-loop gain, count-in (off/1 beat/1 bar/2 bars on the tempo clock) and auto-play at the exact take end. `/ji/loop/dub|edit_set|mem_*` + `/ji/loop/edit|mem|count`, `dubbing`/`counting` states, two GUI rows (1280×880). Defaults are the accepted loop. |
+| 8.6.1 | 🟡 Built 2026-11-03 — awaiting human acceptance | **Granular redesign** of the 8.6 grain half: a motion engine (off/forward/backward/pingpong/drift on `Phasor.kr` with `ControlDur`, speed, depth, freeze), cloud defaults (Rate 20, Size 120 ms, Pos 50 %, Scatter 10 %) with per-grain size/pitch jitter, JI-snapped grain pitch (`~ji_loop_snap_ratio`, effective ratio in the payload and the status line, re-snap on `/ji/freqset/update`), a post-autotune `AllpassC` smear (0 = dry), a beat-mode burst envelope with `grainDecay`, a 0.15 s retune floor in grain mode, and the `Div`-jumps-to-1/16 fix (`indexOfEqual` on the division/count-in Strings). `/ji/loop/edit` 15 -> 25 values, 23 edit params, a third GUI row (Grain motion, 1280×910). Normal mode is unchanged. |
+| 8.6.2 | 🟡 Built 2026-11-03 — awaiting human acceptance | **Morph/Melt/filter** on top of 8.6.1: `grainMorph` blends the dry loop (0) into the grain cloud (1) with an equal-power crossfade and a blend-aware retune floor; `grainMelt` ramps the voice from the original into the cloud over `~ji_loop_melt_seconds` (4 s, cancelled by Stop/mode/recall, re-targeted by a Morph change, started at 0 by Play); `grainFilter`/`grainFilterRate` add a post-autotune moving lowpass + low cut (0 = bypass, works on the plain loop). `/ji/loop/edit` 25 -> 29 values, 27 edit params, a fourth GUI row (Morph/Melt/Filter/F.Rate, 1280×940). Defaults leave the accepted loop untouched. |
+| 8.7 | 🟡 Built 2026-11-03 — awaiting human acceptance | **Breathing rhythm engine + bass hit row:** one `control/breath.py` clock (raised-cosine volume over a warped phase, four shapes) drives a clamped ±45 %-of-step scheduling offset and a velocity/expression delta in drums/bass/arp/lead, with drone velocity only and the arp half a cycle out of phase by default (`arp_local`; 8.7.1 adds an `Arp sync` option to use the master phase instead). The canonical tempo/grid and every `PHASE_*` deadline are untouched; breath off is exactly today's timing. Each loop voice also gets its own `grainBreath`/`grainBreathRate` LFO. The bass gains an optional one-row hit grid (one bar, capped at 32; `hits` never overloads `grid`) with `/ji/bass/hits`, Copy/Clear and a hidden GUI row. `/ji/breath/*`, 7-value `/ji/breath/state` (8 values with the 8.7.1 `arp_sync` option), one Rhythm row, loop Morph row Breath/B.Rate, 1280×966. |
+| 8.8 | 🟡 Built 2026-11-05 — awaiting human acceptance | **12-TET fretboard improvisation aid (read-only):** `ui/fretboard.py` maps every JI ratio to its nearest 12-TET note (half-up MIDI rounding, signed cents), dedupes into at most 12 pitch-class degrees ordered from the root, and builds `strings × (frets+1)` cells from a fully editable `GuitarTuning` (nine presets incl. Drop D/DADGAD/Open G/D, 7- and 8-string defaults, `with_string`/`with_count`). `ui/ji_ui.py` adds one full-width **Fretboard** group between Lead and Status with a custom-painted `FretboardWidget` (root/scale/anchor colours, inlays, fret numbers, note names, hover tooltips). It follows the existing `/ji/freqset/changed`; the tuning is a local session-only setting (reset to Standard E), adds **no** OSC address/state key/config key, and no handler calls the controller. `/ji/freqset/changed` shape unchanged, 1280×1172, `tests/test_fretboard.py` + Qt additions. |
 | 8.4.1 | ✅ Owner-confirmed 2026-11-02 | Stepwise/replaced **class glide**: the Glide knob is the replacement melt time, not a global retune. `control/glide.py` (`GlidePlan`, `build_glide_plan`, `GlideScheduler`), `JIBridge.send_snapshot` transient fan-out, `ArpEngine.on_set(rebuild=…)` + trigger-time `resolve_note`, additive transient logging suppression in drone/bass, Glide tooltip/status. Pure add/remove snaps at 0.005 s; a new mutation/Return/Go/Back/Jump cancels a melt. `tests/test_glide.py`. |
-| 9 | ⬜ Planned | Granular & glitch FX in SC, pitch-quantized to the set, with GUI controls. |
+| 9.0 | 🟡 Built 2026-11-09 — awaiting human acceptance | **Loop FX bus + harmonic-series delay:** four private mono post-`PitchShift` audio buses (reported; 18–21 on the owner's boot) and a separate `\ji_harmonic_delay` per active loop (created after the player), with **Cascade** (frozen captured segment, harmonics entering 1×/2×/3×… in order, Fire/Auto) and **Delay** (continuous harmonized buffer delay, varispeed drift) modes, exact integer rates, the `1/k^(0.5+1.5·falloff)` law, 2 s scratch buffers and a **fixed musical `TimeSync`** (`1/4`, dotted, triplet, `1 bar`; owner follow-up). `/ji/loop/edit` 31 -> 39 values, 37 edit params, `/ji/loop/fx_fire`, one Harm GUI row (1280×1198), plus the count-in A1–A4 repairs. See §6.23 and `docs/README_stage9_0.md`. |
+| 9.1 | 🟡 Built 2026-11-14 — awaiting human acceptance | **Lead input, recording, quantisation, saved melodies:** nearest-class mapping, bar-aligned recording with silent count-in, swung-grid quantisation storing unswung steps, `melodies/` library, inline notes in performance states, played motif + Revert in `LeadEngine`, `gate_mode`, `Lead input` GUI group, QWERTY keys. Python-only input; no sclang/audio change. See §6.24 and `docs/README_stage9_1.md`. |
+| 9 | 🟡 In progress | 9.0 harmonic-series delay built/awaiting acceptance; 9.1 lead input built/awaiting acceptance; granular & glitch FX remain. |
 | 10 | ⬜ Planned | GUI UX & aesthetics after the feature set stabilizes. |
 | 11 | ⬜ Deferred | Visual-half groundwork: OSC event broadcast for an external visual process. |
 
@@ -2715,7 +3358,7 @@ unchanged when no visual subscriber is present.
 - `tests/test_mutation_controls.py` passes under CPython 3.12/Pyodide.
 
 **What Stage 4 implemented (owner-confirmed 2026-10-30):**
-- `startup.scd` allocates the cumulative buses 0–18 and reports the full map.
+- `startup.scd` allocates the cumulative control buses 0–18 (and, from 9.0, the private FX audio buses, reported) and reports the full map.
 - Two independent live autotune voices on input 0/out 0 and input 1/out 1, each with its own tracker buses and target.
 - `\ji_looper_recorder` captures the dry, pre-autotune input into a mono buffer (overwrite, no overdub) with a `run` gate and an explicit stop path.
 - `\ji_looper_player` runs `PlayBuf → Tartini → PitchShift` per loop, writes loop tracker buses 11–18, and takes `targetFreq`/`retuneTime` from sclang only.
@@ -2861,7 +3504,7 @@ unchanged when no visual subscriber is present.
   `libEGL.so.1`); sclang/audio/MIDI were unavailable. No audio/MIDI acceptance
   is claimed.
 
-**What Stage 8.3a delivered (awaiting human):**
+**What Stage 8.3a delivered (owner-approved 2026-10-31):**
 - `control/bass.py` — `BassConfig`/`BassSettings`, deterministic `BassPattern`,
   seeded `BassPitchPicker` (root/anchor/walk/random/cycle), one lazy plain-MIDI
   `BassOutput` with main/sub channels, a drift-corrected `BassScheduler` with
@@ -3107,12 +3750,42 @@ sync/collaboration/mobile, polyphonic pitch tracking, more than two live input
 channels, more than 12 simultaneous frequency classes, Windows/Linux support,
 and more than 16 SC output channels.
 
+**Stage 9.1 explicitly excludes:** `.mid` file import/export, polyphonic/MPE
+multi-channel input, mapping modes other than `nearest`, auto-duck, sub-step
+microtiming, pitch-bend/aftertouch expression, two merged controllers, and any
+sclang/audio change.
+
 **Deferred but planned:** polyphonic MPE voices and extra MIDI voices (Stage 8),
 MIDI pattern recall (pattern-level, not whole-session; Stage 8.5 saved the
 performance state — set, controls, home, tempo, drums, groove and the voices —
-but **not** loops or autotune), more loops/options (Stage 8.6), loop-player
-autotune controls (Stage 8), granular/glitch FX
-(Stage 9), GUI UX/aesthetics (Stage 10), and the visual half (Stage 11). The
+but **not** loops or autotune), more loops and per-loop output routing (deferred
+again by 8.6), **loop persistence** (the owner: the memory slots "dont have to be
+actually saved beyond that"), loop-player autotune controls (deferred again by
+8.6: the loop keeps `mix = 1.0`), one-shot mode, loop undo/redo, independent
+time-stretch, tempo re-stretch, a loop-file browser, loop position/phase
+readouts, a pattern sequencer, and granular/glitch FX beyond the loop voice
+(Stage 9), GUI UX/aesthetics (Stage 10), and the visual half (Stage 11).
+8.6.1 explicitly defers multi-grain spectral processing (FFT), granulating the
+**live** inputs, a second grain voice per loop, per-loop autotune knobs (the
+loop keeps `mix = 1.0`) and a grain pattern sequencer. 8.6.2 adds no
+morph automation/LFO other than the Melt ramp, no multiband morphing and no
+filter shapes beyond the two slow LFOs. 8.7 defers real tempo automation/curves
+(the BPM stays a constant), polyrhythmic or per-voice independent breath periods,
+per-voice breath depth for drums/bass/lead (the arp is the only local voice),
+breath on the mutation/quantize queue, breath on sclang loop/record timing, MPE
+velocity curves, per-step velocity or accent in the bass hit row, hit rows
+longer than one bar or several bass rows, persisting breath settings, and
+morphing the hit row into a piano roll. 8.8 defers audio analysis/pitch
+detection, MIDI output or sending notes from the fretboard aid, scale-degree
+solfège names, a flat-spelling preference, capo, a left-handed mirror, fanned
+frets, more than 24 frets or 8 strings, chord diagrams, position/voicing
+suggestions, tuning persistence in a state or `config/`, printing/export, and
+a second tuning to compare. 9.0 defers FFT/spectral processing, per-harmonic
+`PitchShift`, a stereo FX path, an FFT or convolution reverb, per-tap independent
+feedback, a separate fixed-time echo with no harmonics, FX automation/LFOs,
+persisting loop FX in a state or `config/`, and using the FX bus for anything
+other than the loop voices; its own count-in repair does not change the
+accepted options. The
 Stage 8.1 rhythm/drum foundation and the Stage 8.2 groove + beat-quantized state
 layer are owner-confirmed (2026-10-31). Stage 8.3a (monophonic bass) is
 owner-confirmed (2026-10-31); 8.3b/8.3c/8.3d, 8.4 and 8.5 are implemented and
@@ -3169,7 +3842,12 @@ not to automatic mutation.
 | 8.4.0 | 2026-11-01 | **Stage 8.4 home sets, deterministic journeys and smooth return implemented — awaiting human acceptance.** `control/mutation.py` gained the immutable `SetSnapshot` and exactly three additive methods: `reseed(seed)` (journey start), `snapshot()` (public immutable copy) and `apply_snapshot(snapshot)` (validated exact restore for Back/jump/landing; `ValueError` with the state untouched on bad input). `propose_mutation()`/`mutate_many()` are unchanged; `tests/test_mutation.py` passes unmodified and `tests/test_home.py` pins a recorded seed-5 sequence, so the owner's "will likely require modifications to the mutation algorithm" concern is answered with policy, not algorithm. Added `control/home.py` (`HomeConfig` with clamps, `HomeState`, pure `HomePlanner`/`plan_return` with exact `ceil(distance/max_changes)` batches, voice-led nearest pairing, size-safe ordering and the home anchor added last, and `HomeManager` with four slots, active home, journey counter, bounded history/redo and a planner cache). `control/quantize.py` inserts `PHASE_HOME = 0` and shifts the older phases up one (`home, mutation, octave, groove, drums, bass, arp, lead, drone, midi`). `control/ji_bridge.py` owns the manager and the 13-value `/ji/home/state`, queues capture/clear/go/return/jump/back on `PHASE_HOME` (immediate while stopped, where the whole return collapses to one set change and one update), plays a running return as exactly one `send_set(return_glide)` batch per quarter beat self-scheduled from inside the previous batch, implements the 8-try drift cap, the journey counter/auto return, Back/jump/history, and cancels a pending return on mutation/octave/go/back/transport stop with one log line. `control/osc_server.py` gained the eleven `/ji/home/*` handlers and the additive `apply_trigger()`/`announce()` split that lets the drift policy apply, inspect and roll back before announcing; `trigger()` is exactly that pair. `ui/osc_control.py` gained the builders/validators, `HomeStatus`/`parse_home_state`, the store field and controller methods; `ui/ji_ui.py` gained a one-row **Home** group (slot, Set home/Go/Clear, Return/Back/Jump, Auto/Every/Drift/Seed, status line, disabled states, signal-blocked sync). Added `config/home_config.json` (`auto: false`, `every: 8`, `seed: 1`, `max_drift: 0`, `return_glide: 0.06`, `history_depth: 64`) and `run/ji_station.py --home-config` plus `--check` output. Added `tests/test_home.py`; additive `tests/test_quantize.py` (home before mutation at one beat), `tests/test_ui.py` (builders/parser/store/controller + Qt Home group) and `tests/test_startup.py` (`--home-config`, `--check`); `tests/test_lead.py` only updated its pinned `PHASE_LEAD` number (6 → 7) because the renumber is mandated. Added `docs/README_stage8_4.md`; updated `docs/START_HERE.md`, the root README, `docs/README_stage8_3d.md`, and this document. No sclang file, SynthDef, audio DSP, `/ji/freqset/update` contract, MIDI voice, or Stage 5.5 audio map changed; the shipped `auto: false` keeps the accepted rig byte-identical until a home is captured. Agent verification: every pure harness passes (`test_mutation`, `test_mutation_controls`, `test_rhythm`, `test_groove`, `test_quantize`, `test_bass`, `test_arp`, `test_lead`, `test_drone`, `test_home`, `test_startup`, `test_mpe --pure`, `test_ui --pure`); the Qt test skipped (no Qt system libraries); sclang/audio/MIDI/Ableton/IAC/live GUI were unavailable. 8.4 awaits the human checklist. |
 | 8.4.1 | 2026-11-01 | **Stage 8.4.1 stepwise/replaced class glide implemented — awaiting human acceptance.** The Mutation Glide knob is now the replacement melt time (owner, 2026-11-01; follow-up "replaced events are included"), not a global autotune retune. Added `control/glide.py` (pure `GlidePlan` / `build_glide_plan` / `GlideScheduler`: cents-linear log-ratio interpolation, pure edits applied at t=0, anchor travel/fallback, dedupe on a class collision, `steps+1` snapshots at exact `k*T/steps`, 30 Hz clamped 5..60, lazy daemon worker, injectable clock, idempotent cancel). `control/ji_bridge.py` gained `send_snapshot()` (one sclang update, transient MIDI fan-out, final-only UI mirror and log), a byte-identical `send_set` wrapper, the pre-change capture in `_mutate`, the `_on_event` glide/final/snap paths, one `[GLIDE]` line per glide, cancel-first in `_mutate` / `_begin_return` / `_jump_home` / `_back_home`, the public `cancel_glide()` hook for 8.5, and a glide stopped by `bridge.stop()`. Pure adds/removes now use the 0.005 s sclang minimum instead of the knob. `control/midi_rig.py` threads a `transient` flag; `control/arp.py` gained `on_set(rebuild=...)` and trigger-time `resolve_note` (nearest current ratio in cents, same octave offset); drone/bass gained additive transient log suppression. `ui/ji_ui.py` gained the Glide tooltip and a `stepwise glide 0.150 s` status line. Added `tests/test_glide.py` and additive arp transient tests. No sclang, SynthDef, audio DSP, MIDI voice, config key or OSC address changed; the Glide range (0..2 s, default 0.15) is unchanged. Agent verification: every pure harness passes, including unmodified `tests/test_mutation.py`. Audio/MIDI/Ableton/IAC/sclang/live GUI were unavailable; 8.4.1 awaits the human checklist. |
 | 8.5.0 | 2026-11-02 | **Stage 8.5 performance state save/recall implemented — awaiting human acceptance.** The owner asked for "various states to be saved and recalled (no need for loop recall)" and confirmed loops are out. Added `control/state.py` (pure): `StateError`, `StateName`/`validate_state_name` (1–40 chars, alnum first, `A-Z a-z 0-9 space . _ -`, no `/`/`\`/`..`/control/leading dot), `PerformanceState` (versioned `ji-performance-state` v1 document) with `from_mapping`/`to_mapping` round-tripping every in-scope field through the existing model validators, canonical snapshots (a 0 octave for every class), a missing-grid preset fallback and a `variation_index` guard, and `StateLibrary` (sorted listing, case-only duplicate refusal, atomic `.json.tmp`→fsync→`os.replace` save, delete, load, on-demand directory, silent errors). `control/quantize.py` appends `PHASE_STATE = 10` after `PHASE_MIDI` so a recall wins the beat. `control/osc_server.py` gains `/ji/state/save|load|delete|request` handlers (arity/type only, never raising) and public `set_randomness`/`set_dissonance_bias`/`set_stepwise_bias` plus an optional quiet `log=` on the other control setters. `control/ji_bridge.py` gains `--state-dir`, the always-constructed library, `capture_state`, `request_state_save` (immediate), `request_state_delete` (immediate), `request_state_list` (immediate), `request_state_load` (queued on `PHASE_STATE`), the atomic `_apply_state_load` (validate first → cancel return/glide → `apply_snapshot` + anchor + fundamental → controls → home/journey + `reseed` → tempo/meter/broadcast → groove preset/modifiers/seed/exact 32-int grid → drums enable/rate/lane mask → bass/arp/lead/drone bulk settings + forced lead motif rebuild → one `send_set(saved glide)` → one `/ji/home/state`, `/ji/state/state` and the voice statuses → history), per-bus degradation, idempotency, and `/ji/state/list`/`/ji/state/state` at start/hello/after every request. Additive restore helpers: `HomeManager.clear_active`/`restore_journey`, `BassRig.set_settings`, `LeadEngine.set_variation_index(force=)`/`LeadRig.set_settings`, `DroneRig.set_settings(log=)`, and `MIDIRig.set_bass_settings`/`set_lead_settings`/`set_lead_variation_index`/`set_drone_settings`. `ui/osc_control.py` gains the six addresses, builders, strict `parse_state_list`/`parse_state_status`, `StateStatus` (status line + error detection), the store fields and controller methods; `ui/ji_ui.py` gains one compact **State** row (editable Name combo, Save/Load/Delete/Refresh, status line, disabled states, signal-blocked sync, loop/autotune tooltip) and grows the window 768→800. `run/ji_station.py` gains `--state-dir` and a `[CHECK] state dir ok` line. Added `tests/test_state.py` (16 sections); additive `tests/test_quantize.py` (state after midi at one beat), `tests/test_ui.py` (builders/parsers/store/controller + Qt State row), `tests/test_startup.py` (`--state-dir`, `--check`, docs) and `tests/test_home.py` (the phase-name list gains `state`). Added `docs/README_stage8_5.md`; updated `docs/START_HERE.md`, the root README, `docs/GUI_PARAMETERS.md`, `docs/README_stage8_4.md` and this document. No sclang file, SynthDef, audio DSP, MIDI voice, `/ji/freqset/update` contract or config file changed; loops and autotune are absent from the format and the transport is never recalled. Agent verification: every pure harness passes (`test_mutation` unmodified, `test_mutation_controls`, `test_rhythm`, `test_groove`, `test_quantize`, `test_bass`, `test_arp`, `test_lead`, `test_drone`, `test_home`, `test_state`, `test_startup`, `test_mpe --pure`, `test_ui --pure`); `test_ui --qt` skipped (no Qt system libraries here); sclang/audio/MIDI/Ableton/IAC/live GUI were unavailable. 8.5 awaits the human checklist. |
+| 8.5.1 | 2026-11-02 | **Owner acceptance — every stage awaiting a human checklist is approved.** The owner used the rig and reported "everything working" on 2026-11-02 and approved **8.3b** (arp parameters + one-entry startup), **8.3c** (beat-synced arp + self-evolution), **8.3d** (lead/melody + drone pad modes), **8.4** (home sets, journeys, smooth return) and **8.5** (performance state save/recall). 8.3a and 8.4.1 were already owner-confirmed (2026-10-31 / 2026-11-02). The current-status lines in the root README, the stage READMEs, `docs/README_mpe.md` and this document's §1/§8.9/§9 now read owner-approved; the historical changelog rows above keep the state they described on their own date. The next increment is **8.6 loop editing** (prompt: `docs/prompts/PROMPT_stage8_6_loop_editing.md`). |
 | 8.4.2 | 2026-11-02 | **Stage 8.4.1 owner-confirmed.** The owner ran the live rig and approved the stepwise/replaced class glide: the replaced class melts on the autotuned audio and the MIDI voices, pure add/remove still snaps, Glide 0 is effectively instant, and a second mutation / Return / Go / Back / Jump cancels a melt cleanly. `docs/README_stage8_4.md`, the root `README.md`, and the status tables now record the human acceptance. No code changed in this entry; Stage 8.4's own home/return checklist remains separately pending. |
+
+| 8.6.0 | 2026-11-02 | **Stage 8.6 loop editing implemented — awaiting human acceptance.** Added `synthdefs/ji_loop_voice.scd` (one voice: normal/reverse/varispeed via `BufRd(Phasor…)` + `LeakDC`, granular via `TGrains`, crossfaded with `XFade2`, feeding the accepted Tartini → tracker buses → target/measured ratio → clamp → `Lag` → `PitchShift` → `XFade2(mix)` chain with `mix = 1.0` in every mode) and `synthdefs/ji_buf_copy.scd` (`BufRd` → `BufWr` driven by a `Line`, `doneAction: 2`); extended `synthdefs/ji_looper_recorder.scd` additively with `preLevel`/`loop` (defaults keep the accepted overwrite). `tests/sc/test_live_rig.scd` gained `~ji_loop_edit` (14 keys), the grain/count-in/dub state, the rate/division/count-in tables, `~ji_loop_edit_args`, `~ji_ui_send_loop_edit`/`~ji_loop_mem_send`, the `\ji_loop_voice` player, `~ji_dub_loop` (one pass, `preLevel 1`, player kept), `~ji_after_record` (auto-play at the exact take end, recorder identity token, beat-mode transport guard), the recorder completion timer split (exact `secs` for auto-play, `secs + 0.15` for state only), `~ji_loop_set_edit` (validate/clamp/`set`/reschedule grain/log) and `~ji_loop_mem_save|recall|clear` (session-only copies, refused while recording/dubbing/counting, recall leaves the loop stopped). `ui/control_surface.scd` gained `/ji/loop/dub|edit_set|mem_save|mem_recall|mem_clear`, the count-in scheduler (`counting`, one `/ji/loop/count` per counted beat, second-Rec skip, stop/clear/stop-all/dub cancellation, beat-mode transport-stop cancellation), the beat-grain clock on `~ji_tempo_clock` (incrementing `grainTrig`, reschedule at `target + d`, tempo-change restart, transport-stop park even in free loop mode), `/ji/loop/edit` (15 values), `/ji/loop/mem` (4) and `/ji/loop/count` (2), and install/query sends. `ui/osc_control.py` gained `LOOP_RATES`/`LOOP_DIVISIONS`/`LOOP_EDIT_PARAMS`/`LOOP_COUNT_IN_OPTIONS`, the five builders, `LoopEdit`/`LoopMemory`, the three strict parsers, store fields and controller methods; `ui/ji_ui.py` gained a `Dub` button per loop, one Loop edit row, one Grain row, the `counting N` label and 1280×880. `ji_start.scd` requires `\ji_loop_voice` and `\ji_buf_copy`. Added `tests/sc/test_loop_edit.scd` and `docs/README_stage8_6.md`; updated `docs/START_HERE.md`, `docs/GUI_PARAMETERS.md`, the root README and this document. No bridge, `/ji/freqset/update`, state-file or audio-map change; no loop persistence; the shipped defaults are the accepted loop. Agent verification: every pure harness passes (`test_mutation` unmodified, `test_mutation_controls`, `test_rhythm`, `test_groove`, `test_quantize`, `test_bass`, `test_arp`, `test_lead`, `test_drone`, `test_home`, `test_state`, `test_startup`, `test_mpe --pure`, `test_ui --pure`); `test_ui --qt` skipped (no Qt system libraries here); sclang/audio/MIDI/Ableton/IAC/live GUI were unavailable. 8.6 awaits the human checklist. |
+| 8.6.1 | 2026-11-03 | **Stage 8.6.1 granular redesign implemented — awaiting human acceptance.** `synthdefs/ji_loop_voice.scd` gained a motion engine (`grainMotion` 0..4 via `Select.kr` over `Phasor.kr`/`LFNoise1.kr` with `ControlDur`-scaled increments, `grainSpeed`, `grainDepth`, `grainFreeze` scaling the increment), per-grain size/pitch jitter, the beat-mode burst (`Env.perc(0.001, 1.0)` x `timeScale: grainDecay` -> `Impulse.kr(grainRate * (1 + burst))`), a 0.15 s retune floor selected in grain mode, and the post-autotune two-stage `AllpassC` smear (`XFade2` at -1 = dry). `tests/sc/test_live_rig.scd` gained the 9 new edit keys and grain defaults (Rate 20, Size 0.12 s, Pos 0.5, Scatter 0.1), `~ji_loop_grain_motions`, `~ji_loop_snap_ratio`, `~ji_loop_effective_pitch`, `~ji_loop_grain_decay`, `~ji_loop_refresh_pitch` (called after `~ji_broadcast_glide`), the 25-value `/ji/loop/edit`, the effective ratio in `~ji_loop_edit_args`, `grainRate` 0.5..80, and the **identity-vs-equality fix** (`indexOfEqual`) for division/count-in Strings that caused the Div combo to jump back to 1/16. `ui/control_surface.scd` sets `grainDecay` on every grain start/restart and reports version 8.6.1. `ui/osc_control.py` gained `LOOP_GRAIN_MOTIONS`, the 8.6.1 defaults/ranges, 23 `LOOP_EDIT_PARAMS`, 25 `LoopEdit` fields, `ji_ratio_label`/`loop_snap_pitch`, the strict 25-value parser and the new builders' clamps. `ui/ji_ui.py` gained the Grain motion row (Motion/Speed/Depth/Size Jit/Pitch Jit/Snap/Smear/Freeze), the snap-aware status line, the frozen hint and 1280×910. `tests/test_ui.py` extended (pure + Qt, including the §8 Div regression); `tests/sc/test_loop_edit.scd` extended (new defaults/clamps, snap maths, String division/count-in regression, args, manual steps); `docs/README_stage8_6.md` §14 plus START_HERE, GUI_PARAMETERS, the root README and this document. No bridge, bus, state-file or audio-map change; normal mode is unchanged. Agent verification: the sclang/Python test suites and the live GUI/audio were NOT run (no python, sclang, scsynth or audio in this environment). 8.6.1 awaits the human checklist. |
+| 8.6.2 | 2026-11-03 | **Stage 8.6.2 morph/melt/filter implemented — awaiting human acceptance.** `synthdefs/ji_loop_voice.scd` gained `grainMorph` (the `blend = mode * grainMorph` equal-power crossfade replaces the binary mode mix), a blend-following retune floor (`max(retuneTime, 0.15 * blend)`), `grainFilter`/`grainFilterRate` (post-autotune resonant lowpass 700 Hz-6 kHz and low cut 90-420 Hz on two slow `SinOsc.kr` LFOs through `LinExp`, `XFade2` amount, 0 = exact bypass). `tests/sc/test_live_rig.scd` gained `grainMorph/grainMelt/grainFilter/grainFilterRate` state and defaults, `~ji_loop_morph_current`, `~ji_loop_melt_gen`, `~ji_loop_melt_seconds` (4 s), `~ji_loop_start_morph`, `~ji_loop_melt_stop`, `~ji_loop_melt_to` (30 Hz AppClock ramp with a per-loop generation token), the start-at-0 Play path, the stop/mode/recall cancellation, the 27 `~ji_loop_set_edit` params and the 29-value `/ji/loop/edit`. `ui/control_surface.scd` reports version 8.6.2. `ui/osc_control.py` gained `LOOP_GRAIN_MORPH/MELT/FILTER*` constants, 27 `LOOP_EDIT_PARAMS`, 29 `LoopEdit` fields, `is_melting`/`is_morphed`, the strict 29-value parser and the morph/filter/melt status bits. `ui/ji_ui.py` gained the Morph row (Morph/Melt/Filter/F.Rate), its hint, the enable rules (Morph/Melt follow Grain; the filter stays usable) and 1280×940. `tests/test_ui.py` extended (27 params, builder clamps, `LoopEdit` defaults/status, 29-value parser, store, controller, Qt Morph row + 29-value echoes); `tests/sc/test_loop_edit.scd` extended (morph/melt/filter defaults and clamps, start-morph rules, a melt-ramp/cancel check on a real voice, new manual steps); `docs/README_stage8_6.md` §15, `docs/START_HERE.md`, `docs/GUI_PARAMETERS.md`, the root README and this document. No bridge, bus, state-file or audio-map change; the shipped defaults leave the accepted loop bit-identical. Agent verification: **not run** (this environment has no Python, sclang, scsynth or audio); bracket/structural checks and cross-layer parameter-name/arity checks only. 8.6.2 awaits the human checklist. |
 
 ## 15. Appendix
 
@@ -3368,3 +4046,11 @@ If you are a human or AI opening this for the first time: read §1 (Executive Su
 | 8.3.6 | 2026-11-01 | **Stage 8.3d.1 drone `sequence` mode (owner follow-up) — awaiting human acceptance.** The owner confirmed the lead and asked for the drone's "multiple notes" to mean different *frequencies/classes* (a repeating pad figure outlining harmonic movement away from and back to the anchor), while keeping the liked `pulse`. Added a fourth drone mode `sequence`: `control/drone.py` gained `seq_notes` (2–8), `seq_grid` (`1/4`/`1/8`/`1/16`), `seq_gate` (0.05–2.0 beats), `sequence_offsets()` (`0,+1,…,peak,…,0` truncated to N, odd lengths end on the anchor), `DroneRig.sequence_frequency(offset)` (one class up/down in the current sorted set, octave-wrapping past the top, clamped to ±2 octaves, resolved per note so mutations retune the figure without changing its shape) and `SequenceScheduler` (transport-gated, drift-corrected, monophonic, gate clamped to the grid step, note-off + CC 123 on stop). `pulse` is untouched. `/ji/drone/set_seq_notes|set_seq_grid|set_seq_gate` were added; `/ji/drone/state` grew from 14 to 17 values by appending `seq_notes, seq_grid, seq_gate` (the first 14 are unchanged). The GUI Drone group gained a third row (`Seq notes`, `Grid`, `Gate`) that is live only in `sequence` mode, and the status line reads `sequence 5 notes · 1/4 | 90`. Config: `drone_config.json` gained the three additive keys. Tests: four new sections in `tests/test_drone.py` (contour, octave-wrapping frequencies + mutation following, real-time playback/gate/stop, mode switching) plus the 17-value state and handler coverage; `tests/test_ui.py` (pure + Qt) and `tests/test_lead.py` updated. No sclang, `/ji/freqset/update`, SynthDef, or audio DSP change; `hold`, `pulse` and `bend` behave exactly as before. |
 
 | 8.3.7 | 2026-11-01 | **Stage 8.3d.2 `sequence` holds each note for a bar (owner follow-up) — awaiting human acceptance.** The owner confirmed the gating explanation and asked for the `sequence` notes to last a bar or several so the harmonic movement unfolds over bars with long held notes. `control/drone.py`: `seq_grid` (1/4–1/16 grid) was replaced by `seq_bars` (note length in **bars**: `1/4`, `1/2`, `1`, `2`, `4`; default `1`) and `seq_gate` is now a fraction of the note (0.1–1.0, default 1.0 = legato with a ~10 ms gap). `DroneRig` now stores the meter (`set_meter`, forwarded from `MIDIRig.set_drone_meter`, previously a no-op) and exposes `sequence_note_seconds()` = `seq_bars × bar_quarters × 60 / bpm`, so the figure scales with tempo and meter (1 bar at 120 BPM in 4/4 = 2 s; the shipped 5-note figure = 10 s). `SequenceScheduler` uses that duration and the fractional gate. `/ji/drone/set_seq_grid` became `/ji/drone/set_seq_bars`; `/ji/drone/state` keeps its 17-value order (slot 15 is now the bar label). The GUI sequence row reads `Seq notes`, `Length` (bars), `Gate` (%), and the status line reads `sequence 5 notes · 1 bar | 90`. No change to `hold`, `pulse`, `bend`, the lead, or any audio/sclang path. Tests: new `test_sequence_note_length_is_in_bars` (4/4/2 s, 3/4, 4 bars, tempo, bridge meter forwarding), re-timed playback/gate assertions, and updated state/handler/Qt coverage. |
+
+| 8.7.0 | 2026-11-03 | **Stage 8.7 breathing rhythm engine + bass hit row implemented — awaiting human acceptance.** Added `control/breath.py` (pure): `BreathSettings` (frozen slots, `create`/`with_change`/`state_args`), the four warped raised-cosine shapes, `breath_volume`/`breath_slope`/`breath_offset_steps` (peak shift exactly half a 16th at depth 1, zero mean slope) and `BreathClock` (period in bars, tempo re-anchor without a jump, reset on transport start, arp half a cycle out with `arp_local` folded into its depth). Drums/bass/arp/lead add a clamped ±45 %-of-step offset to the **sleep target only** (the nominal deadline still advances by exactly one step) plus a velocity delta; the drone takes the velocity delta only. `control/midi_rig.py` forwards `set_breath` to every rig; `control/ji_bridge.py` owns the clock, hooks tempo/meter/transport, sends `/ji/breath/state` and logs one `[BREATH]` line per change. `BassSettings` gained optional `hits_enabled` + `hits`; `BassEngine` gained `bar_steps`/`effective_hits`/`set_hits_enabled`/`set_hit`/`clear_hits`/`copy_hits`/`hits_payload`, the pattern override (the row is one bar; `Len` is not used while Hits is on) and `/ji/bass/hits`; the state file keeps version 1 and old files load with `hits_enabled=False, hits=()`. `control/osc_server.py` gained the 7 breath + 4 hit-row handlers. `synthdefs/ji_loop_voice.scd` gained the local `grainBreath`/`grainBreathRate` LFO (0 = exact bypass) around the free/burst grain rate and grain size; `tests/sc/test_live_rig.scd` gained the two keys, their clamps, the args and the 31-value `/ji/loop/edit`; `ui/control_surface.scd` reports version 8.7.0. `ui/osc_control.py` gained the breath/hits constants, builders, strict parsers, `BreathStatus`, store fields, controller methods and the loop-breath mirrors (29 params / 31 fields); `ui/ji_ui.py` gained one Rhythm `Breath` row, the hidden Bass `Hits` row (checkbox, Copy, Clear, per-step buttons) and loop Morph-row `Breath`/`B.Rate` (the old morph hint label is gone), 1280×966. Added `tests/test_breath.py`, extended `tests/test_bass.py`/`tests/test_state.py`/`tests/test_ui.py`, `tests/sc/test_loop_edit.scd`, `docs/README_stage8_7.md`, `docs/START_HERE.md`, `docs/GUI_PARAMETERS.md`, the root README and this document. Canonical tempo/grid, `BeatClock`, the quantizer, the mutation engine, the loop timing grid and every existing sound path are untouched; breath off is exactly the old timing. Agent verification: every pure Python harness passes with the uv-managed CPython 3.15.2 (`test_breath`, `test_rhythm`, `test_bass`, `test_state`, `test_arp`, `test_lead`, `test_drone`, `test_groove`, `test_quantize`, `test_home`, `test_glide`, `test_startup`, `test_mutation` unmodified, `test_mutation_controls`, `test_ui --pure`, `test_mpe --pure`); `test_ui --qt` skips because the Qt wheel needs `libEGL.so.1`, which this container lacks. sclang/scsynth/MIDI/audio/live GUI were not testable. 8.7 awaits the human checklist. |
+| 8.7.1 | 2026-11-04 | **Arp sync option (owner follow-up) — awaiting human acceptance.** `control/breath.py` gained `arp_sync` (`BREATH_DEFAULT_ARP_SYNC = False`, the existing half-cycle local breath). When on, `_voice_depth_shift` gives the arp the master phase `φ` instead of `φ + 0.5`; `arp_local` still adds depth, so `arp_local 0` + sync is exactly the groove's breath. `/ji/breath/state` grows from 7 to 8 values (the UI parser still accepts 7 and defaults `arp_sync` off), `/ji/breath/set_arp_sync` and an **Arp sync** checkbox were added, and the bridge log includes `arp_sync=on/off`. Pure Python harnesses pass (`test_breath` includes the sync-phase equality/depth checks; `test_ui --pure` covers the builder/parser/store/controller/Qt-send paths). Defaults leave every existing breath performance unchanged. 8.7.1 awaits the owner's listening check. |
+| 8.8.0-prompt | 2026-11-05 | **Stage 8.8 fretboard improvisation-aid prompt added.** `docs/prompts/PROMPT_stage8_8_fretboard.md` specifies a UI-only aid: the closest 12-TET note to every JI set ratio (half-up MIDI rounding + signed cents), a deduplicated pitch-class scale legend, and a full 24-fret guitar diagram with 6–8 strings and fully editable per-string MIDI tuning (Drop D/DADGAD/Open G/D/… presets). The set arrives on the existing `/ji/freqset/changed`; the design requires **no** new OSC, state or audio change and keeps tuning session-only. Stage 8.8 was previously the optional MIDI-triggered-mutation/VST item, which is renumbered to 8.9. No code or behaviour changed in this entry. |
+| 8.8.0 | 2026-11-05 | **Stage 8.8 12-TET fretboard improvisation aid implemented — awaiting human acceptance.** Added `ui/fretboard.py` (pure, stdlib only): `hz_to_midi_float`/`midi_to_hz`/`nearest_12tet` (half-up `floor(x+0.5)`, signed cents), `midi_note_name` (C4 = 60, sharps only), `ratio_pitch_class`, `root_pitch_class`, deduplicated `ScaleDegree`/`ScaleSource` construction in scale order from the root (`9/8` vs `10/9` and `1/1` vs `2/1` collapse correctly), `scale_summary`, the frozen `GuitarTuning` (6–8 strings, MIDI 0–127, labels, nine exact presets + `Custom`, `with_string`, `with_count` with the low-fourth prepend and MIDI-0 clamp) and `build_fretboard` (string-major cells, `degree=None` off-set, root/anchor flags). `ui/ji_ui.py` gained a full-width **Fretboard** group between Lead and Status: `Strings`/`Frets`/`Tuning` combo/8 string combos/`Names`, a set label, a degree legend, and the custom-painted `FretboardWidget` (palette board, open column, thick nut, inlays incl. double 12/24, fret numbers skipped when narrow, root `#d9822b` / scale `#3d7ea6` / anchor ring `#8e44ad`, names skipped rather than clipped, hover tooltips). It syncs from the existing `/ji/freqset/changed` (no new address, no bridge/state/config change) and all tuning widgets are signal-blocked and controller-free; the tuning is session-only and resets to Standard E. Added `tests/test_fretboard.py` (10 sections, stdlib only) and Qt additions in `tests/test_ui.py` (group title, defaults, A-major feed, open-G/G#/root, Drop D, Custom, 7 strings, 12 frets, Names off, height ≤ 1205, empty `FakeController.calls`). Default window 1280×966 → 1280×1172; `docs/README_stage8_8.md`, `docs/START_HERE.md`, `docs/GUI_PARAMETERS.md` and the root README updated. Agent verification: `tests/test_fretboard.py` passes; `test_ui --qt` skips (the Qt wheel needs `libEGL.so.1` and other system libraries this container lacks); audio/MIDI/sclang/live GUI were not testable. 8.8 awaits the human checklist. |
+| 9.0.0-prompt | 2026-11-09 | **Stage 9.0 loop FX bus + harmonic-series delay prompt added.** `docs/prompts/PROMPT_stage9_0_harmonic_delay.md` specifies a per-loop private FX send bus after the loop voice JI `PitchShift`, a separate `\ji_harmonic_delay` SynthDef with two selectable modes (**Cascade**: capture a segment and replay it at 1×/2×/3×… with staggered entries and Fire/auto; **Delay**: a continuous harmonized buffer delay), a `Harm` row of loop-edit controls, a 38-value `/ji/loop/edit` payload, and `/ji/loop/fx_fire`. It also contains a concrete count-in audit: the free-mode second-Rec skip is missing from `/ji/loop/record_length`, `~ji_count_in_start` can store `\counting` as the restore state, intermediate ticks are not generation-checked, and bar lengths are rounded with `round` instead of a documented ceil. The prompt requires both fixes, tests, docs, the FX bus map, and a human checklist. **No code or behaviour changed in this entry; the optional 8.9 row stays reserved.**
+| 9.0.0 | 2026-11-09 | **Stage 9.0 loop FX bus + harmonic-series delay implemented — awaiting human acceptance.** Added `synthdefs/ji_harmonic_delay.scd` (one 2 s mono scratch buffer per loop; **Cascade**: freeze a captured segment on a Fire/auto trigger, latch the write head, up to eight players reading the same frames at `k×`, player `k` entering `(k-1)*spacing` s later for `time/k` s; **Delay**: continuous write with taps at `k×` starting `time` behind the initial head and wrapping, drifting as a varispeed harmonizer; `a_k = 1/k^(0.5+1.5*falloff)`, `mix`/gate smoothed, read rate never lagged, `time`/`steps`/`spacing` clamped, `BufRd loop=1`, gate ASR `doneAction 2`). `synthdefs/ji_loop_voice.scd` gained `fxBus` and a second post-PitchShift/post-smear/post-melt/post-gain/post-env `Out.ar(fxBus)`; `startup.scd` allocates four private mono audio buses (reported; 18–21 on the owner's boot) with the same re-use rule and fails loudly if missing/duplicated. `tests/sc/test_live_rig.scd` gained the four 2 s FX buffers, the `harm_*` edit defaults, the 39-value `/ji/loop/edit`, the fixed-time tables and `~ji_loop_fx_time`, `~ji_loop_fx_start|stop|restart|set|fire|retime` (after-player node order, wet only, frees with the loop), the `\fxBus` arg and the `loop_fx=` print. `ui/control_surface.scd` gained the harm edit validation (`indexOfEqual` modes/syncs), the FX lifecycle/retime hook, `/ji/loop/fx_fire`, version 9.0.0, and the count-in repairs A1 (free-mode second-Rec skip in `record_length`), A2 (cancel with restore=true before sampling `previous`; never restore `\counting`), A3 (generation-check every intermediate tick) and A4 (ceil bar lengths). `ui/osc_control.py` gained `LOOP_HARM_*` constants, `harm_time_beats`/`harm_time_seconds`, eight `LoopEdit` fields (including the owner-requested `harm_time_sync`), 37 editable params, the strict 39-value parser, `build_loop_fx_fire` and `OSCController.loop_fx_fire` (SC client). `ui/ji_ui.py` gained the Harm row (Harm/Mix/Time + TimeSync/Steps/Space/Fall/Auto/Fire), the fixed-time read-only seconds display, the enable rules, the status line and 1280×1198 (Qt bound 1230). Added `docs/README_stage9_0.md`; updated `docs/START_HERE.md`, `docs/GUI_PARAMETERS.md`, `docs/README_live_rig.md`, the root README and this document. No bridge, `/ji/freqset/update`, state-file, config or performance-state change; loops stay session-only. Agent verification: all pure Python harnesses pass (including `test_ui --pure` with the new 39-value shapes and count-in ceil cases); `test_ui --qt` skips because the Qt wheel needs `libEGL.so.1`, which this container lacks; sclang/scsynth/audio/MIDI/live GUI were not testable. 9.0 awaits the human checklist. |
+| 9.1.0 | 2026-11-14 | **Stage 9.1 lead input, recording, quantisation and saved melodies implemented — awaiting human acceptance.** Added `control/lead_input.py` (nearest-class `map_note`/`MappedNote`, QWERTY `KEY_SEMITONES`/`key_midi`, lazy `MidiInputPort`, pure `LeadRecorder`/`quantize_step`, `LeadInputRig` with the bar-aligned record state machine and a ~5 ms supervisor), `control/melody.py` (`Melody`/`MelodyLibrary`/`MelodyError`, atomic `melodies/<name>.json` v1), and `config/lead_input_config.json`. `control/lead.py` gained `LeadSettings.gate_mode` (17th `/ji/lead/state` value), four defaulted `LeadMotif` provenance fields, `load_motif`/`clear_melody`/`revert`/`set_melody_name`, the source-aware 9.1 policy table, history-aware `set_variation_index`, `LeadRig.set_source` with one `_sync_scheduler`, and `LeadScheduler.start(at_time=…)`. `control/state.py` gained `LeadPlaySection` inline notes (old states unchanged, version 1). `control/osc_server.py`, `control/ji_bridge.py`, `ui/osc_control.py`, `ui/ji_ui.py` and `run/ji_station.py` gained the additive input/melody surface, the Lead input group + QWERTY + `Note len`, and `--lead-in`/`--lead-in-port`/`--lead-in-config`/`--melody-dir` (+ `--check` input/melody validation). Added `tests/test_lead_input.py` and additive test_lead/test_state/test_ui/test_startup coverage; docs `README_stage9_1.md`, `START_HERE.md`, `GUI_PARAMETERS.md`, `README_live_rig.md`, `README_mpe.md`, `README_stage8_3d.md`, `README.md`. No sclang, SynthDef, audio-bus or `/ji/freqset/update` change. Agent verification: all pure Python harnesses pass; PyQt6 cannot run here (missing system GLib), so `test_ui.py --qt` was not executed; no MIDI hardware/IAC/Ableton/audio/sclang was available. 9.1 awaits the owner's checklist. |

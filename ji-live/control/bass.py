@@ -89,6 +89,9 @@ DEFAULT_SEED = 1
 ACCENT_MAX_BOOST = 30
 _FUNDAMENTAL_DEFAULT = 220.0
 
+#: Stage 8.7: the editable hit row is one bar, capped at 32 steps.
+BASS_HITS_MAX = 32
+
 # Preset values (documented in docs/README_stage8_3.md §4.1).
 # Enable/seed/sub/length are intentionally not part of a preset.
 PRESET_VALUES: dict[str, dict[str, Any]] = {
@@ -286,6 +289,26 @@ def validate_velocity(value: object, label: str = "velocity") -> int:
     return number
 
 
+def validate_hits(value: object) -> tuple[bool, ...]:
+    """Coerce a sequence of truthy/falsy cells into the hit-row tuple.
+
+    A string is rejected (it would iterate characters).  Extra items beyond
+    :data:`BASS_HITS_MAX` are truncated.
+    """
+
+    if value is None:
+        return ()
+    if isinstance(value, (str, bytes)):
+        raise TypeError("hits must be a sequence of booleans")
+    try:
+        items = list(value)  # type: ignore[arg-type]
+    except TypeError:
+        raise TypeError("hits must be a sequence of booleans") from None
+    if len(items) > BASS_HITS_MAX:
+        items = items[:BASS_HITS_MAX]
+    return tuple(bool(item) for item in items)
+
+
 def _nonempty_str(value: object, label: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise TypeError(f"{label} must be a non-empty string")
@@ -325,6 +348,10 @@ class BassSettings:
     seed: int = DEFAULT_SEED
     sub_enabled: bool = False
     sub_octaves: int = 1
+    # Stage 8.7: one editable row of hits per bar.  ``grid`` remains the
+    # subdivision; ``hits`` is the groove row (no pitch, no per-step velocity).
+    hits_enabled: bool = False
+    hits: tuple[bool, ...] = ()
 
     @classmethod
     def create(cls, **values: Any) -> "BassSettings":
@@ -375,6 +402,10 @@ class BassSettings:
         sub_octaves = validate_sub_octaves(
             values.get("sub_octaves", defaults.sub_octaves)
         )
+        hits_enabled = validate_bool(
+            values.get("hits_enabled", defaults.hits_enabled), "hits_enabled"
+        )
+        hits = validate_hits(values.get("hits", defaults.hits))
         return cls(
             enabled=enabled,
             preset=preset,
@@ -394,6 +425,8 @@ class BassSettings:
             seed=seed,
             sub_enabled=sub_enabled,
             sub_octaves=sub_octaves,
+            hits_enabled=hits_enabled,
+            hits=hits,
         )
 
     @property
@@ -515,6 +548,8 @@ class BassConfig:
             "seed",
             "sub_enabled",
             "sub_octaves",
+            "hits_enabled",
+            "hits",
         ):
             if key in data:
                 values[key] = data[key]
@@ -594,6 +629,50 @@ def resolve_length(
     )
 
 
+def bar_steps(
+    settings: BassSettings,
+    meter_num: object = 4,
+    meter_den: object = 4,
+) -> int:
+    """Number of hit-row cells in one bar for the current grid/meter.
+
+    4/4 gives 4/8/16 cells for 1/4, 1/8, 1/16; 3/4 gives 3/6/12.  Always
+    1..:data:`BASS_HITS_MAX`.
+    """
+
+    if not isinstance(settings, BassSettings):
+        raise TypeError("settings must be a BassSettings")
+    numerator = rhythm.clamp_meter_numerator(meter_num)
+    denominator = rhythm.validate_meter_denominator(meter_den)
+    bar = rhythm.bar_quarters(numerator, denominator)
+    return max(
+        1,
+        min(BASS_HITS_MAX, int(round(bar * settings.steps_per_beat))),
+    )
+
+
+def effective_hits(
+    settings: BassSettings,
+    meter_num: object = 4,
+    meter_den: object = 4,
+) -> tuple[bool, ...]:
+    """Pad/truncate the stored row to :func:`bar_steps`.
+
+    An empty stored row (``()`` -- never set) behaves as step 0 on, so a fresh
+    loop still plays.  A row the user cleared is all ``False`` (deliberate
+    silence).
+    """
+
+    length = bar_steps(settings, meter_num, meter_den)
+    stored = validate_hits(settings.hits)
+    if not stored:
+        stored = (True,)
+    return tuple(
+        bool(stored[index]) if index < len(stored) else False
+        for index in range(length)
+    )
+
+
 def swing_offset(
     step: object,
     swing: object,
@@ -617,7 +696,6 @@ def swing_offset(
     if subdivision < 2 or index % 2 == 0:
         return 0.0
     return amount * 0.5 * length
-
 
 @dataclass(frozen=True, slots=True)
 class BassPattern:
@@ -714,6 +792,33 @@ def build_pattern(
         length_steps=length,
         steps_per_beat=spb,
         bar_index=bar,
+        meter_num=numerator,
+        meter_den=denominator,
+    )
+
+
+def build_hits_pattern(
+    settings: BassSettings,
+    meter_num: object = 4,
+    meter_den: object = 4,
+    bar_index: int = 0,
+) -> BassPattern:
+    """The hit-row pattern: exactly the effective row, one bar long.
+
+    The row *is* one bar: ``length_steps`` is :func:`bar_steps` and ``Len`` is
+    not used while Hits is on (documented in the GUI tooltip and the docs).
+    """
+
+    if not isinstance(settings, BassSettings):
+        raise TypeError("settings must be a BassSettings")
+    numerator = rhythm.clamp_meter_numerator(meter_num)
+    denominator = rhythm.validate_meter_denominator(meter_den)
+    row = effective_hits(settings, numerator, denominator)
+    return BassPattern(
+        triggers=row,
+        length_steps=len(row),
+        steps_per_beat=settings.steps_per_beat,
+        bar_index=max(0, int(bar_index)),
         meter_num=numerator,
         meter_den=denominator,
     )
@@ -1242,19 +1347,156 @@ class BassEngine:
         key = (int(bar_index), self._version)
         if self._pattern_cache is not None and self._pattern_cache[0] == key:
             return self._pattern_cache[1]
-        pattern = build_pattern(
-            self._settings, self._meter_num, self._meter_den, bar_index
-        )
+        if self._settings.hits_enabled:
+            # Stage 8.7: the editable row overrides the generated pattern.  Its
+            # length is one bar (bar_steps), not ``Len``.
+            pattern = build_hits_pattern(
+                self._settings, self._meter_num, self._meter_den, bar_index
+            )
+        else:
+            pattern = build_pattern(
+                self._settings, self._meter_num, self._meter_den, bar_index
+            )
         self._pattern_cache = (key, pattern)
         return pattern
 
-    def timing(self) -> tuple[BassSettings, int]:
-        """``(settings, length_steps)`` for the scheduler's next step."""
+    # -- Stage 8.7 hit row ---------------------------------------------
+
+    def effective_hits(self) -> tuple[bool, ...]:
+        """The stored row padded/truncated to the current bar length."""
 
         with self._lock:
-            return self._settings, resolve_length(
+            return effective_hits(
                 self._settings, self._meter_num, self._meter_den
             )
+
+    def hits_payload(self) -> list[Any]:
+        """``[enabled, count, hit_0 ... hit_{count-1}]`` for ``/ji/bass/hits``."""
+
+        with self._lock:
+            row = effective_hits(
+                self._settings, self._meter_num, self._meter_den
+            )
+            return [
+                int(self._settings.hits_enabled),
+                int(len(row)),
+                *[int(bool(cell)) for cell in row],
+            ]
+
+    def _store_hits_locked(self, hits: tuple[bool, ...]) -> BassSettings:
+        """Common tail: store the row, bump the version, clear the cache."""
+
+        self._settings = replace(
+            self._settings, hits=validate_hits(hits)
+        )
+        self._version += 1
+        self._pattern_cache = None
+        self._picker.set_settings(self._settings)
+        return self._settings
+
+    def set_hits_enabled(self, on: object) -> bool:
+        """Turn the hit row on/off.
+
+        Turning it **on** with a still-empty row first copies the generated
+        pattern, so enabling starts from what the user is hearing.
+        """
+
+        enabled = validate_bool(on, "hits_enabled")
+        with self._lock:
+            if enabled and not self._settings.hits:
+                row = self._generated_hits_locked(0)
+                self._settings = replace(self._settings, hits=row)
+            self._settings = replace(
+                self._settings, hits_enabled=enabled
+            )
+            self._version += 1
+            self._pattern_cache = None
+            self._picker.set_settings(self._settings)
+            return self._settings.hits_enabled
+
+    def set_hit(self, index: object, on: object) -> bool:
+        """Set one row cell (0..31); the row is padded to the bar length."""
+
+        if isinstance(index, bool):
+            raise TypeError("hit index must be an integer")
+        try:
+            position = int(round(float(index)))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            raise TypeError("hit index must be an integer") from None
+        if not 0 <= position < BASS_HITS_MAX:
+            raise ValueError(
+                f"hit index must be 0..{BASS_HITS_MAX - 1}"
+            )
+        state = validate_bool(on, "hit")
+        with self._lock:
+            row = list(
+                effective_hits(
+                    self._settings, self._meter_num, self._meter_den
+                )
+            )
+            if position >= len(row):
+                row.extend([False] * (position + 1 - len(row)))
+            row[position] = state
+            self._store_hits_locked(tuple(row))
+            return bool(row[position])
+
+    def clear_hits(self) -> tuple[bool, ...]:
+        """Clear every cell (deliberate silence); the row keeps the bar length."""
+
+        with self._lock:
+            length = bar_steps(
+                self._settings, self._meter_num, self._meter_den
+            )
+            row = (False,) * length
+            self._store_hits_locked(row)
+            return row
+
+    def copy_hits(self, bar_index: int = 0) -> tuple[bool, ...]:
+        """Seed the row from the **generated** pattern of ``bar_index``.
+
+        Uses :func:`build_pattern` directly, never the cached ``pattern()``
+        (which returns the hit row itself while Hits is on).
+        """
+
+        with self._lock:
+            row = self._generated_hits_locked(bar_index)
+            self._store_hits_locked(row)
+            return row
+
+    def _generated_hits_locked(self, bar_index: int) -> tuple[bool, ...]:
+        """``build_pattern`` triggers padded/truncated to the bar length."""
+
+        generated = build_pattern(
+            self._settings,
+            self._meter_num,
+            self._meter_den,
+            bar_index,
+        )
+        length = bar_steps(
+            self._settings, self._meter_num, self._meter_den
+        )
+        triggers = list(generated.triggers)
+        if len(triggers) < length:
+            triggers.extend([False] * (length - len(triggers)))
+        return tuple(bool(cell) for cell in triggers[:length])
+
+    def timing(self) -> tuple[BassSettings, int]:
+        """``(settings, length_steps)`` for the scheduler's next step.
+
+        While the hit row is on, the row *is* one bar, so the scheduler cycles
+        by :func:`bar_steps` and ``Len`` is not used.
+        """
+
+        with self._lock:
+            if self._settings.hits_enabled:
+                length = bar_steps(
+                    self._settings, self._meter_num, self._meter_den
+                )
+            else:
+                length = resolve_length(
+                    self._settings, self._meter_num, self._meter_den
+                )
+            return self._settings, length
 
     def note_at(self, step: int, bar_index: int) -> BassNote | None:
         """Return the note for a triggering step, or ``None``."""
@@ -1423,12 +1665,15 @@ class BassScheduler:
         bpm: float = rhythm.BPM_DEFAULT,
         now: Callable[[], float] = time.monotonic,
         on_note: Callable[[BassNote, Any, int], None] | None = None,
+        breath: Any | None = None,
     ) -> None:
         if not callable(now):
             raise TypeError("now must be callable")
         self.output = output
         self.engine = engine
         self._now = now
+        # Stage 8.7: a shared BreathClock, or None for exactly the old timing.
+        self._breath = breath
         self._bpm = rhythm.clamp_bpm(bpm)
         self._on_note = on_note
         self._lock = threading.RLock()
@@ -1463,6 +1708,35 @@ class BassScheduler:
         with self._lock:
             self._bpm = value
             return value
+
+    # -- Stage 8.7 breath -----------------------------------------------
+
+    def set_breath(self, breath: Any | None) -> None:
+        """Attach/detach the shared breath clock (``None`` = exact old timing)."""
+
+        self._breath = breath
+
+    def _breath_offset(self, step_seconds: float) -> float:
+        """Clamped breath offset in seconds (0.0 when no breath is attached)."""
+
+        breath = self._breath
+        if breath is None:
+            return 0.0
+        try:
+            value = float(breath.offset_seconds("bass", self._now()))
+        except Exception:  # a broken clock must never stop the bass
+            return 0.0
+        limit = 0.45 * float(step_seconds)
+        return max(-limit, min(limit, value))
+
+    def _breath_velocity_delta(self) -> int:
+        breath = self._breath
+        if breath is None:
+            return 0
+        try:
+            return int(breath.velocity_delta("bass"))
+        except Exception:
+            return 0
 
     def release_sub(self) -> None:
         """Note-off the held sub note (used when the sub is disabled)."""
@@ -1530,13 +1804,15 @@ class BassScheduler:
                 settings, length = self.engine.timing()
                 bpm = self.bpm
                 step_seconds = (60.0 / bpm) / settings.steps_per_beat
-                # Swing delays odd 8th/16th grid steps by up to half a step.
+                # Swing and Stage 8.7 breath are both added to the SLEEP TARGET
+                # only; ``deadline`` below still advances by exactly one step.
                 offset = swing_offset(
                     step,
                     settings.swing,
                     step_seconds,
                     settings.steps_per_beat,
                 )
+                offset += self._breath_offset(step_seconds)
                 target = deadline + offset
                 now = self._now()
                 if target > now:
@@ -1560,9 +1836,6 @@ class BassScheduler:
                 if deadline < now:
                     # Fell behind: resume from now; never burst through steps.
                     deadline = now
-                wait = deadline - now
-                if wait > 0.0 and self._stop.wait(wait):
-                    break
         except Exception as exc:  # a broken output must not crash quietly
             print(f"[BASS] scheduler error: {exc}", file=sys.stderr)
         finally:
@@ -1583,7 +1856,11 @@ class BassScheduler:
         main_pitch = frequency_to_pitch(
             note.frequency, config.bend_range_semitones
         )
-        velocity = self.engine.velocity_for(note.is_downbeat)
+        breath_delta = self._breath_velocity_delta()
+        velocity = max(
+            1,
+            min(127, self.engine.velocity_for(note.is_downbeat) + breath_delta),
+        )
         gate_seconds = max(
             0.001, settings.gate_beats * (60.0 / self.bpm)
         )
@@ -1614,7 +1891,14 @@ class BassScheduler:
                 sub_pitch = frequency_to_pitch(
                     sub_frequency, config.bend_range_semitones
                 )
-                sub_velocity = self.engine.sub_velocity_for(note.is_downbeat)
+                sub_velocity = max(
+                    1,
+                    min(
+                        127,
+                        self.engine.sub_velocity_for(note.is_downbeat)
+                        + breath_delta,
+                    ),
+                )
                 self.output.pitch_bend(self.output.sub_channel, sub_pitch.bend)
                 self.output.note_on(
                     self.output.sub_channel, sub_pitch.note, sub_velocity
@@ -1809,6 +2093,28 @@ class BassRig:
     def set_bpm(self, bpm: object) -> float:
         return self.scheduler.set_bpm(bpm)
 
+    def set_breath(self, breath: Any | None) -> None:
+        """Forward the shared Stage 8.7 breath clock to the scheduler."""
+
+        self.scheduler.set_breath(breath)
+
+    # -- Stage 8.7 hit row ---------------------------------------------
+
+    def hits_payload(self) -> list[Any]:
+        return self.engine.hits_payload()
+
+    def set_hits_enabled(self, on: object) -> bool:
+        return self.engine.set_hits_enabled(on)
+
+    def set_hit(self, index: object, on: object) -> bool:
+        return self.engine.set_hit(index, on)
+
+    def clear_hits(self) -> tuple[bool, ...]:
+        return self.engine.clear_hits()
+
+    def copy_hits(self, bar_index: int = 0) -> tuple[bool, ...]:
+        return self.engine.copy_hits(bar_index)
+
     def set_meter(self, meter_num: object, meter_den: object) -> int:
         before = self.engine.length_steps
         length = self.engine.set_meter(meter_num, meter_den)
@@ -1909,6 +2215,7 @@ __all__ = [
     "ACCENT_MAX_BOOST",
     "BASE_OCTAVE_MAX",
     "BASE_OCTAVE_MIN",
+    "BASS_HITS_MAX",
     "BassConfig",
     "BassEngine",
     "BassNote",
@@ -1939,8 +2246,11 @@ __all__ = [
     "PRESET_VALUES",
     "SEED_MAX",
     "SUB_OCTAVES",
+    "bar_steps",
+    "build_hits_pattern",
     "build_pattern",
     "clamp_unit",
+    "effective_hits",
     "grid_steps",
     "load_config",
     "resolve_length",
@@ -1950,6 +2260,7 @@ __all__ = [
     "validate_channel",
     "validate_gate_beats",
     "validate_grid",
+    "validate_hits",
     "validate_length",
     "validate_octave_jump",
     "validate_octave_range",

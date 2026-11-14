@@ -6,6 +6,8 @@ adjustable loop length (8 s default, per-take override and
 loop transport/length, status, and Drone/Arp switches; see
 `README_stage7.md` and design doc §8.8). This is the integration rig that
 combines Stages 1–5.5 with the Python mutation bridge and the Stage 6 MIDI rig.
+**Stage 9.0** adds the private per-loop FX buses and the harmonic-series delay;
+see §7 below and [README_stage9_0.md](README_stage9_0.md).
 
 ```text
 MiniFuse 2 input 0 (mic)    → Tartini → nearest class → PitchShift → SC out 0 → Ableton track 1
@@ -32,7 +34,7 @@ ji-live/
 ├── tests/sc/test_ableton_routing.scd Stage 5: 8-pair infrastructure test
 ├── config/live_rig_routing.json      NEW: SC channel ↔ Ableton track map
 ├── control/ji_bridge.py              Stage 3: unchanged Python bridge
-├── synthdefs/*.scd                   unchanged
+├── synthdefs/*.scd                   Stage 5.5 defs + Stage 9.0 ji_harmonic_delay
 └── docs/README_live_rig.md           NEW: this file
 ```
 
@@ -50,7 +52,8 @@ SC 2 and SC 3. The four-channel product uses loops 1 and 2.
 
 - Stage 5 `startup.scd` evaluated: server running with
   **MiniFuse 2 input / BlackHole 16ch output**, 2 in / 16 out, 48 kHz,
-  blockSize 64, buses 0–18, all SynthDefs loaded.
+  blockSize 64, control buses 0–18 + private FX audio buses (reported, e.g. 18–21), all
+  SynthDefs loaded.
 - Ableton Live open, input **BlackHole 16ch**, output **MiniFuse 2** (or its
   headphones), 48 kHz.
 - Both devices at **48000 Hz** in Audio MIDI Setup. The startup uses
@@ -269,6 +272,51 @@ keeps its own `lastTarget`.
 The first four BlackHole channels are used. The remaining 12 Stage 5 output
 channels are unused by this rig.
 
+### Lead input (Stage 9.1) adds no bus
+
+The Stage 9.1 lead input (MIDI controller / QWERTY) is **Python-only**. It
+plays the existing lead output on `IAC Driver Bus 5` and adds no audio bus, no
+MIDI bus and no sclang address. The controller is opened by the bridge's lazy
+`mido` input adapter; its notes are mapped to the current JI set and sent to
+Bus 5 exactly like the generated lead. Ableton must **not** listen to the same
+controller (Track input off) or its raw note doubles the snapped Bus 5 note.
+See `docs/README_stage9_1.md`.
+
+### Private loop FX buses (Stage 9.0)
+
+Four **mono audio** buses (not hardware outputs, not control buses) carry each
+loop's **post-`PitchShift`** send to its FX synth:
+
+| Audio bus | Name | Loop | FX output |
+|---|---|---|---|
+| allocated | `~ji_loop_fx1` | 1 | the same SC 2 (with the dry loop) |
+| allocated | `~ji_loop_fx2` | 2 | the same SC 3 |
+| allocated | `~ji_loop_fx3` | 3 | SC 2 |
+| allocated | `~ji_loop_fx4` | 4 | SC 3 |
+
+The audio allocator places these after the hardware I/O. On the owner's 2-in /
+16-out boot they were **18, 19, 20, 21** (the earlier 16–19 estimate assumed no
+input buses were reserved). The code passes `.index` and never hard-codes them.
+The indices are printed by `startup.scd` and by `test_live_rig.scd`
+(`loop_fx=[…]`). Each loop also owns a **2 s mono FX scratch buffer**
+(`~ji_loop_fx_buf`), allocated with the loop buffers.
+
+Signal chain for one loop:
+
+```text
+loop buffer -> normal/reverse/varispeed/grain -> JI Tartini -> PitchShift
+            -> smear -> melt filter -> gain -> env
+            -> Out.ar(SC 2/3)                     (dry, accepted)
+            -> Out.ar(FX bus, reported) -> ji_harmonic_delay -> Out.ar(SC 2/3)
+                                                       (wet only, same bus)
+```
+
+`ji_harmonic_delay` is created **after** the loop player
+(`Synth.new(..., player, \addAfter)`), so it reads the same block's send. With
+`Harm = off` no FX synth exists. Stopping a loop sets the FX gate to 0 (30 ms
+release, then it frees itself). See
+[docs/README_stage9_0.md](README_stage9_0.md).
+
 **Live rig vs Stage 5 infrastructure:** the Stage 5 8-pair map
 ([config/ableton_routing.json](../config/ableton_routing.json)) reserves 0–1 for a
 live mix, 2–3 for Loop 1, etc. This live rig is the immediate product map:
@@ -329,8 +377,9 @@ known old variables and old loop buffers.
 - Loop length is adjustable (`~ji_set_loop_default.` or per-take seconds), but
   recording is overwrite-only, mono, in-memory; no overdub, persistence, or
   crossfade. Memory scales with length.
-- No per-loop stereo routing, MIDI/MPE mutation, granular FX (Stage 9), or UI
-  (Stage 7, next).
+- No per-loop stereo routing or MIDI/MPE mutation. The Stage 9.0 loop FX bus
+  and harmonic-series delay are included; later Stage 9 FX can reuse the same
+  per-loop private bus.
 - The Python mutation engine and `/ji/freqset/update` protocol are unchanged.
 - The 48 kHz rate comes from the two devices; `s.options.sampleRate` is not
   forced.

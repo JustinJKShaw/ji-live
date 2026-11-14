@@ -83,7 +83,9 @@ launcherPath = ~ji_start_require.("Python launcher",            jiRoot +/+ "run/
 
 launcherCmd = "cd " ++ jiRoot ++ " && uv run --with python-osc --with mido --with python-rtmidi --with PyQt6 python run/ji_station.py --midi --drums --bass";
 
-requiredDefs = [\ji_autotune_ch, \ji_looper_recorder, \ji_looper_player];
+// Stage 8.6 adds the live-rig loop voice and the server-side buffer copy.
+requiredDefs = [\ji_autotune_ch, \ji_looper_recorder, \ji_looper_player,
+    \ji_loop_voice, \ji_buf_copy, \ji_harmonic_delay];
 
 // The SynthDefs and the Stage 4 buses are both created by startup.scd's
 // waitForBoot callback, so waiting for this predicate is enough.  The bus check

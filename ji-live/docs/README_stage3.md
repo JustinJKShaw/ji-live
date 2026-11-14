@@ -9,8 +9,9 @@
 
 
 **Status:** the Stage 3 bridge is accepted by the project owner (audio and
-Python↔sclang communication working). The mutation-control extension in §12
-is implemented and awaiting human audio acceptance; its Python harness passes.
+Python↔sclang communication working). The mutation-control extension in §12 is
+implemented, its Python harness passes, and it was owner-approved (2026-11-02)
+in the same live rig as the later stages.
 
 Stage 3 connects the Stage 2 mutation engine to the Stage 1 autotune chain.
 The FrequencySet stays in Python. Every applied mutation sends the complete

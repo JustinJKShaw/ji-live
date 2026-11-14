@@ -100,6 +100,23 @@ BASS_SET_SUB_ENABLED = "/ji/bass/set_sub_enabled"
 BASS_SET_SUB_OCTAVES = "/ji/bass/set_sub_octaves"
 BASS_STATE = "/ji/bass/state"
 BASS_NOTE = "/ji/bass/note"
+# Stage 8.7 bass hit row (UI -> bridge, immediate) and its status echo.
+BASS_SET_HITS_ENABLED = "/ji/bass/set_hits_enabled"
+BASS_SET_HIT = "/ji/bass/set_hit"
+BASS_CLEAR_HITS = "/ji/bass/clear_hits"
+BASS_COPY_HITS = "/ji/bass/copy_hits"
+BASS_HITS = "/ji/bass/hits"
+
+# Stage 8.7 breathing rhythm engine (UI -> bridge, immediate).
+BREATH_SET_ENABLED = "/ji/breath/set_enabled"
+BREATH_SET_DEPTH = "/ji/breath/set_depth"
+BREATH_SET_PERIOD = "/ji/breath/set_period"
+BREATH_SET_SHAPE = "/ji/breath/set_shape"
+BREATH_SET_INTENSITY = "/ji/breath/set_intensity"
+BREATH_SET_PHASE = "/ji/breath/set_phase"
+BREATH_SET_ARP_LOCAL = "/ji/breath/set_arp_local"
+BREATH_SET_ARP_SYNC = "/ji/breath/set_arp_sync"
+BREATH_STATE = "/ji/breath/state"
 
 # Stage 8.3b arp parameters and status.
 ARP_SET_STEP = "/ji/arp/set_step"
@@ -130,9 +147,29 @@ LEAD_SET_VARIATION_BARS = "/ji/lead/set_variation_bars"
 LEAD_SET_SWING = "/ji/lead/set_swing"
 LEAD_SET_GROOVE_LINK = "/ji/lead/set_groove_link"
 LEAD_SET_SEED = "/ji/lead/set_seed"
+LEAD_SET_GATE_MODE = "/ji/lead/set_gate_mode"
 LEAD_VARY = "/ji/lead/vary"
 LEAD_STATE = "/ji/lead/state"
 LEAD_NOTE = "/ji/lead/note"
+#: Stage 9.1 lead input (MIDI/QWERTY play-in, recording, melodies).
+LEAD_INPUT_SET_ENABLED = "/ji/lead/input/set_enabled"
+LEAD_INPUT_SET_QUANTIZE = "/ji/lead/input/set_quantize"
+LEAD_INPUT_SET_COUNT_IN = "/ji/lead/input/set_count_in"
+LEAD_INPUT_SET_BARS = "/ji/lead/input/set_bars"
+LEAD_INPUT_NOTE_ON = "/ji/lead/input/note_on"
+LEAD_INPUT_NOTE_OFF = "/ji/lead/input/note_off"
+LEAD_INPUT_RECORD = "/ji/lead/input/record"
+LEAD_INPUT_STOP = "/ji/lead/input/stop"
+LEAD_INPUT_REVERT = "/ji/lead/input/revert"
+LEAD_INPUT_CLEAR = "/ji/lead/input/clear"
+LEAD_INPUT_REFRESH = "/ji/lead/input/refresh"
+LEAD_INPUT_STATE = "/ji/lead/input/state"
+LEAD_MELODY_SAVE = "/ji/lead/melody/save"
+LEAD_MELODY_LOAD = "/ji/lead/melody/load"
+LEAD_MELODY_DELETE = "/ji/lead/melody/delete"
+LEAD_MELODY_REQUEST = "/ji/lead/melody/request"
+LEAD_MELODY_LIST = "/ji/lead/melody/list"
+LEAD_MELODY_STATE = "/ji/lead/melody/state"
 
 #: Stage 8.3d drone modes/pad parameters (UI -> bridge).
 DRONE_SET_MODE = "/ji/drone/set_mode"
@@ -190,6 +227,19 @@ LOOP_SET_LENGTH = "/ji/loop/set_length"
 LOOP_CONFIG = "/ji/loop/config"
 LOOP_STATE = "/ji/loop/state"
 
+#: Stage 8.6 loop editing.  UI -> sclang (loops stay sclang-owned).
+LOOP_DUB = "/ji/loop/dub"
+LOOP_EDIT_SET = "/ji/loop/edit_set"
+#: Stage 9.0: one-shot trigger for Cascade mode (UI -> sclang only).
+LOOP_FX_FIRE = "/ji/loop/fx_fire"
+LOOP_MEM_SAVE = "/ji/loop/mem_save"
+LOOP_MEM_RECALL = "/ji/loop/mem_recall"
+LOOP_MEM_CLEAR = "/ji/loop/mem_clear"
+#: sclang -> UI status replies.
+LOOP_EDIT = "/ji/loop/edit"
+LOOP_MEM = "/ji/loop/mem"
+LOOP_COUNT = "/ji/loop/count"
+
 STATUS_QUERY = "/ji/status/query"
 CPU = "/ji/cpu"
 
@@ -205,9 +255,14 @@ STATUS_ADDRESSES = (
     QUANTIZE_STATE,
     BASS_STATE,
     BASS_NOTE,
+    BASS_HITS,
+    BREATH_STATE,
     ARP_STATE,
     LEAD_STATE,
     LEAD_NOTE,
+    LEAD_INPUT_STATE,
+    LEAD_MELODY_LIST,
+    LEAD_MELODY_STATE,
     DRONE_STATE,
     HOME_STATE,
     STATE_LIST,
@@ -215,6 +270,9 @@ STATUS_ADDRESSES = (
     CPU,
     LOOP_STATE,
     LOOP_CONFIG,
+    LOOP_EDIT,
+    LOOP_MEM,
+    LOOP_COUNT,
     AUTOTUNE_STATE,
 )
 
@@ -232,7 +290,17 @@ LOOP_LENGTH_DEFAULT = 8.0
 SC_LOOP_SECONDS_MIN = 0.1
 SC_LOOP_SECONDS_MAX = 60.0
 
-LOOP_STATES = ("empty", "recording", "recorded", "playing", "stopped")
+#: ``dubbing`` (overdub in progress) and ``counting`` (count-in pending)
+#: are Stage 8.6 additions to the Stage 7 set.
+LOOP_STATES = (
+    "empty",
+    "recording",
+    "recorded",
+    "playing",
+    "stopped",
+    "dubbing",
+    "counting",
+)
 
 # Stage 8.1 rhythm / drum ranges.  Kept as plain constants (this module has no
 # PyQt6 or control-package import so it can run as a standalone UI module).
@@ -253,6 +321,554 @@ LOOP_BEATS_MIN = 1.0
 LOOP_BEATS_MAX = 64.0
 LOOP_BEATS_DEFAULT = 4.0
 LANE_MASK_ALL = 0xFFFF
+
+# ---------------------------------------------------------------------------
+# Stage 8.6 loop editing: rates, divisions, count-in, memory slots
+# ---------------------------------------------------------------------------
+
+#: The permitted varispeed ratios: ``(label, value)``.  The value is what goes
+#: on the wire; sclang rejects anything else.  2/1 = +12 st, 3/2 = +7.02 st,
+#: 2/3 = -7.02 st, 3/5 = -8.84 st against the recorded material.
+LOOP_RATES: tuple[tuple[str, float], ...] = (
+    ("2/1", 2.0),
+    ("3/2", 1.5),
+    ("5/3", 1.6666667),
+    ("5/4", 1.25),
+    ("4/3", 1.3333333),
+    ("1/1", 1.0),
+    ("3/4", 0.75),
+    ("4/5", 0.8),
+    ("2/3", 0.6666667),
+    ("3/5", 0.6),
+    ("1/2", 0.5),
+)
+LOOP_RATE_LABELS: tuple[str, ...] = tuple(label for label, _ in LOOP_RATES)
+LOOP_RATE_VALUES: tuple[float, ...] = tuple(value for _, value in LOOP_RATES)
+LOOP_RATE_DEFAULT = 1.0
+LOOP_RATE_LABEL_DEFAULT = "1/1"
+
+#: Grain subdivisions: ``(label, beats)``.  ``1`` is one beat.
+LOOP_DIVISIONS: tuple[tuple[str, float], ...] = (
+    ("1/16", 0.0625),
+    ("1/8", 0.125),
+    ("1/4", 0.25),
+    ("1/2", 0.5),
+    ("1", 1.0),
+)
+LOOP_DIVISION_LABELS: tuple[str, ...] = tuple(label for label, _ in LOOP_DIVISIONS)
+LOOP_DIVISION_DEFAULT = "1/16"
+
+#: Count-in options and the beats-per-bar rule (a bar is the current meter's
+#: bar: 4/4 = 4 quarter beats, 3/4 = 3, 6/8 = 3).
+LOOP_COUNT_IN_OPTIONS: tuple[str, ...] = ("off", "1 beat", "1 bar", "2 bars")
+LOOP_COUNT_IN_DEFAULT = "off"
+LOOP_AUTO_PLAY_DEFAULT = False
+LOOP_MEM_SLOTS = 4
+LOOP_MEM_SLOT_NAMES: tuple[str, ...] = ("A", "B", "C", "D")
+
+# ---------------------------------------------------------------------------
+# Stage 8.6.1 granular redesign: motion, cloud defaults, JI pitch snap, smear
+# ---------------------------------------------------------------------------
+
+#: Grain motion modes.  The index is the ``\ji_loop_voice`` ``grainMotion``
+#: argument: 0 off (the position stays at ``Pos``), 1 forward, 2 backward,
+#: 3 pingpong, 4 drift (a slow random walk).
+LOOP_GRAIN_MOTIONS: tuple[str, ...] = (
+    "off",
+    "forward",
+    "backward",
+    "pingpong",
+    "drift",
+)
+LOOP_GRAIN_MOTION_DEFAULT = "forward"
+LOOP_GRAIN_SPEED_MIN = 0.001
+LOOP_GRAIN_SPEED_MAX = 0.5
+LOOP_GRAIN_SPEED_DEFAULT = 0.03
+LOOP_GRAIN_DEPTH_DEFAULT = 0.6
+LOOP_GRAIN_SIZE_JITTER_DEFAULT = 0.2
+LOOP_GRAIN_PITCH_JITTER_DEFAULT = 0.0
+LOOP_GRAIN_PITCH_SNAP_DEFAULT = 1
+LOOP_GRAIN_SMEAR_DEFAULT = 0.0
+LOOP_GRAIN_FREEZE_DEFAULT = 0
+LOOP_GRAIN_BURST_DEFAULT = 0.6
+LOOP_GRAIN_RATE_DEFAULT = 20.0
+LOOP_GRAIN_RATE_MAX = 80.0
+LOOP_GRAIN_SIZE_DEFAULT_MS = 120.0
+LOOP_GRAIN_POS_DEFAULT = 0.5
+LOOP_GRAIN_SCATTER_DEFAULT = 0.1
+LOOP_GRAIN_PITCH_DEFAULT = 1.0
+LOOP_GRAIN_REVERSE_DEFAULT = 0.0
+
+#: Stage 8.6.2: the dry-loop <-> grain-cloud morph, the "melt" ramp toggle and
+#: the moving post-autotune filter.  Morph 0 in grain mode is the ORIGINAL loop
+#: (the dry path through the autotune); Morph 1 is the full grain cloud.
+LOOP_GRAIN_MORPH_DEFAULT = 0.0
+LOOP_GRAIN_MELT_DEFAULT = 0
+LOOP_GRAIN_FILTER_DEFAULT = 0.0
+LOOP_GRAIN_FILTER_RATE_MIN = 0.01
+LOOP_GRAIN_FILTER_RATE_MAX = 2.0
+LOOP_GRAIN_FILTER_RATE_DEFAULT = 0.12
+
+#: Stage 8.7: the loop's own grain-breath LFO (independent of the bridge's
+#: breathing rhythm engine; it lives entirely inside the loop voice).
+LOOP_GRAIN_BREATH_MIN = 0.0
+LOOP_GRAIN_BREATH_MAX = 1.0
+LOOP_GRAIN_BREATH_DEFAULT = 0.0
+LOOP_GRAIN_BREATH_RATE_MIN = 0.02
+LOOP_GRAIN_BREATH_RATE_MAX = 1.0
+LOOP_GRAIN_BREATH_RATE_DEFAULT = 0.08
+
+#: Stage 9.0: per-loop harmonic-series delay FX (post-PitchShift).
+#:
+#: ``harm_mode`` is ``off``, ``cascade`` (one captured segment, harmonics
+#: entering in ascending order) or ``delay`` (continuous harmonized buffer
+#: delay).  The numeric controls are shared by both modes; ``harm_spacing``
+#: and ``harm_auto`` are inert in delay mode.  ``harm_time`` is the FREE time
+#: in seconds; ``harm_time_sync`` may lock it to a musical division instead
+#: (owner follow-up, 2026-11-09: "fixed (ex quarter notes, dotted, etc) time
+#: delay").  Both are clamped to the 2 s FX buffer.
+LOOP_HARM_MODES: tuple[str, ...] = ("off", "cascade", "delay")
+LOOP_HARM_MODE_DEFAULT = "off"
+LOOP_HARM_MIX_DEFAULT = 0.35
+LOOP_HARM_TIME_MIN = 0.05
+LOOP_HARM_TIME_MAX = 2.0
+LOOP_HARM_TIME_DEFAULT = 0.5
+LOOP_HARM_STEPS_MIN = 1
+LOOP_HARM_STEPS_MAX = 8
+LOOP_HARM_STEPS_DEFAULT = 4
+LOOP_HARM_SPACING_MIN = 0.0
+LOOP_HARM_SPACING_MAX = 1.0
+LOOP_HARM_SPACING_DEFAULT = 0.08
+LOOP_HARM_FALLOFF_MIN = 0.0
+LOOP_HARM_FALLOFF_MAX = 1.0
+LOOP_HARM_FALLOFF_DEFAULT = 0.5
+LOOP_HARM_AUTO_DEFAULT = 1
+LOOP_HARM_MAX_SECONDS = 2.0
+
+#: Musical divisions for the fixed-time delay.  ``free`` uses ``harm_time``
+#: seconds; every other value is a quarter-note count at the bridge tempo.
+#: ``d`` = dotted (x1.5), ``t`` = triplet (x2/3); ``1 bar`` follows the
+#: current meter.  All resulting times clamp to 0.05..2.0 s (the FX buffer).
+LOOP_HARM_TIME_SYNCS: tuple[str, ...] = (
+    "free",
+    "1/32",
+    "1/32d",
+    "1/32t",
+    "1/16",
+    "1/16d",
+    "1/16t",
+    "1/8",
+    "1/8d",
+    "1/8t",
+    "1/4",
+    "1/4d",
+    "1/4t",
+    "1/2",
+    "1/2d",
+    "1/2t",
+    "1/1",
+    "1/1d",
+    "1/1t",
+    "1 bar",
+)
+LOOP_HARM_TIME_SYNC_DEFAULT = "free"
+
+#: Base note value in quarter beats before the dotted/triplet modifier.
+LOOP_HARM_TIME_BASE_BEATS: dict[str, float] = {
+    "1/32": 0.125,
+    "1/16": 0.25,
+    "1/8": 0.5,
+    "1/4": 1.0,
+    "1/2": 2.0,
+    "1/1": 4.0,
+}
+
+#: JI ratio vocabulary used to render the EFFECTIVE grain pitch in the status
+#: line (``×3/2`` rather than ``x1.500``).  The superset of the shipped set and
+#: its +/- 3 octaves; an unknown value falls back to ``x1.234``.
+JI_RATIO_LABELS: tuple[tuple[float, str], ...] = (
+    (0.5, "1/2"),
+    (0.6, "3/5"),
+    (0.6666667, "2/3"),
+    (0.75, "3/4"),
+    (0.8, "4/5"),
+    (1.0, "1/1"),
+    (1.125, "9/8"),
+    (1.25, "5/4"),
+    (1.3333333, "4/3"),
+    (1.5, "3/2"),
+    (1.6666667, "5/3"),
+    (1.875, "15/8"),
+    (2.0, "2/1"),
+    (2.25, "9/4"),
+    (2.5, "5/2"),
+    (2.6666667, "8/3"),
+    (3.0, "3/1"),
+    (3.3333333, "10/3"),
+    (3.75, "15/4"),
+    (4.0, "4/1"),
+)
+
+
+def ji_ratio_label(value: Any) -> str:
+    """Render a snapped grain-pitch ratio as a JI fraction (``1.5 -> "3/2"``).
+
+    The effective ratio is a set ratio times an octave, so nearest-by-cents in
+    the vocabulary above is exact for every shipped set.  The fallback keeps
+    the status line honest for an exotic value.
+    """
+
+    numeric = _as_finite_float(value, "grain pitch")
+    if numeric <= 0.0:
+        return "0"
+    best_label = f"{numeric:.3f}"
+    best_distance = None
+    for candidate, label in JI_RATIO_LABELS:
+        distance = abs(math.log2(candidate / numeric))
+        if best_distance is None or distance < best_distance:
+            best_distance = distance
+            best_label = label
+    return best_label
+
+
+@dataclass(frozen=True)
+class LoopEditParam:
+    """One ``/ji/loop/edit_set`` parameter: name, label, range, default, kind.
+
+    ``kind`` is ``"bool"`` (0/1), ``"float"`` or ``"choice"`` (a string from
+    ``choices``).  The ranges mirror sclang's clamps and the GUI widgets.
+    """
+
+    name: str
+    label: str
+    low: float
+    high: float
+    default: Any
+    kind: str = "float"
+    choices: tuple[str, ...] = ()
+    fmt: str = "{:.2f}"
+
+
+LOOP_EDIT_PARAMS: tuple[LoopEditParam, ...] = (
+    LoopEditParam("reverse", "Rev", 0.0, 1.0, 0, kind="bool"),
+    LoopEditParam(
+        "rate", "Rate", 0.5, 2.0, LOOP_RATE_DEFAULT, kind="float", fmt="{:.4f}"
+    ),
+    LoopEditParam("gain", "Gain", 0.0, 1.0, 0.7),
+    LoopEditParam("mode", "Grain", 0.0, 1.0, 0, kind="bool"),
+    LoopEditParam("sync", "Sync", 0.0, 1.0, 0, kind="bool"),
+    LoopEditParam(
+        "division",
+        "Div",
+        0.0,
+        0.0,
+        LOOP_DIVISION_DEFAULT,
+        kind="choice",
+        choices=LOOP_DIVISION_LABELS,
+    ),
+    LoopEditParam(
+        "grain_rate", "Rate", 0.5, LOOP_GRAIN_RATE_MAX, LOOP_GRAIN_RATE_DEFAULT
+    ),
+    LoopEditParam(
+        "grain_size",
+        "Size",
+        5.0,
+        500.0,
+        LOOP_GRAIN_SIZE_DEFAULT_MS,
+        fmt="{:.0f}",
+    ),
+    LoopEditParam(
+        "grain_pos", "Pos", 0.0, 1.0, LOOP_GRAIN_POS_DEFAULT
+    ),
+    LoopEditParam(
+        "grain_scatter", "Scatter", 0.0, 1.0, LOOP_GRAIN_SCATTER_DEFAULT
+    ),
+    LoopEditParam(
+        "grain_pitch", "Pitch", 0.25, 4.0, LOOP_GRAIN_PITCH_DEFAULT
+    ),
+    LoopEditParam(
+        "grain_size_jitter",
+        "Size Jit",
+        0.0,
+        1.0,
+        LOOP_GRAIN_SIZE_JITTER_DEFAULT,
+    ),
+    LoopEditParam(
+        "grain_pitch_jitter",
+        "Pitch Jit",
+        0.0,
+        1.0,
+        LOOP_GRAIN_PITCH_JITTER_DEFAULT,
+    ),
+    LoopEditParam(
+        "grain_pitch_snap",
+        "Snap",
+        0.0,
+        1.0,
+        LOOP_GRAIN_PITCH_SNAP_DEFAULT,
+        kind="bool",
+    ),
+    LoopEditParam(
+        "grain_smear", "Smear", 0.0, 1.0, LOOP_GRAIN_SMEAR_DEFAULT
+    ),
+    LoopEditParam(
+        "grain_freeze",
+        "Freeze",
+        0.0,
+        1.0,
+        LOOP_GRAIN_FREEZE_DEFAULT,
+        kind="bool",
+    ),
+    LoopEditParam(
+        "grain_motion",
+        "Motion",
+        0.0,
+        0.0,
+        LOOP_GRAIN_MOTION_DEFAULT,
+        kind="choice",
+        choices=LOOP_GRAIN_MOTIONS,
+    ),
+    LoopEditParam(
+        "grain_speed",
+        "Speed",
+        LOOP_GRAIN_SPEED_MIN,
+        LOOP_GRAIN_SPEED_MAX,
+        LOOP_GRAIN_SPEED_DEFAULT,
+        fmt="{:.3f}",
+    ),
+    LoopEditParam(
+        "grain_depth", "Depth", 0.0, 1.0, LOOP_GRAIN_DEPTH_DEFAULT
+    ),
+    LoopEditParam(
+        "grain_burst", "Burst", 0.0, 1.0, LOOP_GRAIN_BURST_DEFAULT
+    ),
+    LoopEditParam(
+        "grain_morph", "Morph", 0.0, 1.0, LOOP_GRAIN_MORPH_DEFAULT
+    ),
+    LoopEditParam(
+        "grain_melt",
+        "Melt",
+        0.0,
+        1.0,
+        LOOP_GRAIN_MELT_DEFAULT,
+        kind="bool",
+    ),
+    LoopEditParam(
+        "grain_filter", "Filter", 0.0, 1.0, LOOP_GRAIN_FILTER_DEFAULT
+    ),
+    LoopEditParam(
+        "grain_filter_rate",
+        "F.Rate",
+        LOOP_GRAIN_FILTER_RATE_MIN,
+        LOOP_GRAIN_FILTER_RATE_MAX,
+        LOOP_GRAIN_FILTER_RATE_DEFAULT,
+        fmt="{:.2f}",
+    ),
+    LoopEditParam(
+        "grain_breath",
+        "Breath",
+        LOOP_GRAIN_BREATH_MIN,
+        LOOP_GRAIN_BREATH_MAX,
+        LOOP_GRAIN_BREATH_DEFAULT,
+    ),
+    LoopEditParam(
+        "grain_breath_rate",
+        "B.Rate",
+        LOOP_GRAIN_BREATH_RATE_MIN,
+        LOOP_GRAIN_BREATH_RATE_MAX,
+        LOOP_GRAIN_BREATH_RATE_DEFAULT,
+        fmt="{:.2f}",
+    ),
+    LoopEditParam(
+        "grain_reverse", "Rev%", 0.0, 1.0, LOOP_GRAIN_REVERSE_DEFAULT
+    ),
+    LoopEditParam(
+        "count_in",
+        "Count-in",
+        0.0,
+        0.0,
+        LOOP_COUNT_IN_DEFAULT,
+        kind="choice",
+        choices=LOOP_COUNT_IN_OPTIONS,
+    ),
+    LoopEditParam(
+        "auto_play",
+        "Auto",
+        0.0,
+        1.0,
+        1 if LOOP_AUTO_PLAY_DEFAULT else 0,
+        kind="bool",
+    ),
+    # --- Stage 9.0 harmonic-series delay FX ------------------------------
+    LoopEditParam(
+        "harm_mode",
+        "Harm",
+        0.0,
+        0.0,
+        LOOP_HARM_MODE_DEFAULT,
+        kind="choice",
+        choices=LOOP_HARM_MODES,
+    ),
+    LoopEditParam(
+        "harm_mix", "Mix", 0.0, 1.0, LOOP_HARM_MIX_DEFAULT
+    ),
+    LoopEditParam(
+        "harm_time",
+        "Time",
+        LOOP_HARM_TIME_MIN,
+        LOOP_HARM_TIME_MAX,
+        LOOP_HARM_TIME_DEFAULT,
+        fmt="{:.3f}",
+    ),
+    LoopEditParam(
+        "harm_time_sync",
+        "TimeSync",
+        0.0,
+        0.0,
+        LOOP_HARM_TIME_SYNC_DEFAULT,
+        kind="choice",
+        choices=LOOP_HARM_TIME_SYNCS,
+    ),
+    LoopEditParam(
+        "harm_steps",
+        "Steps",
+        float(LOOP_HARM_STEPS_MIN),
+        float(LOOP_HARM_STEPS_MAX),
+        LOOP_HARM_STEPS_DEFAULT,
+        kind="int",
+        fmt="{:d}",
+    ),
+    LoopEditParam(
+        "harm_spacing",
+        "Space",
+        LOOP_HARM_SPACING_MIN,
+        LOOP_HARM_SPACING_MAX,
+        LOOP_HARM_SPACING_DEFAULT,
+        fmt="{:.3f}",
+    ),
+    LoopEditParam(
+        "harm_falloff",
+        "Fall",
+        LOOP_HARM_FALLOFF_MIN,
+        LOOP_HARM_FALLOFF_MAX,
+        LOOP_HARM_FALLOFF_DEFAULT,
+    ),
+    LoopEditParam(
+        "harm_auto",
+        "Auto",
+        0.0,
+        1.0,
+        1 if LOOP_HARM_AUTO_DEFAULT else 0,
+        kind="bool",
+    ),
+)
+LOOP_EDIT_PARAM_MAP: dict[str, LoopEditParam] = {
+    spec.name: spec for spec in LOOP_EDIT_PARAMS
+}
+
+
+def loop_rate_label(rate: Any) -> str:
+    """Return the GUI label (``"3/2"``) of the nearest permitted ratio."""
+
+    numeric = float(rate)
+    label = LOOP_RATE_LABEL_DEFAULT
+    best = None
+    for candidate_label, candidate in LOOP_RATES:
+        distance = abs(candidate - numeric)
+        if best is None or distance < best:
+            best = distance
+            label = candidate_label
+    return label
+
+
+def loop_rate_value(label: Any) -> float:
+    """Map a GUI rate label to its permitted float (``"3/2" -> 1.5``)."""
+
+    text = str(label)
+    for candidate_label, candidate in LOOP_RATES:
+        if candidate_label == text:
+            return float(candidate)
+    raise ValueError(f"unknown loop rate {label!r}; use one of {LOOP_RATE_LABELS}")
+
+
+def loop_snap_pitch(ratio: Any, ratios: Sequence[Any]) -> float:
+    """Nearest member of the set (x +/-3 octaves, 0.25..4.0) to ``ratio``.
+
+    Pure mirror of sclang's ``~ji_loop_snap_ratio``: the loop material is
+    already tuned by the autotune, so a *set ratio* is a consonant interval.
+    Used by the GUI's optimistic status line; sclang is the authority and its
+    echo overwrites this value.
+    """
+
+    target = clamp(_as_finite_float(ratio, "grain pitch"), 0.25, 4.0)
+    best = target
+    best_distance: float | None = None
+    for raw in ratios or (1.0,):
+        base = _as_finite_float(raw, "set ratio")
+        if base <= 0.0:
+            continue
+        for octave in range(-3, 4):
+            candidate = base * (2.0 ** octave)
+            if candidate < 0.25 or candidate > 4.0:
+                continue
+            distance = abs(math.log2(candidate / target))
+            if best_distance is None or distance < best_distance:
+                best_distance = distance
+                best = candidate
+    return float(best)
+
+
+def harm_time_beats(label: Any, bar_beats: Any = 4.0) -> float | None:
+    """Quarter beats for a ``harm_time_sync`` label (``None`` for ``free``).
+
+    Straight notes use their base value; a trailing ``d`` is dotted (x1.5)
+    and a trailing ``t`` is a triplet (x2/3).  ``1 bar`` is the current meter
+    bar in quarter beats (exact, not rounded up: a 5/8 bar is 2.5 beats).
+    This mirrors sclang's ``~ji_loop_harm_sync_beats``.
+    """
+
+    text = str(label)
+    if text == "free":
+        return None
+    if text not in LOOP_HARM_TIME_SYNCS:
+        raise ValueError(
+            f"unknown time sync {label!r}; use one of {LOOP_HARM_TIME_SYNCS}"
+        )
+    if text == "1 bar":
+        return max(1.0, float(bar_beats))
+    suffix = text[-1]
+    base = text[:-1] if suffix in ("d", "t") else text
+    beats = LOOP_HARM_TIME_BASE_BEATS[base]
+    if suffix == "d":
+        beats *= 1.5
+    elif suffix == "t":
+        beats *= 2.0 / 3.0
+    return float(beats)
+
+
+def harm_time_seconds(
+    sync: Any,
+    seconds: Any,
+    bpm: Any = 120.0,
+    bar_beats: Any = 4.0,
+) -> float:
+    """Effective FX time in seconds, clamped to the 2 s FX buffer.
+
+    ``free`` returns ``seconds``; a musical sync converts
+    ``beats * 60 / bpm``.  The tempo is clamped to the bridge range 20..300
+    so a bad snapshot cannot divide by zero.  sclang's
+    ``~ji_loop_fx_time`` is the authority; this is the GUI mirror.
+    """
+
+    text = str(sync)
+    if text == "free":
+        value = _as_finite_float(seconds, "harm time")
+    else:
+        beats = harm_time_beats(text, bar_beats)
+        tempo = clamp(_as_finite_float(bpm, "bpm"), 20.0, 300.0)
+        value = beats * 60.0 / tempo
+    return clamp(value, LOOP_HARM_TIME_MIN, LOOP_HARM_TIME_MAX)
+
 
 # The UI's default lane labels.  config/rhythm_config.json ships the same map;
 # the lane_mask bit order is by list position (bit 0 = first lane / note 36).
@@ -327,6 +943,44 @@ BASS_BASE_OCTAVE_MIN = -3
 BASS_BASE_OCTAVE_MAX = 0
 BASS_SUB_OCTAVES: tuple[int, ...] = (1, 2)
 BASS_SEED_MAX = 2**31 - 1
+
+# Stage 8.7 bass hit row: one row, one bar of the current grid, capped.
+BASS_HITS_MAX = 32
+BASS_HITS_DEFAULT_ENABLED = False
+BASS_HITS_DEFAULT_COUNT = 0
+
+# Stage 8.7 breathing rhythm engine.  Mirrors control/breath.py.
+BREATH_SHAPES: tuple[str, ...] = ("sine", "triangle", "inhale", "exhale")
+BREATH_DEFAULT_SHAPE = "inhale"
+BREATH_DEPTH_MAX = 1.0
+BREATH_PERIOD_BARS_MIN = 1
+BREATH_PERIOD_BARS_MAX = 32
+BREATH_DEFAULT_PERIOD_BARS = 4
+BREATH_DEFAULT_DEPTH = 0.35
+BREATH_DEFAULT_INTENSITY = 0.5
+BREATH_DEFAULT_PHASE = 0.0
+BREATH_DEFAULT_ARP_LOCAL = 0.0
+BREATH_DEFAULT_ARP_SYNC = False
+BREATH_PARAM_NAMES: tuple[str, ...] = (
+    "enabled",
+    "depth",
+    "period_bars",
+    "shape",
+    "intensity",
+    "phase",
+    "arp_local",
+    "arp_sync",
+)
+BREATH_PARAM_ADDRESSES: dict[str, str] = {
+    "enabled": BREATH_SET_ENABLED,
+    "depth": BREATH_SET_DEPTH,
+    "period_bars": BREATH_SET_PERIOD,
+    "shape": BREATH_SET_SHAPE,
+    "intensity": BREATH_SET_INTENSITY,
+    "phase": BREATH_SET_PHASE,
+    "arp_local": BREATH_SET_ARP_LOCAL,
+    "arp_sync": BREATH_SET_ARP_SYNC,
+}
 
 # Stage 8.3b arp ranges/defaults.  These mirror control/arp.py exactly; the
 # shipped defaults must reproduce the Stage 6 arp (0.25 s / 0.20 s / forward /
@@ -411,6 +1065,17 @@ LEAD_VARIATION_BARS_MAX = 16
 LEAD_DEFAULT_VARIATION_BARS = 0
 LEAD_SEED_MAX = 2**31 - 1
 LEAD_DEFAULT_SEED = 1
+
+#: Stage 9.1 lead input defaults (mirror control/lead_input.py).
+LEAD_INPUT_COUNT_INS: tuple[str, ...] = ("off", "1 beat", "1 bar", "2 bars")
+LEAD_INPUT_COUNT_IN_DEFAULT = "1 bar"
+LEAD_INPUT_QUANTIZE_DEFAULT = 1.0
+LEAD_INPUT_BARS_MIN = 1
+LEAD_INPUT_BARS_MAX = 8
+LEAD_INPUT_BARS_DEFAULT = 2
+LEAD_INPUT_SOURCES: tuple[str, ...] = ("generated", "played", "live", "record")
+LEAD_INPUT_GATE_MODES: tuple[str, ...] = ("beat", "note")
+LEAD_DEFAULT_GATE_MODE = "beat"
 
 # Stage 8.3d drone constants (mirror control/drone.py).
 DRONE_MODES: tuple[str, ...] = ("hold", "pulse", "bend", "sequence")
@@ -750,6 +1415,7 @@ LEAD_SETTING_ADDRESSES: dict[str, str] = {
     "swing": LEAD_SET_SWING,
     "groove_link": LEAD_SET_GROOVE_LINK,
     "seed": LEAD_SET_SEED,
+    "gate_mode": LEAD_SET_GATE_MODE,
 }
 LEAD_SETTING_ALIASES: dict[str, str] = {
     "gate": "gate_beats",
@@ -1248,6 +1914,42 @@ def _validate_lead_groove_link(value: Any) -> bool:
     return _to_bool(value, "lead groove_link")
 
 
+def _validate_lead_gate_mode(value: Any) -> str:
+    text = str(value).strip().lower()
+    if text not in LEAD_INPUT_GATE_MODES:
+        raise ValueError(
+            "lead gate_mode must be one of " + ", ".join(LEAD_INPUT_GATE_MODES)
+        )
+    return text
+
+
+def _validate_lead_input_count_in(value: Any) -> str:
+    text = str(value).strip().lower()
+    for option in LEAD_INPUT_COUNT_INS:
+        if option == text:
+            return option
+    raise ValueError(
+        "count-in must be one of " + ", ".join(LEAD_INPUT_COUNT_INS)
+    )
+
+
+def _validate_lead_input_bars(value: Any) -> int:
+    return clamp_int(value, LEAD_INPUT_BARS_MIN, LEAD_INPUT_BARS_MAX)
+
+
+def _validate_lead_input_source(value: Any) -> str:
+    text = str(value).strip().lower()
+    if text not in LEAD_INPUT_SOURCES:
+        raise ValueError(
+            "lead source must be one of " + ", ".join(LEAD_INPUT_SOURCES)
+        )
+    return text
+
+
+def _validate_midi_note(value: Any) -> int:
+    return clamp_int(value, 0, 127)
+
+
 # -- Stage 8.3d drone validators -------------------------------------------
 
 
@@ -1371,6 +2073,71 @@ def _validate_loop_mode(value: Any) -> str:
 
 def _validate_loop_beats(value: Any) -> float:
     return clamp(_as_finite_float(value, "loop beats"), LOOP_BEATS_MIN, LOOP_BEATS_MAX)
+
+
+def _validate_loop_slot(value: Any) -> int:
+    return clamp_int(
+        _as_finite_float(value, "loop memory slot"), 0, LOOP_MEM_SLOTS - 1
+    )
+
+
+def _validate_loop_rate_value(value: Any) -> float:
+    """Snap a rate to the nearest permitted ratio (Stage 8.6 §4.2)."""
+
+    numeric = _as_finite_float(value, "loop rate")
+    nearest = min(LOOP_RATE_VALUES, key=lambda allowed: abs(allowed - numeric))
+    return float(nearest)
+
+
+def _validate_loop_edit_param(param: Any) -> "LoopEditParam":
+    name = str(param)
+    spec = LOOP_EDIT_PARAM_MAP.get(name)
+    if spec is None:
+        raise ValueError(
+            f"unknown loop edit parameter {param!r}; use one of "
+            f"{tuple(sorted(LOOP_EDIT_PARAM_MAP))}"
+        )
+    return spec
+
+
+def _loop_bit(value: Any, label: str) -> int:
+    """Tolerant 0/1 conversion used by the parsers (clamped, never raises)."""
+
+    if isinstance(value, bool):
+        return 1 if value else 0
+    numeric = _as_finite_float(value, label)
+    return 1 if numeric >= 0.5 else 0
+
+
+def _loop_edit_value(spec: "LoopEditParam", value: Any) -> Any:
+    """Validate/clamp one edit value for the wire."""
+
+    if spec.kind == "choice":
+        text = str(value)
+        if text not in spec.choices:
+            raise ValueError(
+                f"unknown {spec.name} {value!r}; use one of {spec.choices}"
+            )
+        return text
+    if spec.name == "rate":
+        return _validate_loop_rate_value(value)
+    if isinstance(value, bool):
+        numeric = 1.0 if value else 0.0
+    elif isinstance(value, str) and spec.kind == "bool":
+        text = value.strip().lower()
+        if text in ("1", "on", "true", "yes", "grain", "beat"):
+            return 1
+        if text in ("0", "off", "false", "no", "normal", "free", ""):
+            return 0
+        raise ValueError(f"unknown {spec.name} {value!r}; use 0/1 or on/off")
+    else:
+        numeric = _as_finite_float(value, spec.name)
+    clamped = clamp(numeric, spec.low, spec.high)
+    if spec.kind == "bool":
+        return 1 if clamped >= 0.5 else 0
+    if spec.kind == "int":
+        return int(round(clamped))
+    return float(clamped)
 
 
 def _validate_loop_seconds(value: Any) -> float:
@@ -1698,6 +2465,75 @@ def build_set_bass_sub_octaves(value: Any) -> tuple[str, list[Any]]:
 
 
 # ---------------------------------------------------------------------------
+# Stage 8.7 breath / bass hit-row builders
+# ---------------------------------------------------------------------------
+
+
+def _breath_param_name(name: Any) -> str:
+    key = str(name).strip().lower()
+    if key not in BREATH_PARAM_ADDRESSES:
+        raise ValueError(
+            f"unknown breath parameter {name!r}; use one of "
+            f"{BREATH_PARAM_NAMES}"
+        )
+    return key
+
+
+def _validate_breath_shape(value: Any) -> str:
+    shape = str(value).strip().lower()
+    if shape not in BREATH_SHAPES:
+        raise ValueError(
+            f"unknown breath shape {value!r}; use one of {BREATH_SHAPES}"
+        )
+    return shape
+
+
+def _validate_breath_period(value: Any) -> int:
+    return clamp_int(
+        _as_finite_float(value, "period_bars"),
+        BREATH_PERIOD_BARS_MIN,
+        BREATH_PERIOD_BARS_MAX,
+    )
+
+
+def build_breath_param(name: Any, value: Any) -> tuple[str, list[Any]]:
+    """Build one ``/ji/breath/set_*`` message (value validated/clamped)."""
+
+    key = _breath_param_name(name)
+    if key == "enabled":
+        return BREATH_SET_ENABLED, [1 if _to_bool(value, "breath enabled") else 0]
+    if key == "arp_sync":
+        return BREATH_SET_ARP_SYNC, [1 if _to_bool(value, "arp sync") else 0]
+    if key == "period_bars":
+        return BREATH_SET_PERIOD, [_validate_breath_period(value)]
+    if key == "shape":
+        return BREATH_SET_SHAPE, [_validate_breath_shape(value)]
+    clamped = clamp(
+        _as_finite_float(value, f"breath {key}"),
+        0.0,
+        BREATH_DEPTH_MAX,
+    )
+    return BREATH_PARAM_ADDRESSES[key], [float(clamped)]
+
+
+def build_bass_hits_enabled(enabled: Any) -> tuple[str, list[Any]]:
+    return BASS_SET_HITS_ENABLED, [1 if _to_bool(enabled, "hits enabled") else 0]
+
+
+def build_bass_hit(index: Any, on: Any) -> tuple[str, list[Any]]:
+    position = clamp_int(_as_finite_float(index, "hit index"), 0, BASS_HITS_MAX - 1)
+    return BASS_SET_HIT, [position, 1 if _to_bool(on, "hit on") else 0]
+
+
+def build_bass_clear_hits() -> tuple[str, list[Any]]:
+    return BASS_CLEAR_HITS, []
+
+
+def build_bass_copy_hits() -> tuple[str, list[Any]]:
+    return BASS_COPY_HITS, []
+
+
+# ---------------------------------------------------------------------------
 # Stage 8.3b arp builders
 # ---------------------------------------------------------------------------
 
@@ -1800,6 +2636,7 @@ _LEAD_COERCE: dict[str, Callable[[Any], Any]] = {
     "swing": lambda value: _validate_unit(value, "lead swing"),
     "groove_link": lambda value: 1 if _to_bool(value, "lead groove_link") else 0,
     "seed": _validate_lead_seed,
+    "gate_mode": _validate_lead_gate_mode,
 }
 
 
@@ -1816,6 +2653,72 @@ def build_set_lead_enabled(enabled: Any) -> tuple[str, list[Any]]:
 
 def build_lead_vary() -> tuple[str, list[Any]]:
     return LEAD_VARY, []
+
+
+# -- Stage 9.1 lead input and melody builders ------------------------------
+
+
+def build_set_lead_input_enabled(enabled: Any) -> tuple[str, list[Any]]:
+    return LEAD_INPUT_SET_ENABLED, [1 if _to_bool(enabled, "lead input enabled") else 0]
+
+
+def build_set_lead_input_quantize(value: Any) -> tuple[str, list[Any]]:
+    return LEAD_INPUT_SET_QUANTIZE, [_validate_unit(value, "lead input quantize")]
+
+
+def build_set_lead_input_count_in(value: Any) -> tuple[str, list[Any]]:
+    return LEAD_INPUT_SET_COUNT_IN, [_validate_lead_input_count_in(value)]
+
+
+def build_set_lead_input_bars(value: Any) -> tuple[str, list[Any]]:
+    return LEAD_INPUT_SET_BARS, [_validate_lead_input_bars(value)]
+
+
+def build_lead_input_note_on(midi: Any, velocity: Any) -> tuple[str, list[Any]]:
+    return LEAD_INPUT_NOTE_ON, [
+        _validate_midi_note(midi),
+        clamp_int(velocity, 0, 127),
+    ]
+
+
+def build_lead_input_note_off(midi: Any) -> tuple[str, list[Any]]:
+    return LEAD_INPUT_NOTE_OFF, [_validate_midi_note(midi)]
+
+
+def build_lead_input_record() -> tuple[str, list[Any]]:
+    return LEAD_INPUT_RECORD, []
+
+
+def build_lead_input_stop() -> tuple[str, list[Any]]:
+    return LEAD_INPUT_STOP, []
+
+
+def build_lead_input_revert() -> tuple[str, list[Any]]:
+    return LEAD_INPUT_REVERT, []
+
+
+def build_lead_input_clear() -> tuple[str, list[Any]]:
+    return LEAD_INPUT_CLEAR, []
+
+
+def build_lead_input_refresh() -> tuple[str, list[Any]]:
+    return LEAD_INPUT_REFRESH, []
+
+
+def build_lead_melody_save(name: Any) -> tuple[str, list[Any]]:
+    return LEAD_MELODY_SAVE, [_state_name(name)]
+
+
+def build_lead_melody_load(name: Any) -> tuple[str, list[Any]]:
+    return LEAD_MELODY_LOAD, [_state_name(name)]
+
+
+def build_lead_melody_delete(name: Any) -> tuple[str, list[Any]]:
+    return LEAD_MELODY_DELETE, [_state_name(name)]
+
+
+def build_lead_melody_request() -> tuple[str, list[Any]]:
+    return LEAD_MELODY_REQUEST, []
 
 
 # -- Stage 8.3d drone modes ------------------------------------------------
@@ -1971,6 +2874,51 @@ def build_loop_set_length(index: Any, seconds: Any) -> tuple[str, list[Any]]:
         _validate_index(index),
         float(_validate_loop_seconds(seconds)),
     ]
+
+
+# --- Stage 8.6 loop editing builders --------------------------------------
+
+
+def build_loop_dub(index: Any) -> tuple[str, list[Any]]:
+    """Start an overdub on that loop (records fresh when the loop is empty)."""
+
+    return LOOP_DUB, [_validate_index(index)]
+
+
+def build_loop_fx_fire(index: Any) -> tuple[str, list[Any]]:
+    """Build one Cascade ``/ji/loop/fx_fire [index]`` trigger.
+
+    This is a UI -> sclang trigger only: it does not change the edit state and
+    sends no reply.  sclang ignores it unless the loop is in cascade mode with
+    a live FX synth.
+    """
+
+    return LOOP_FX_FIRE, [_validate_index(index)]
+
+
+def build_set_loop_edit(
+    index: Any, param: Any, value: Any
+) -> tuple[str, list[Any]]:
+    """One ``/ji/loop/edit_set [index, param, value]`` change."""
+
+    spec = _validate_loop_edit_param(param)
+    return LOOP_EDIT_SET, [
+        _validate_index(index),
+        spec.name,
+        _loop_edit_value(spec, value),
+    ]
+
+
+def build_loop_mem_save(slot: Any, index: Any) -> tuple[str, list[Any]]:
+    return LOOP_MEM_SAVE, [_validate_loop_slot(slot), _validate_index(index)]
+
+
+def build_loop_mem_recall(slot: Any, index: Any) -> tuple[str, list[Any]]:
+    return LOOP_MEM_RECALL, [_validate_loop_slot(slot), _validate_index(index)]
+
+
+def build_loop_mem_clear(slot: Any) -> tuple[str, list[Any]]:
+    return LOOP_MEM_CLEAR, [_validate_loop_slot(slot)]
 
 
 def build_request_state() -> tuple[str, list[Any]]:
@@ -2131,6 +3079,33 @@ class BassStatus:
 
 
 @dataclass(frozen=True)
+class BreathStatus:
+    """``/ji/breath/state`` snapshot (Stage 8.7 order)."""
+
+    enabled: bool = False
+    depth: float = BREATH_DEFAULT_DEPTH
+    period_bars: int = BREATH_DEFAULT_PERIOD_BARS
+    shape: str = BREATH_DEFAULT_SHAPE
+    intensity: float = BREATH_DEFAULT_INTENSITY
+    phase: float = BREATH_DEFAULT_PHASE
+    arp_local: float = BREATH_DEFAULT_ARP_LOCAL
+    arp_sync: bool = BREATH_DEFAULT_ARP_SYNC
+
+    def status_line(self) -> str:
+        if not self.enabled:
+            return "Breath: off"
+        line = (
+            f"Breath: on · depth {self.depth * 100:.0f} % · "
+            f"{self.period_bars} bars · {self.shape} · "
+            f"int {self.intensity * 100:.0f} % · "
+            f"arp {self.arp_local * 100:.0f} %"
+        )
+        if self.arp_sync:
+            line += " · arp sync"
+        return line
+
+
+@dataclass(frozen=True)
 class ArpStatus:
     """``/ji/arp/state`` snapshot (11 fields, Stage 8.3b order)."""
 
@@ -2210,12 +3185,17 @@ class LeadStatus:
     groove_link: bool
     seed: int
     playing: bool
+    gate_mode: str = LEAD_DEFAULT_GATE_MODE
 
     @property
     def available(self) -> bool:
         """True when the lead MIDI port (Bus 5) is open."""
 
         return self.port_ok
+
+    @property
+    def note_gate(self) -> bool:
+        return self.gate_mode == "note"
 
     def status_line(self) -> str:
         """``on | 1/8 · 2 bars · 0.75 | identity #0 | seed 1``."""
@@ -2384,6 +3364,66 @@ class StateStatus:
 
 
 @dataclass(frozen=True)
+class LeadInputStatus:
+    """``/ji/lead/input/state`` snapshot (14 fields, Stage 9.1 order)."""
+
+    live: bool
+    port_ok: bool
+    port_name: str
+    quantize: float
+    count_in: str
+    bars: int
+    recording: bool
+    count_beats: float
+    note_count: int
+    source: str
+    melody_name: str
+    last_in_note: int
+    last_out_note: int
+    last_cents: float
+
+    @property
+    def available(self) -> bool:
+        return self.port_ok
+
+    @property
+    def counting(self) -> bool:
+        return self.recording and self.count_beats > 0.0
+
+    def input_line(self) -> str:
+        """``Launchkey 49 - idle - 13 notes`` (port - phase - notes)."""
+
+        if not self.port_ok:
+            return "no input port"
+        if self.counting:
+            phase = f"count {int(round(self.count_beats))}"
+        elif self.recording:
+            phase = "rec"
+        elif self.live:
+            phase = "live"
+        else:
+            phase = "idle"
+        return f"{self.port_name} - {phase} - {self.note_count} notes"
+
+    def melody_line(self) -> str:
+        """``intro line (13 notes) - played`` or ``none (generated line)``."""
+
+        if not self.melody_name:
+            return "none (generated line)"
+        return f"{self.melody_name} ({self.note_count} notes) - {self.source}"
+
+
+@dataclass(frozen=True)
+class MelodyStatus:
+    """``/ji/lead/melody/state`` snapshot."""
+
+    count: int
+    last_saved: str
+    last_loaded: str
+    message: str
+
+
+@dataclass(frozen=True)
 class LeadNoteStatus:
     """``/ji/lead/note`` snapshot: the last triggered lead note."""
 
@@ -2420,6 +3460,193 @@ class LoopConfig:
     mode: str = LOOP_MODE_DEFAULT
     beats: float = LOOP_BEATS_DEFAULT
     seconds: float = LOOP_LENGTH_DEFAULT
+
+
+@dataclass
+class LoopEdit:
+    """One loop's edit state (the 39-value ``/ji/loop/edit``).
+
+    ``mode``/``sync``/``auto_play``/``reverse``/``grain_pitch_snap``/
+    ``grain_freeze``/``grain_melt``/``harm_auto`` are 0/1 as on the wire.
+    ``grain_size_ms`` is milliseconds on the wire and in the GUI; sclang stores
+    seconds internally.  ``grain_pitch`` is the REQUESTED ratio;
+    ``effective_pitch`` is the ratio the voice actually receives (the JI-snapped
+    one while ``grain_pitch_snap``).  There is no ``mix``/``tune`` field: the
+    loop always stays in the accepted JI autotune chain.
+    ``grain_breath``/``grain_breath_rate`` are the loop's own grain-breath LFO.
+    ``harm_*`` is the Stage 9.0 post-PitchShift FX bus/delay; ``harm_time`` is
+    the free time and ``harm_time_sync`` may lock it to a musical division.
+    """
+
+    index: int = LOOP_INDEX_MIN
+    reverse: int = 0
+    rate: float = LOOP_RATE_DEFAULT
+    gain: float = 0.7
+    mode: int = 0
+    sync: int = 0
+    division: str = LOOP_DIVISION_DEFAULT
+    grain_rate: float = LOOP_GRAIN_RATE_DEFAULT
+    grain_size_ms: float = LOOP_GRAIN_SIZE_DEFAULT_MS
+    grain_pos: float = LOOP_GRAIN_POS_DEFAULT
+    grain_scatter: float = LOOP_GRAIN_SCATTER_DEFAULT
+    grain_pitch: float = LOOP_GRAIN_PITCH_DEFAULT
+    grain_size_jitter: float = LOOP_GRAIN_SIZE_JITTER_DEFAULT
+    grain_pitch_jitter: float = LOOP_GRAIN_PITCH_JITTER_DEFAULT
+    grain_pitch_snap: int = LOOP_GRAIN_PITCH_SNAP_DEFAULT
+    grain_smear: float = LOOP_GRAIN_SMEAR_DEFAULT
+    grain_freeze: int = LOOP_GRAIN_FREEZE_DEFAULT
+    grain_motion: str = LOOP_GRAIN_MOTION_DEFAULT
+    grain_speed: float = LOOP_GRAIN_SPEED_DEFAULT
+    grain_depth: float = LOOP_GRAIN_DEPTH_DEFAULT
+    grain_burst: float = LOOP_GRAIN_BURST_DEFAULT
+    grain_morph: float = LOOP_GRAIN_MORPH_DEFAULT
+    grain_melt: int = LOOP_GRAIN_MELT_DEFAULT
+    grain_filter: float = LOOP_GRAIN_FILTER_DEFAULT
+    grain_filter_rate: float = LOOP_GRAIN_FILTER_RATE_DEFAULT
+    grain_reverse: float = LOOP_GRAIN_REVERSE_DEFAULT
+    count_in: str = LOOP_COUNT_IN_DEFAULT
+    auto_play: int = 0
+    effective_pitch: float = LOOP_GRAIN_PITCH_DEFAULT
+    grain_breath: float = LOOP_GRAIN_BREATH_DEFAULT
+    grain_breath_rate: float = LOOP_GRAIN_BREATH_RATE_DEFAULT
+    harm_mode: str = LOOP_HARM_MODE_DEFAULT
+    harm_mix: float = LOOP_HARM_MIX_DEFAULT
+    harm_time: float = LOOP_HARM_TIME_DEFAULT
+    harm_time_sync: str = LOOP_HARM_TIME_SYNC_DEFAULT
+    harm_steps: int = LOOP_HARM_STEPS_DEFAULT
+    harm_spacing: float = LOOP_HARM_SPACING_DEFAULT
+    harm_falloff: float = LOOP_HARM_FALLOFF_DEFAULT
+    harm_auto: int = LOOP_HARM_AUTO_DEFAULT
+
+    @property
+    def is_grain(self) -> bool:
+        return bool(self.mode)
+
+    @property
+    def is_harm(self) -> bool:
+        return self.harm_mode != "off"
+
+    @property
+    def is_beat(self) -> bool:
+        return bool(self.sync)
+
+    @property
+    def auto_plays(self) -> bool:
+        return bool(self.auto_play)
+
+    @property
+    def is_snapped(self) -> bool:
+        return bool(self.grain_pitch_snap)
+
+    @property
+    def is_frozen(self) -> bool:
+        return bool(self.grain_freeze)
+
+    @property
+    def is_melting(self) -> bool:
+        return bool(self.grain_melt)
+
+    @property
+    def is_morphed(self) -> bool:
+        return bool(self.mode) and self.grain_morph > 0.0
+
+    @property
+    def rate_label(self) -> str:
+        return loop_rate_label(self.rate)
+
+    @property
+    def pitch_label(self) -> str:
+        """The ratio the voice gets, as a JI fraction (``×3/2`` form)."""
+
+        return ji_ratio_label(self.effective_pitch)
+
+    def harm_time_seconds(
+        self, bpm: Any = 120.0, bar_beats: Any = 4.0
+    ) -> float:
+        """Effective FX time in seconds (free seconds or a musical division)."""
+
+        return harm_time_seconds(
+            self.harm_time_sync, self.harm_time, bpm, bar_beats
+        )
+
+    def count_in_beats(self, bar_beats: Any = 4) -> int:
+        """Quarter beats of count-in for the current meter's bar length.
+
+        Stage 9.0: round the bar **up** to the next whole quarter beat so odd
+        1/8 meters never start early: 4/4 -> 4, 3/4 -> 3, 6/8 -> 3,
+        5/8 (2.5) -> 3, 7/8 (3.5) -> 4.  Mirrors
+        ``~ji_loop_count_in_quarter_beats`` exactly.
+        """
+
+        beats_per_bar = max(1, int(math.ceil(float(bar_beats))))
+        if self.count_in == "1 beat":
+            return 1
+        if self.count_in == "1 bar":
+            return beats_per_bar
+        if self.count_in == "2 bars":
+            return beats_per_bar * 2
+        return 0
+
+    def status_line(self, bpm: Any = 120.0, bar_beats: Any = 4.0) -> str:
+        parts = [f"Loop {self.index}", f"×{self.rate_label}"]
+        if self.reverse:
+            parts.append("rev")
+        if self.is_grain:
+            parts.append("grain/beat" if self.is_beat else "grain/free")
+            parts.append(f"pos {self.grain_pos * 100:.0f} %")
+            parts.append(f"motion {self.grain_motion}")
+            parts.append(f"pitch ×{self.pitch_label}")
+            if self.is_snapped:
+                parts.append("snap")
+            if self.grain_morph > 0.0:
+                parts.append(f"morph {self.grain_morph * 100:.0f} %")
+            if self.is_melting:
+                parts.append("melt")
+            if self.is_frozen:
+                parts.append("freeze")
+            if self.grain_breath > 0.0:
+                parts.append(f"breath {self.grain_breath * 100:.0f} %")
+        if self.is_harm:
+            parts.append(f"harm {self.harm_mode}")
+            parts.append(f"{self.harm_steps}×")
+            if self.harm_time_sync != "free":
+                parts.append(self.harm_time_sync)
+            parts.append(f"{self.harm_time_seconds(bpm, bar_beats):.2f} s")
+            parts.append(f"mix {self.harm_mix * 100:.0f} %")
+        parts.append(f"count-in {self.count_in}")
+        if self.auto_play:
+            parts.append("auto")
+        parts.append(f"gain {self.gain:.2f}")
+        return " · ".join(parts)
+
+
+@dataclass
+class LoopMemory:
+    """One session-only memory slot (``/ji/loop/mem``).
+
+    The slot holds a server-side copy of a loop buffer plus its edit state.
+    ``filled`` is 0/1 as on the wire.  Nothing is ever written to disk.
+    """
+
+    slot: int = 0
+    filled: int = 0
+    frames: int = 0
+    seconds: float = 0.0
+
+    @property
+    def name(self) -> str:
+        if 0 <= self.slot < LOOP_MEM_SLOTS:
+            return LOOP_MEM_SLOT_NAMES[self.slot]
+        return "?"
+
+    @property
+    def is_filled(self) -> bool:
+        return bool(self.filled)
+
+    def status_line(self) -> str:
+        if not self.filled:
+            return f"{self.name}: empty"
+        return f"{self.name}: {self.seconds:.1f} s"
 
 
 def parse_freqset(args: Sequence[Any]) -> FrequencySet:
@@ -2627,6 +3854,61 @@ def parse_bass_state(args: Sequence[Any]) -> BassStatus:
     )
 
 
+def parse_breath_state(args: Sequence[Any]) -> "BreathStatus":
+    """Parse ``/ji/breath/state`` (7 values, or 8 with ``arp_sync``).
+
+    A 7-value payload from an older bridge leaves ``arp_sync`` at its default
+    (off), so a rolling UI update cannot break the status row.
+    """
+
+    if len(args) not in (7, 8):
+        raise ValueError(
+            "breath state needs 7 or 8 values: enabled, depth, period_bars, "
+            "shape, intensity, phase, arp_local[, arp_sync]"
+        )
+    return BreathStatus(
+        enabled=_to_bool(args[0], "breath enabled"),
+        depth=clamp(_as_finite_float(args[1], "breath depth"), 0.0, 1.0),
+        period_bars=_validate_breath_period(args[2]),
+        shape=_validate_breath_shape(args[3]),
+        intensity=clamp(
+            _as_finite_float(args[4], "breath intensity"), 0.0, 1.0
+        ),
+        phase=clamp(_as_finite_float(args[5], "breath phase"), 0.0, 1.0),
+        arp_local=clamp(
+            _as_finite_float(args[6], "breath arp_local"), 0.0, 1.0
+        ),
+        arp_sync=(
+            _to_bool(args[7], "breath arp_sync") if len(args) == 8 else False
+        ),
+    )
+
+
+def parse_bass_hits(args: Sequence[Any]) -> tuple[bool, tuple[bool, ...]]:
+    """Parse ``/ji/bass/hits``: ``[enabled, count, hit_0 ... hit_{count-1}]``.
+
+    Strict: the payload length must be exactly ``2 + count`` and ``count`` must
+    be 0..:data:`BASS_HITS_MAX`.  A mismatch is rejected.
+    """
+
+    if len(args) < 2:
+        raise ValueError("bass hits needs enabled, count and the hit cells")
+    enabled = _to_bool(args[0], "bass hits enabled")
+    count = clamp_int(
+        _as_finite_float(args[1], "bass hits count"), 0, BASS_HITS_MAX
+    )
+    if len(args) != 2 + count:
+        raise ValueError(
+            f"bass hits count {count} does not match "
+            f"{len(args) - 2} hit cells"
+        )
+    hits = tuple(
+        _to_bool(value, f"hit {index}")
+        for index, value in enumerate(args[2:])
+    )
+    return enabled, hits
+
+
 def parse_bass_note(args: Sequence[Any]) -> BassNoteStatus:
     """Parse ``[hz, midi_note, velocity]`` from ``/ji/bass/note``."""
 
@@ -2674,14 +3956,14 @@ def parse_arp_state(args: Sequence[Any]) -> ArpStatus:
 
 
 def parse_lead_state(args: Sequence[Any]) -> LeadStatus:
-    """Parse the 16-argument ``/ji/lead/state`` payload."""
+    """Parse the 16- or 17-value ``/ji/lead/state`` payload (Stage 9.1)."""
 
-    if len(args) != 16:
+    if len(args) not in (16, 17):
         raise ValueError(
-            "lead state needs 16 values: enabled, port_ok, grid, phrase_bars, "
-            "density, gate_beats, velocity, octave_range, base_octave, "
-            "variation, variation_index, variation_bars, swing, groove_link, "
-            "seed, playing"
+            "lead state needs 16 or 17 values: enabled, port_ok, grid, "
+            "phrase_bars, density, gate_beats, velocity, octave_range, "
+            "base_octave, variation, variation_index, variation_bars, swing, "
+            "groove_link, seed, playing[, gate_mode]"
         )
     return LeadStatus(
         enabled=_to_bool(args[0], "lead enabled"),
@@ -2700,6 +3982,73 @@ def parse_lead_state(args: Sequence[Any]) -> LeadStatus:
         groove_link=_to_bool(args[13], "lead groove_link"),
         seed=_validate_lead_seed(args[14]),
         playing=_to_bool(args[15], "lead playing"),
+        gate_mode=(
+            _validate_lead_gate_mode(args[16])
+            if len(args) == 17
+            else LEAD_DEFAULT_GATE_MODE
+        ),
+    )
+
+
+def parse_lead_input_state(args: Sequence[Any]) -> LeadInputStatus:
+    """Parse the 14-value ``/ji/lead/input/state`` payload."""
+
+    if len(args) != 14:
+        raise ValueError(
+            "lead input state needs 14 values: live, port_ok, port_name, "
+            "quantize, count_in, bars, recording, count_beats, note_count, "
+            "source, melody_name, last_in_note, last_out_note, last_cents"
+        )
+    count_beats = _as_finite_float(args[7], "lead input count_beats")
+    if count_beats < 0.0:
+        raise ValueError("lead input count_beats must be >= 0")
+    note_count = int(round(_as_finite_float(args[8], "lead input note_count")))
+    if note_count < 0:
+        raise ValueError("lead input note_count must be >= 0")
+    return LeadInputStatus(
+        live=_to_bool(args[0], "lead input live"),
+        port_ok=_to_bool(args[1], "lead input port_ok"),
+        port_name=str(args[2] or ""),
+        quantize=_validate_unit(args[3], "lead input quantize"),
+        count_in=_validate_lead_input_count_in(args[4]),
+        bars=_validate_lead_input_bars(args[5]),
+        recording=_to_bool(args[6], "lead input recording"),
+        count_beats=count_beats,
+        note_count=note_count,
+        source=_validate_lead_input_source(args[9]),
+        melody_name=str(args[10] or ""),
+        last_in_note=clamp_int(args[11], -1, 127),
+        last_out_note=clamp_int(args[12], -1, 127),
+        last_cents=_as_finite_float(args[13], "lead input last_cents"),
+    )
+
+
+def parse_melody_list(args: Sequence[Any]) -> tuple[str, ...]:
+    """Parse ``[count, name_1 .. name_N]`` from ``/ji/lead/melody/list``."""
+
+    if not args:
+        raise ValueError("melody list needs a count")
+    count = int(round(_as_finite_float(args[0], "melody count")))
+    names = tuple(str(name) for name in args[1:])
+    if count != len(names):
+        raise ValueError(
+            f"melody list count {count} does not match {len(names)} names"
+        )
+    return names
+
+
+def parse_melody_state(args: Sequence[Any]) -> MelodyStatus:
+    """Parse the 4-value ``/ji/lead/melody/state`` payload."""
+
+    if len(args) != 4:
+        raise ValueError(
+            "melody state needs count, last_saved, last_loaded, message"
+        )
+    return MelodyStatus(
+        count=int(round(_as_finite_float(args[0], "melody count"))),
+        last_saved=str(args[1] or ""),
+        last_loaded=str(args[2] or ""),
+        message=str(args[3] or ""),
     )
 
 
@@ -2864,6 +4213,171 @@ def parse_loop_state(args: Sequence[Any]) -> tuple[int, str]:
     return index, state
 
 
+def parse_loop_edit(args: Sequence[Any]) -> LoopEdit:
+    """Parse the strict 39-value ``/ji/loop/edit`` payload.
+
+    Values are clamped like the other parsers; an unknown ``division``,
+    ``count_in``, ``grain_motion``, ``harm_mode`` or ``harm_time_sync`` string
+    is rejected (each wire vocabulary is closed).  ``grain_pitch`` is the
+    requested ratio, ``effective_pitch`` the JI-snapped ratio the voice actually
+    received.  Stage 8.7 appended ``grain_breath`` and ``grain_breath_rate``
+    after ``grain_filter_rate``; Stage 9.0 appends the eight ``harm_*`` values
+    (including the owner-requested fixed musical ``harm_time_sync``).
+    """
+
+    if len(args) != 39:
+        raise ValueError(
+            "loop edit needs 39 values: index, reverse, rate, gain, mode, sync, "
+            "division, grain_rate, grain_size_ms, grain_pos, grain_scatter, "
+            "grain_pitch, grain_size_jitter, grain_pitch_jitter, "
+            "grain_pitch_snap, grain_smear, grain_freeze, grain_motion, "
+            "grain_speed, grain_depth, grain_burst, grain_reverse, count_in, "
+            "auto_play, effective_pitch, grain_morph, grain_melt, "
+            "grain_filter, grain_filter_rate, grain_breath, grain_breath_rate, "
+            "harm_mode, harm_mix, harm_time, harm_time_sync, harm_steps, "
+            "harm_spacing, harm_falloff, harm_auto"
+        )
+    index = _validate_index(args[0])
+    division = str(args[6])
+    if division not in LOOP_DIVISION_LABELS:
+        raise ValueError(f"unknown loop division {division!r}")
+    motion = str(args[17])
+    if motion not in LOOP_GRAIN_MOTIONS:
+        raise ValueError(f"unknown grain motion {motion!r}")
+    count_in = str(args[22])
+    if count_in not in LOOP_COUNT_IN_OPTIONS:
+        raise ValueError(f"unknown count-in {count_in!r}")
+    harm_mode = str(args[31])
+    if harm_mode not in LOOP_HARM_MODES:
+        raise ValueError(f"unknown harm mode {harm_mode!r}")
+    harm_time_sync = str(args[34])
+    if harm_time_sync not in LOOP_HARM_TIME_SYNCS:
+        raise ValueError(f"unknown harm time sync {harm_time_sync!r}")
+    return LoopEdit(
+        index=index,
+        reverse=_loop_bit(args[1], "reverse"),
+        rate=_validate_loop_rate_value(args[2]),
+        gain=clamp(_as_finite_float(args[3], "loop gain"), 0.0, 1.0),
+        mode=_loop_bit(args[4], "mode"),
+        sync=_loop_bit(args[5], "sync"),
+        division=division,
+        grain_rate=clamp(
+            _as_finite_float(args[7], "grain_rate"), 0.5, LOOP_GRAIN_RATE_MAX
+        ),
+        grain_size_ms=clamp(
+            _as_finite_float(args[8], "grain_size_ms"), 5.0, 500.0
+        ),
+        grain_pos=clamp(_as_finite_float(args[9], "grain_pos"), 0.0, 1.0),
+        grain_scatter=clamp(
+            _as_finite_float(args[10], "grain_scatter"), 0.0, 1.0
+        ),
+        grain_pitch=clamp(
+            _as_finite_float(args[11], "grain_pitch"), 0.25, 4.0
+        ),
+        grain_size_jitter=clamp(
+            _as_finite_float(args[12], "grain_size_jitter"), 0.0, 1.0
+        ),
+        grain_pitch_jitter=clamp(
+            _as_finite_float(args[13], "grain_pitch_jitter"), 0.0, 1.0
+        ),
+        grain_pitch_snap=_loop_bit(args[14], "grain_pitch_snap"),
+        grain_smear=clamp(
+            _as_finite_float(args[15], "grain_smear"), 0.0, 1.0
+        ),
+        grain_freeze=_loop_bit(args[16], "grain_freeze"),
+        grain_motion=motion,
+        grain_speed=clamp(
+            _as_finite_float(args[18], "grain_speed"),
+            LOOP_GRAIN_SPEED_MIN,
+            LOOP_GRAIN_SPEED_MAX,
+        ),
+        grain_depth=clamp(_as_finite_float(args[19], "grain_depth"), 0.0, 1.0),
+        grain_burst=clamp(_as_finite_float(args[20], "grain_burst"), 0.0, 1.0),
+        grain_reverse=clamp(
+            _as_finite_float(args[21], "grain_reverse"), 0.0, 1.0
+        ),
+        count_in=count_in,
+        auto_play=_loop_bit(args[23], "auto_play"),
+        effective_pitch=clamp(
+            _as_finite_float(args[24], "effective_pitch"), 0.25, 4.0
+        ),
+        grain_morph=clamp(_as_finite_float(args[25], "grain_morph"), 0.0, 1.0),
+        grain_melt=_loop_bit(args[26], "grain_melt"),
+        grain_filter=clamp(
+            _as_finite_float(args[27], "grain_filter"), 0.0, 1.0
+        ),
+        grain_filter_rate=clamp(
+            _as_finite_float(args[28], "grain_filter_rate"),
+            LOOP_GRAIN_FILTER_RATE_MIN,
+            LOOP_GRAIN_FILTER_RATE_MAX,
+        ),
+        grain_breath=clamp(
+            _as_finite_float(args[29], "grain_breath"),
+            LOOP_GRAIN_BREATH_MIN,
+            LOOP_GRAIN_BREATH_MAX,
+        ),
+        grain_breath_rate=clamp(
+            _as_finite_float(args[30], "grain_breath_rate"),
+            LOOP_GRAIN_BREATH_RATE_MIN,
+            LOOP_GRAIN_BREATH_RATE_MAX,
+        ),
+        harm_mode=harm_mode,
+        harm_mix=clamp(
+            _as_finite_float(args[32], "harm_mix"), 0.0, 1.0
+        ),
+        harm_time=clamp(
+            _as_finite_float(args[33], "harm_time"),
+            LOOP_HARM_TIME_MIN,
+            LOOP_HARM_TIME_MAX,
+        ),
+        harm_time_sync=harm_time_sync,
+        harm_steps=clamp_int(
+            _as_finite_float(args[35], "harm_steps"),
+            LOOP_HARM_STEPS_MIN,
+            LOOP_HARM_STEPS_MAX,
+        ),
+        harm_spacing=clamp(
+            _as_finite_float(args[36], "harm_spacing"),
+            LOOP_HARM_SPACING_MIN,
+            LOOP_HARM_SPACING_MAX,
+        ),
+        harm_falloff=clamp(
+            _as_finite_float(args[37], "harm_falloff"),
+            LOOP_HARM_FALLOFF_MIN,
+            LOOP_HARM_FALLOFF_MAX,
+        ),
+        harm_auto=_loop_bit(args[38], "harm_auto"),
+    )
+
+
+def parse_loop_mem(args: Sequence[Any]) -> LoopMemory:
+    """Parse the strict 4-value ``/ji/loop/mem`` payload."""
+
+    if len(args) != 4:
+        raise ValueError("loop memory needs slot, filled, frames, seconds")
+    slot = clamp_int(
+        _as_finite_float(args[0], "loop memory slot"), 0, LOOP_MEM_SLOTS - 1
+    )
+    frames = max(0, int(round(_as_finite_float(args[2], "memory frames"))))
+    seconds = max(0.0, _as_finite_float(args[3], "memory seconds"))
+    return LoopMemory(
+        slot=slot,
+        filled=_loop_bit(args[1], "memory filled"),
+        frames=frames,
+        seconds=seconds,
+    )
+
+
+def parse_loop_count(args: Sequence[Any]) -> tuple[int, int]:
+    """Parse ``[index, beats_left]`` (beats_left 0..64, 0 = counting done)."""
+
+    if len(args) != 2:
+        raise ValueError("loop count needs index and beats_left")
+    index = _validate_index(args[0])
+    beats_left = clamp_int(_as_finite_float(args[1], "beats_left"), 0, 64)
+    return index, beats_left
+
+
 def parse_autotune_state(
     args: Sequence[Any],
 ) -> tuple[int, dict[str, float]]:
@@ -2894,9 +4408,14 @@ STATUS_PARSERS: dict[str, Callable[[Sequence[Any]], Any]] = {
     QUANTIZE_STATE: parse_quantize,
     BASS_STATE: parse_bass_state,
     BASS_NOTE: parse_bass_note,
+    BASS_HITS: parse_bass_hits,
+    BREATH_STATE: parse_breath_state,
     ARP_STATE: parse_arp_state,
     LEAD_STATE: parse_lead_state,
     LEAD_NOTE: parse_lead_note,
+    LEAD_INPUT_STATE: parse_lead_input_state,
+    LEAD_MELODY_LIST: parse_melody_list,
+    LEAD_MELODY_STATE: parse_melody_state,
     DRONE_STATE: parse_drone_state,
     HOME_STATE: parse_home_state,
     STATE_LIST: parse_state_list,
@@ -2904,6 +4423,9 @@ STATUS_PARSERS: dict[str, Callable[[Sequence[Any]], Any]] = {
     CPU: parse_cpu,
     LOOP_STATE: parse_loop_state,
     LOOP_CONFIG: parse_loop_config,
+    LOOP_EDIT: parse_loop_edit,
+    LOOP_MEM: parse_loop_mem,
+    LOOP_COUNT: parse_loop_count,
     AUTOTUNE_STATE: parse_autotune_state,
 }
 
@@ -2927,9 +4449,15 @@ class StatusStore:
         self.quantize: QuantizeStatus | None = None
         self.bass: BassStatus | None = None
         self.bass_note: BassNoteStatus | None = None
+        self.bass_hits: tuple[bool, ...] | None = None
+        self.bass_hits_enabled = False
+        self.breath: BreathStatus | None = None
         self.arp: ArpStatus | None = None
         self.lead: LeadStatus | None = None
         self.lead_note: LeadNoteStatus | None = None
+        self.lead_input: LeadInputStatus | None = None
+        self.melody_names: tuple[str, ...] = ()
+        self.melody: MelodyStatus | None = None
         self.drone: DroneStatus | None = None
         self.home: HomeStatus | None = None
         self.state_names: tuple[str, ...] = ()
@@ -2941,6 +4469,16 @@ class StatusStore:
         self.loop_configs: dict[int, LoopConfig] = {
             index: LoopConfig()
             for index in range(LOOP_INDEX_MIN, LOOP_INDEX_MAX + 1)
+        }
+        self.loop_edits: dict[int, LoopEdit] = {
+            index: LoopEdit(index=index)
+            for index in range(LOOP_INDEX_MIN, LOOP_INDEX_MAX + 1)
+        }
+        self.loop_mem: dict[int, LoopMemory] = {
+            slot: LoopMemory(slot=slot) for slot in range(LOOP_MEM_SLOTS)
+        }
+        self.loop_counts: dict[int, int] = {
+            index: 0 for index in range(LOOP_INDEX_MIN, LOOP_INDEX_MAX + 1)
         }
         self.autotune: dict[int, dict[str, float]] = {
             channel: default_autotune_values()
@@ -3008,6 +4546,14 @@ class StatusStore:
         elif address == BASS_NOTE:
             self.bass_note = parsed
             self.bridge_seen = True
+        elif address == BASS_HITS:
+            enabled, hits = parsed
+            self.bass_hits_enabled = bool(enabled)
+            self.bass_hits = tuple(hits)
+            self.bridge_seen = True
+        elif address == BREATH_STATE:
+            self.breath = parsed
+            self.bridge_seen = True
         elif address == ARP_STATE:
             self.arp = parsed
             self.bridge_seen = True
@@ -3016,6 +4562,15 @@ class StatusStore:
             self.bridge_seen = True
         elif address == LEAD_NOTE:
             self.lead_note = parsed
+            self.bridge_seen = True
+        elif address == LEAD_INPUT_STATE:
+            self.lead_input = parsed
+            self.bridge_seen = True
+        elif address == LEAD_MELODY_LIST:
+            self.melody_names = tuple(parsed)
+            self.bridge_seen = True
+        elif address == LEAD_MELODY_STATE:
+            self.melody = parsed
             self.bridge_seen = True
         elif address == DRONE_STATE:
             self.drone = parsed
@@ -3039,6 +4594,16 @@ class StatusStore:
         elif address == LOOP_CONFIG:
             index, config = parsed
             self.loop_configs[index] = config
+            self.sclang_seen = True
+        elif address == LOOP_EDIT:
+            self.loop_edits[parsed.index] = parsed
+            self.sclang_seen = True
+        elif address == LOOP_MEM:
+            self.loop_mem[parsed.slot] = parsed
+            self.sclang_seen = True
+        elif address == LOOP_COUNT:
+            index, beats_left = parsed
+            self.loop_counts[index] = beats_left
             self.sclang_seen = True
         elif address == AUTOTUNE_STATE:
             channel, values = parsed
@@ -3444,6 +5009,37 @@ class OSCController:
         self._send_bridge(*message)
         return message
 
+    # -- Stage 8.7 breath + bass hit row -------------------------------
+
+    def set_breath_param(
+        self, name: Any, value: Any
+    ) -> tuple[str, list[Any]]:
+        message = build_breath_param(name, value)
+        self._send_bridge(*message)
+        return message
+
+    def bass_set_hits_enabled(
+        self, enabled: Any
+    ) -> tuple[str, list[Any]]:
+        message = build_bass_hits_enabled(enabled)
+        self._send_bridge(*message)
+        return message
+
+    def bass_set_hit(self, index: Any, on: Any) -> tuple[str, list[Any]]:
+        message = build_bass_hit(index, on)
+        self._send_bridge(*message)
+        return message
+
+    def bass_clear_hits(self) -> tuple[str, list[Any]]:
+        message = build_bass_clear_hits()
+        self._send_bridge(*message)
+        return message
+
+    def bass_copy_hits(self) -> tuple[str, list[Any]]:
+        message = build_bass_copy_hits()
+        self._send_bridge(*message)
+        return message
+
     # -- Stage 8.3b arp ------------------------------------------------
 
     def set_arp_setting(
@@ -3539,6 +5135,85 @@ class OSCController:
 
     def vary_lead(self) -> tuple[str, list[Any]]:
         message = build_lead_vary()
+        self._send_bridge(*message)
+        return message
+
+    # -- Stage 9.1 lead input / melodies --------------------------------
+
+    def set_lead_input_enabled(self, enabled: Any) -> tuple[str, list[Any]]:
+        message = build_set_lead_input_enabled(enabled)
+        self._send_bridge(*message)
+        return message
+
+    def set_lead_input_quantize(self, value: Any) -> tuple[str, list[Any]]:
+        message = build_set_lead_input_quantize(value)
+        self._send_bridge(*message)
+        return message
+
+    def set_lead_input_count_in(self, value: Any) -> tuple[str, list[Any]]:
+        message = build_set_lead_input_count_in(value)
+        self._send_bridge(*message)
+        return message
+
+    def set_lead_input_bars(self, value: Any) -> tuple[str, list[Any]]:
+        message = build_set_lead_input_bars(value)
+        self._send_bridge(*message)
+        return message
+
+    def lead_input_note_on(
+        self, midi: Any, velocity: Any
+    ) -> tuple[str, list[Any]]:
+        message = build_lead_input_note_on(midi, velocity)
+        self._send_bridge(*message)
+        return message
+
+    def lead_input_note_off(self, midi: Any) -> tuple[str, list[Any]]:
+        message = build_lead_input_note_off(midi)
+        self._send_bridge(*message)
+        return message
+
+    def lead_input_record(self) -> tuple[str, list[Any]]:
+        message = build_lead_input_record()
+        self._send_bridge(*message)
+        return message
+
+    def lead_input_stop(self) -> tuple[str, list[Any]]:
+        message = build_lead_input_stop()
+        self._send_bridge(*message)
+        return message
+
+    def lead_input_revert(self) -> tuple[str, list[Any]]:
+        message = build_lead_input_revert()
+        self._send_bridge(*message)
+        return message
+
+    def lead_input_clear(self) -> tuple[str, list[Any]]:
+        message = build_lead_input_clear()
+        self._send_bridge(*message)
+        return message
+
+    def refresh_lead_input(self) -> tuple[str, list[Any]]:
+        message = build_lead_input_refresh()
+        self._send_bridge(*message)
+        return message
+
+    def melody_save(self, name: Any) -> tuple[str, list[Any]]:
+        message = build_lead_melody_save(name)
+        self._send_bridge(*message)
+        return message
+
+    def melody_load(self, name: Any) -> tuple[str, list[Any]]:
+        message = build_lead_melody_load(name)
+        self._send_bridge(*message)
+        return message
+
+    def melody_delete(self, name: Any) -> tuple[str, list[Any]]:
+        message = build_lead_melody_delete(name)
+        self._send_bridge(*message)
+        return message
+
+    def request_melody_list(self) -> tuple[str, list[Any]]:
+        message = build_lead_melody_request()
         self._send_bridge(*message)
         return message
 
@@ -3682,6 +5357,42 @@ class OSCController:
         self._send_sc(*message)
         return message
 
+    # -- Stage 8.6 loop editing (sclang-owned) --------------------------
+
+    def loop_dub(self, index: Any) -> tuple[str, list[Any]]:
+        message = build_loop_dub(index)
+        self._send_sc(*message)
+        return message
+
+    def loop_fx_fire(self, index: Any) -> tuple[str, list[Any]]:
+        """Trigger one Cascade FX pass (UI -> sclang, never the bridge)."""
+
+        message = build_loop_fx_fire(index)
+        self._send_sc(*message)
+        return message
+
+    def set_loop_edit(
+        self, index: Any, param: Any, value: Any
+    ) -> tuple[str, list[Any]]:
+        message = build_set_loop_edit(index, param, value)
+        self._send_sc(*message)
+        return message
+
+    def loop_mem_save(self, slot: Any, index: Any) -> tuple[str, list[Any]]:
+        message = build_loop_mem_save(slot, index)
+        self._send_sc(*message)
+        return message
+
+    def loop_mem_recall(self, slot: Any, index: Any) -> tuple[str, list[Any]]:
+        message = build_loop_mem_recall(slot, index)
+        self._send_sc(*message)
+        return message
+
+    def loop_mem_clear(self, slot: Any) -> tuple[str, list[Any]]:
+        message = build_loop_mem_clear(slot)
+        self._send_sc(*message)
+        return message
+
     def hello(self) -> tuple[str, list[Any]]:
         message = build_ui_hello()
         self._send_bridge(*message)
@@ -3771,15 +5482,41 @@ __all__ = ["AUTOTUNE_PARAMS",
     "LEAD_VELOCITY_MAX",
     "LEAD_VELOCITY_MIN",
     "LeadNoteStatus",
+    "LeadInputStatus",
     "LeadStatus",
+    "MelodyStatus",
+    "build_lead_input_clear",
+    "build_lead_input_note_off",
+    "build_lead_input_note_on",
+    "build_lead_input_record",
+    "build_lead_input_refresh",
+    "build_lead_input_revert",
+    "build_lead_input_stop",
+    "build_lead_melody_delete",
+    "build_lead_melody_load",
+    "build_lead_melody_request",
+    "build_lead_melody_save",
     "build_lead_vary",
     "build_set_drone_setting",
     "build_set_lead_enabled",
+    "build_set_lead_input_bars",
+    "build_set_lead_input_count_in",
+    "build_set_lead_input_enabled",
+    "build_set_lead_input_quantize",
     "build_set_lead_setting",
     "parse_drone_state",
+    "parse_lead_input_state",
     "parse_lead_note",
     "parse_lead_state",
+    "parse_melody_list",
+    "parse_melody_state",
     "build_loop_clear",
+    "build_loop_dub",
+    "build_loop_fx_fire",
+    "LOOP_FX_FIRE",
+    "build_loop_mem_clear",
+    "build_loop_mem_recall",
+    "build_loop_mem_save",
     "build_loop_play",
     "build_loop_record",
     "build_loop_set_beats",
@@ -3789,6 +5526,7 @@ __all__ = ["AUTOTUNE_PARAMS",
     "build_loop_stop",
     "build_loop_stop_all",
     "build_loop_stop_record",
+    "build_set_loop_edit",
     "build_request_state",
     "build_rhythm_request",
     "build_set_autotune",
@@ -3813,7 +5551,85 @@ __all__ = ["AUTOTUNE_PARAMS",
     "parse_drums_state",
     "parse_freqset",
     "parse_loop_config",
+    "parse_loop_count",
+    "parse_loop_edit",
+    "parse_loop_mem",
     "parse_loop_state",
+    "LoopEdit",
+    "LoopMemory",
+    "LoopEditParam",
+    "LOOP_AUTO_PLAY_DEFAULT",
+    "LOOP_HARM_MODES",
+    "LOOP_HARM_MODE_DEFAULT",
+    "LOOP_HARM_MIX_DEFAULT",
+    "LOOP_HARM_TIME_MIN",
+    "LOOP_HARM_TIME_MAX",
+    "LOOP_HARM_TIME_DEFAULT",
+    "LOOP_HARM_TIME_SYNCS",
+    "LOOP_HARM_TIME_SYNC_DEFAULT",
+    "LOOP_HARM_TIME_BASE_BEATS",
+    "LOOP_HARM_STEPS_MIN",
+    "LOOP_HARM_STEPS_MAX",
+    "LOOP_HARM_STEPS_DEFAULT",
+    "LOOP_HARM_SPACING_MIN",
+    "LOOP_HARM_SPACING_MAX",
+    "LOOP_HARM_SPACING_DEFAULT",
+    "LOOP_HARM_FALLOFF_MIN",
+    "LOOP_HARM_FALLOFF_MAX",
+    "LOOP_HARM_FALLOFF_DEFAULT",
+    "LOOP_HARM_AUTO_DEFAULT",
+    "LOOP_HARM_MAX_SECONDS",
+    "harm_time_beats",
+    "harm_time_seconds",
+    "LOOP_COUNT_IN_DEFAULT",
+    "LOOP_COUNT_IN_OPTIONS",
+    "LOOP_DIVISION_DEFAULT",
+    "LOOP_DIVISION_LABELS",
+    "LOOP_DIVISIONS",
+    "LOOP_EDIT_PARAMS",
+    "LOOP_EDIT_PARAM_MAP",
+    "LOOP_MEM_SLOTS",
+    "LOOP_MEM_SLOT_NAMES",
+    "LOOP_RATES",
+    "LOOP_RATE_DEFAULT",
+    "LOOP_RATE_LABELS",
+    "LOOP_RATE_VALUES",
+    "LOOP_GRAIN_MOTIONS",
+    "LOOP_GRAIN_MOTION_DEFAULT",
+    "LOOP_GRAIN_SPEED_MIN",
+    "LOOP_GRAIN_SPEED_MAX",
+    "LOOP_GRAIN_SPEED_DEFAULT",
+    "LOOP_GRAIN_DEPTH_DEFAULT",
+    "LOOP_GRAIN_SIZE_JITTER_DEFAULT",
+    "LOOP_GRAIN_PITCH_JITTER_DEFAULT",
+    "LOOP_GRAIN_PITCH_SNAP_DEFAULT",
+    "LOOP_GRAIN_SMEAR_DEFAULT",
+    "LOOP_GRAIN_FREEZE_DEFAULT",
+    "LOOP_GRAIN_BURST_DEFAULT",
+    "LOOP_GRAIN_RATE_DEFAULT",
+    "LOOP_GRAIN_RATE_MAX",
+    "LOOP_GRAIN_SIZE_DEFAULT_MS",
+    "LOOP_GRAIN_POS_DEFAULT",
+    "LOOP_GRAIN_SCATTER_DEFAULT",
+    "LOOP_GRAIN_PITCH_DEFAULT",
+    "LOOP_GRAIN_REVERSE_DEFAULT",
+    "LOOP_GRAIN_MORPH_DEFAULT",
+    "LOOP_GRAIN_MELT_DEFAULT",
+    "LOOP_GRAIN_FILTER_DEFAULT",
+    "LOOP_GRAIN_FILTER_RATE_MIN",
+    "LOOP_GRAIN_FILTER_RATE_MAX",
+    "LOOP_GRAIN_FILTER_RATE_DEFAULT",
+    "LOOP_GRAIN_BREATH_MIN",
+    "LOOP_GRAIN_BREATH_MAX",
+    "LOOP_GRAIN_BREATH_DEFAULT",
+    "LOOP_GRAIN_BREATH_RATE_MIN",
+    "LOOP_GRAIN_BREATH_RATE_MAX",
+    "LOOP_GRAIN_BREATH_RATE_DEFAULT",
+    "JI_RATIO_LABELS",
+    "ji_ratio_label",
+    "loop_rate_label",
+    "loop_snap_pitch",
+    "loop_rate_value",
     "parse_midi_status",
     "parse_midi_state",
     "parse_rhythm_state",
@@ -3878,6 +5694,43 @@ __all__ = ["AUTOTUNE_PARAMS",
     "BASS_SEED_MAX",
     "BASS_SETTING_ADDRESSES",
     "BASS_SUB_OCTAVES",
+    "BASS_HITS_MAX",
+    "BASS_HITS_DEFAULT_ENABLED",
+    "BASS_HITS_DEFAULT_COUNT",
+    "BASS_SET_HITS_ENABLED",
+    "BASS_SET_HIT",
+    "BASS_CLEAR_HITS",
+    "BASS_COPY_HITS",
+    "BASS_HITS",
+    "BREATH_SHAPES",
+    "BREATH_DEFAULT_SHAPE",
+    "BREATH_DEPTH_MAX",
+    "BREATH_PERIOD_BARS_MIN",
+    "BREATH_PERIOD_BARS_MAX",
+    "BREATH_DEFAULT_PERIOD_BARS",
+    "BREATH_DEFAULT_DEPTH",
+    "BREATH_DEFAULT_INTENSITY",
+    "BREATH_DEFAULT_PHASE",
+    "BREATH_DEFAULT_ARP_LOCAL",
+    "BREATH_DEFAULT_ARP_SYNC",
+    "BREATH_PARAM_NAMES",
+    "BREATH_PARAM_ADDRESSES",
+    "BREATH_SET_ENABLED",
+    "BREATH_SET_DEPTH",
+    "BREATH_SET_PERIOD",
+    "BREATH_SET_SHAPE",
+    "BREATH_SET_INTENSITY",
+    "BREATH_SET_PHASE",
+    "BREATH_SET_ARP_LOCAL",
+    "BREATH_SET_ARP_SYNC",
+    "BreathStatus",
+    "build_breath_param",
+    "build_bass_hits_enabled",
+    "build_bass_hit",
+    "build_bass_clear_hits",
+    "build_bass_copy_hits",
+    "parse_breath_state",
+    "parse_bass_hits",
     "BassNoteStatus",
     "BassStatus",
     "build_set_bass_base_octave",

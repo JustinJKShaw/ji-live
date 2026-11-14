@@ -36,7 +36,7 @@ from control.bass import BassConfig, BassRig, BassSettings
 from control.drone import DroneConfig, DroneRig, DroneSettings
 from control.drums import DEFAULT_LANE_MASK, DrumConfig, DrumEngine
 from control.groove import GrooveSpec, preset_grid
-from control.lead import LeadConfig, LeadRig, LeadSettings
+from control.lead import LeadConfig, LeadEngine, LeadNote, LeadRig, LeadSettings
 from control.mpe_output import MPEOutput
 from control.mutation import MutationEngine, SetSnapshot
 from control.osc_server import (
@@ -359,6 +359,8 @@ def rich_state(name: str = "A-drone") -> state_module.PerformanceState:
         seed=77,
         sub_enabled=True,
         sub_octaves=2,
+        hits_enabled=True,
+        hits=(True, False, True, True, False, True, False, False),
     )
     bass = replace(bass, preset="custom")
 
@@ -562,6 +564,28 @@ def test_round_trip() -> None:
     assert back.groove.grid == state.groove.grid
     assert len(mapping["groove"]["grid"]) == 32
     assert back.bass == state.bass and back.bass.preset == "custom"
+    assert back.bass.hits_enabled is True
+    assert back.bass.hits == (
+        True,
+        False,
+        True,
+        True,
+        False,
+        True,
+        False,
+        False,
+    )
+    assert mapping["bass"]["hits"] == [
+        True,
+        False,
+        True,
+        True,
+        False,
+        True,
+        False,
+        False,
+    ]
+    assert mapping["version"] == 1
     assert back.arp == state.arp
     assert back.arp.octave_offsets == (0, 1, -1)
     assert back.lead == state.lead
@@ -573,9 +597,73 @@ def test_round_trip() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 3. Defaults, unknown keys, format gates
+# 2b. Stage 8.7 bass hits compatibility
 # ---------------------------------------------------------------------------
 
+
+def test_bass_hits_compat() -> None:
+    print("\n=== Test 2b: Stage 8.7 bass hits round-trip and v1 compatibility ===")
+    document = {
+        "format": state_module.STATE_FORMAT,
+        "version": 1,
+        "freqset": {"ratios": [1.0, 3.0 / 2.0], "anchor": 1.0},
+        "bass": {
+            "grid": "1/16",
+            "hits_enabled": 1,
+            "hits": [1, 0, 1, 0],
+            "unknown_bass_key": "ignored",
+        },
+    }
+    state = state_module.PerformanceState.from_mapping(document, name="hits")
+    assert state.bass.grid == "1/16"
+    assert state.bass.hits_enabled is True
+    assert state.bass.hits == (True, False, True, False)
+
+    mapping = state.to_mapping()
+    assert mapping["version"] == 1
+    assert mapping["bass"]["hits_enabled"] is True
+    assert mapping["bass"]["hits"] == [True, False, True, False]
+    assert "unknown_bass_key" not in mapping["bass"]
+    back = state_module.PerformanceState.from_mapping(mapping)
+    assert back.bass == state.bass
+
+    # An older file without the new keys loads with the documented defaults.
+    old = {
+        "format": state_module.STATE_FORMAT,
+        "version": 1,
+        "freqset": {"ratios": [1.0]},
+        "bass": {"grid": "1/8", "density": 0.5},
+    }
+    legacy = state_module.PerformanceState.from_mapping(old, name="legacy")
+    assert legacy.bass.hits_enabled is False
+    assert legacy.bass.hits == ()
+    assert legacy.bass.grid == "1/8" and legacy.bass.density == 0.5
+    legacy_mapping = legacy.to_mapping()
+    assert legacy_mapping["version"] == 1
+    assert legacy_mapping["bass"]["hits_enabled"] is False
+    assert legacy_mapping["bass"]["hits"] == []
+
+    # A bad hit row is rejected with the "bass:" section prefix.
+    try:
+        state_module.PerformanceState.from_mapping(
+            {
+                "format": state_module.STATE_FORMAT,
+                "version": 1,
+                "freqset": {"ratios": [1.0]},
+                "bass": {"hits": "not-a-row"},
+            },
+            name="bad",
+        )
+    except state_module.StateError as exc:
+        assert "bass" in str(exc)
+    else:
+        raise AssertionError("a bad hit row was accepted")
+    print("  new keys round-trip; old files default; version stays 1")
+
+
+# ---------------------------------------------------------------------------
+# 3. Defaults, unknown keys, format gates
+# ---------------------------------------------------------------------------
 
 def test_defaults_and_errors() -> None:
     print("\n=== Test 3: defaults, unknown keys, bad format/version/values ===")
@@ -824,6 +912,63 @@ def test_load_cancels_return() -> None:
 # ---------------------------------------------------------------------------
 # 8. Restored values
 # ---------------------------------------------------------------------------
+
+
+def test_played_state_recall() -> None:
+    print("\n=== Played line recall + Revert (Stage 9.1) ===")
+    base = rich_state("played")
+    engine = LeadEngine(LeadConfig())
+    engine.on_set(base.freqset.ratios, base.freqset.anchor, 432.0)
+    engine.set_settings(base.lead)
+    take = (
+        LeadNote(step=0, length=2, degree=2, octave=0, ratio_hint=1.25, velocity=100),
+        LeadNote(step=4, length=1, degree=4, octave=0, ratio_hint=1.5, velocity=90),
+    )
+    engine.load_motif(
+        take,
+        grid=base.lead.grid,
+        phrase_bars=base.lead.phrase_bars,
+        meter_num=base.rhythm.meter_num,
+        meter_den=base.rhythm.meter_den,
+    )
+    engine.set_setting("variation", "invert")
+    engine.vary()
+    engine.set_setting("variation", "rhythm")
+    engine.vary()
+    engine.set_setting("variation", "transpose")
+    engine.vary()
+    motif = engine.motif
+    assert motif.source == "played"
+    play = state_module.LeadPlaySection.create(
+        notes=motif.notes,
+        base_notes=motif.base_notes,
+        history=motif.history,
+        melody="recalled take",
+        source="played",
+    )
+    state = replace(
+        base,
+        lead=replace(base.lead, variation=motif.variation),
+        lead_variation_index=motif.variation_index,
+        lead_play=play,
+    )
+    with fake_bridge(seed=4) as (bridge, client, ui, clock, rhythm):
+        bridge.states.save(state)
+        bridge.request_state_load(state.name)
+        live = bridge.midi.lead
+        assert live.engine.motif.source == "played"
+        assert live.engine.motif.notes == play.notes
+        assert live.engine.motif.history == play.history
+        assert live.engine.motif.variation_index == state.lead_variation_index
+        assert live.source == "played"
+        # A state recall sends the input/melody statuses too.
+        assert "/ji/lead/input/state" in ui.addresses()
+        assert "/ji/lead/melody/list" in ui.addresses()
+        # Revert works immediately after the recall.
+        live.revert()
+        assert live.engine.motif.notes == play.base_notes
+        assert live.engine.motif.history == ()
+    print("  inline notes + history recalled exactly, statuses sent, Revert works")
 
 
 def test_restored_values() -> None:
@@ -1267,16 +1412,78 @@ def test_ui_layer() -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_lead_play_section() -> None:
+    print("\n=== Inline played lead notes (Stage 9.1) ===")
+    base = rich_state("played-state")
+    notes = (
+        LeadNote(step=0, length=2, degree=2, octave=0, ratio_hint=1.25, velocity=104),
+        LeadNote(step=4, length=1, degree=4, octave=1, ratio_hint=1.5, velocity=90),
+    )
+    play = state_module.LeadPlaySection.create(
+        notes=notes,
+        base_notes=notes,
+        history=(("invert", 1), ("rhythm", 2)),
+        melody="intro line",
+        source="played",
+    )
+    state = replace(base, lead_play=play)
+    document = state.to_mapping()
+    assert document["version"] == 1
+    lead_section = document["lead"]
+    assert lead_section["source"] == "played"
+    assert lead_section["melody"] == "intro line"
+    assert lead_section["history"] == [["invert", 1], ["rhythm", 2]]
+    assert len(lead_section["notes"]) == 2
+    assert lead_section["variation_index"] == 3
+
+    back = state_module.PerformanceState.from_mapping(document)
+    assert back.lead_play == play
+    assert back.lead_variation_index == 3
+    assert back.lead == base.lead
+
+    # Old states load unchanged (the four keys default to a generated line).
+    old = state.to_mapping()
+    for key in ("notes", "base_notes", "history", "melody", "source"):
+        old["lead"].pop(key)
+    loaded = state_module.PerformanceState.from_mapping(old)
+    assert loaded.lead_play == state_module.LeadPlaySection()
+    assert loaded.lead_play.source == "generated"
+    assert loaded.to_mapping()["version"] == 1
+
+    # Any bad note aborts the whole load before anything is applied.
+    for mutate in (
+        lambda doc: doc["lead"]["notes"][0].__setitem__("velocity", 0),
+        lambda doc: doc["lead"]["notes"][0].__setitem__("step", 9999),
+        lambda doc: doc["lead"].__setitem__("history", [["sideways", 1]]),
+        lambda doc: doc["lead"].__setitem__("source", "live"),
+    ):
+        broken = state.to_mapping()
+        mutate(broken)
+        try:
+            state_module.PerformanceState.from_mapping(broken)
+        except state_module.StateError:
+            pass
+        else:
+            raise AssertionError(f"invalid inline lead section accepted: {broken['lead']}")
+
+    # A played section always has notes; an empty one is a generated line.
+    empty = state_module.LeadPlaySection.create(notes=(), source="played")
+    assert empty.source == "generated" and empty.notes == ()
+    print("  round trip, optional keys, note/step/history validation, version 1")
+
+
 def run() -> None:
     print("JI Stage 8.5 performance-state tests", flush=True)
     test_names()
     test_round_trip()
+    test_bass_hits_compat()
     test_defaults_and_errors()
     test_library()
     test_stopped_load()
     test_running_load()
     test_load_cancels_return()
     test_restored_values()
+    test_played_state_recall()
     test_load_is_idempotent()
     test_restart_with_same_dir()
     test_missing_bus_degrades_one_voice()
@@ -1285,6 +1492,7 @@ def run() -> None:
     test_invalid_file_aborts()
     test_osc_handlers()
     test_ui_layer()
+    test_lead_play_section()
     print("\nALL STATE TESTS PASSED")
 
 

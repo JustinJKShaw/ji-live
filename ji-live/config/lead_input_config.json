@@ -1,0 +1,10 @@
+{
+  "port": "Launchkey",
+  "match": "contains",
+  "channel": 0,
+  "quantize": 1.0,
+  "count_in": "1 bar",
+  "bars": 2,
+  "velocity_scale": 1.0,
+  "octave_shift": 0
+}

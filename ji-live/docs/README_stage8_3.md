@@ -6,8 +6,8 @@ agent's own verification remains limited to the pure Python model, a fake MIDI
 output, and the bridge/OSC layer; the live PyQt6 window was not executed by the
 agent (no `libEGL` in the container).
 
-**Stage 8.3b (arp parameters + one-entry startup) is implemented and awaiting
-human acceptance:** see
+**Stage 8.3b (arp parameters + one-entry startup) is implemented and
+owner-approved (2026-11-02):** see
 [README_stage8_3b.md](README_stage8_3b.md). It adds mutable arp parameters
 (step, gate, velocity, three octave offsets, shared mode, playback order, seed)
 on `/ji/arp/*` + `/ji/arp/state` and `PHASE_ARP`, plus the one-sclang

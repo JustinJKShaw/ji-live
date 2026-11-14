@@ -15,9 +15,10 @@ or MIDI voice changed.
 > additionally, a 'back' button that returns to the immediately prior previous
 > state may be useful."*
 
-Status: implemented and covered by pure tests. **Audio, MIDI, Ableton, IAC,
-sclang timing and the live GUI were not tested by the agent; 8.4 awaits the human
-acceptance checklist in §9.** The design doc's planned 8.4 was
+Status: implemented, covered by pure tests, and **owner-approved
+(2026-11-02)**. §9 stays as the regression checklist. Audio, MIDI, Ableton, IAC,
+sclang timing and the live GUI were not tested by the agent. The design doc's
+planned 8.4 was
 "pattern/sequencing mutation"; this stage scopes that idea to the frequency-set
 layer first. Volume/mixer/whole-session recall stayed out of scope; the
 performance state save/recall the owner asked for is **Stage 8.5** — see

@@ -4,11 +4,11 @@
 default): see [README_stage8_3c.md](README_stage8_3c.md). It extends the Arp
 group and `/ji/arp/state` (17 fields) without changing anything described here.
 
-**Status:** implemented by the agent, **awaiting human acceptance**. Audio, MIDI,
-Ableton, IAC, sclang timing, and the live GUI were **not** tested by the agent
-(no audio hardware, no IAC buses, no SuperCollider in the agent environment).
-The owner is the authority; 8.3b is not complete until the checklist in §7 is
-confirmed.
+**Status:** implemented by the agent and **owner-approved (2026-11-02)**. §7
+is the regression checklist for future runs. Audio, MIDI, Ableton, IAC, sclang
+timing, and the live GUI were **not** tested by the agent (no audio hardware, no
+IAC buses, no SuperCollider in the agent environment); the owner is the
+authority.
 
 Two deliverables:
 

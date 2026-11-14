@@ -20,13 +20,33 @@ import argparse
 import math
 import sys
 import time
+from pathlib import Path
 from fractions import Fraction
 from typing import Any, Callable
 
 try:
-    from PyQt6.QtCore import QObject, QSignalBlocker, Qt, QTimer, pyqtSignal
-    from PyQt6.QtGui import QFont
+    from PyQt6.QtCore import (
+        QObject,
+        QPointF,
+        QRectF,
+        QSize,
+        QSignalBlocker,
+        Qt,
+        QTimer,
+        pyqtSignal,
+    )
+    from PyQt6.QtGui import (
+        QBrush,
+        QColor,
+        QFont,
+        QFontDatabase,
+        QFontMetrics,
+        QPainter,
+        QPalette,
+        QPen,
+    )
     from PyQt6.QtWidgets import (
+        QAbstractSpinBox,
         QApplication,
         QCheckBox,
         QComboBox,
@@ -36,11 +56,14 @@ try:
         QGroupBox,
         QHBoxLayout,
         QLabel,
+        QLineEdit,
         QMainWindow,
         QMessageBox,
         QPushButton,
         QScrollArea,
+        QSizePolicy,
         QSpinBox,
+        QToolTip,
         QVBoxLayout,
         QWidget,
     )
@@ -123,6 +146,12 @@ if __package__:  # ``python -m ui.ji_ui`` and normal package imports
         LEAD_DEFAULT_VARIATION,
         LEAD_DEFAULT_VARIATION_BARS,
         LEAD_GRIDS,
+        LEAD_INPUT_BARS_DEFAULT,
+        LEAD_INPUT_BARS_MAX,
+        LEAD_INPUT_BARS_MIN,
+        LEAD_INPUT_COUNT_INS,
+        LEAD_INPUT_COUNT_IN_DEFAULT,
+        LEAD_INPUT_QUANTIZE_DEFAULT,
         LEAD_OCTAVE_RANGE_MAX,
         LEAD_OCTAVE_RANGE_MIN,
         LEAD_PARAMS,
@@ -158,6 +187,21 @@ if __package__:  # ``python -m ui.ji_ui`` and normal package imports
         BASS_PRESET_DISPLAY,
         BASS_SEED_MAX,
         BASS_SUB_OCTAVES,
+        BASS_HITS_DEFAULT_ENABLED,
+        BREATH_DEFAULT_ARP_LOCAL,
+        BREATH_DEFAULT_ARP_SYNC,
+        BREATH_DEFAULT_DEPTH,
+        BREATH_DEFAULT_INTENSITY,
+        BREATH_DEFAULT_PERIOD_BARS,
+        BREATH_DEFAULT_PHASE,
+        BREATH_DEFAULT_SHAPE,
+        BREATH_PERIOD_BARS_MAX,
+        BREATH_PERIOD_BARS_MIN,
+        BREATH_SHAPES,
+        LOOP_GRAIN_BREATH_DEFAULT,
+        LOOP_GRAIN_BREATH_RATE_DEFAULT,
+        LOOP_GRAIN_BREATH_RATE_MAX,
+        LOOP_GRAIN_BREATH_RATE_MIN,
         DRUM_LANE_DEFAULT_MASK,
         DRUM_LANE_DEFS,
         DRUM_RATE_LABELS,
@@ -170,6 +214,35 @@ if __package__:  # ``python -m ui.ji_ui`` and normal package imports
         LOOP_BEATS_DEFAULT,
         LOOP_BEATS_MAX,
         LOOP_BEATS_MIN,
+        LOOP_COUNT_IN_OPTIONS,
+        LOOP_DIVISION_LABELS,
+        LOOP_GRAIN_DEPTH_DEFAULT,
+        LOOP_GRAIN_FREEZE_DEFAULT,
+        LOOP_GRAIN_MOTIONS,
+        LOOP_GRAIN_MOTION_DEFAULT,
+        LOOP_GRAIN_FILTER_DEFAULT,
+        LOOP_GRAIN_FILTER_RATE_DEFAULT,
+        LOOP_GRAIN_FILTER_RATE_MAX,
+        LOOP_GRAIN_FILTER_RATE_MIN,
+        LOOP_GRAIN_MELT_DEFAULT,
+        LOOP_GRAIN_MORPH_DEFAULT,
+        LOOP_GRAIN_PITCH_DEFAULT,
+        LOOP_GRAIN_PITCH_JITTER_DEFAULT,
+        LOOP_GRAIN_PITCH_SNAP_DEFAULT,
+        LOOP_GRAIN_POS_DEFAULT,
+        LOOP_GRAIN_RATE_DEFAULT,
+        LOOP_GRAIN_RATE_MAX,
+        LOOP_GRAIN_SCATTER_DEFAULT,
+        LOOP_GRAIN_SIZE_DEFAULT_MS,
+        LOOP_GRAIN_SIZE_JITTER_DEFAULT,
+        LOOP_GRAIN_SMEAR_DEFAULT,
+        LOOP_GRAIN_SPEED_DEFAULT,
+        LOOP_GRAIN_SPEED_MAX,
+        LOOP_GRAIN_SPEED_MIN,
+        LOOP_MEM_SLOT_NAMES,
+        LOOP_RATE_DEFAULT,
+        LOOP_RATE_LABELS,
+        LOOP_RATE_VALUES,
         LOOP_LENGTH_DEFAULT,
         LOOP_LENGTH_MAX,
         LOOP_LENGTH_MIN,
@@ -255,6 +328,12 @@ else:  # pragma: no cover - direct ``python ui/ji_ui.py``
         LEAD_DEFAULT_VARIATION,
         LEAD_DEFAULT_VARIATION_BARS,
         LEAD_GRIDS,
+        LEAD_INPUT_BARS_DEFAULT,
+        LEAD_INPUT_BARS_MAX,
+        LEAD_INPUT_BARS_MIN,
+        LEAD_INPUT_COUNT_INS,
+        LEAD_INPUT_COUNT_IN_DEFAULT,
+        LEAD_INPUT_QUANTIZE_DEFAULT,
         LEAD_OCTAVE_RANGE_MAX,
         LEAD_OCTAVE_RANGE_MIN,
         LEAD_PARAMS,
@@ -290,6 +369,21 @@ else:  # pragma: no cover - direct ``python ui/ji_ui.py``
         BASS_PRESET_DISPLAY,
         BASS_SEED_MAX,
         BASS_SUB_OCTAVES,
+        BASS_HITS_DEFAULT_ENABLED,
+        BREATH_DEFAULT_ARP_LOCAL,
+        BREATH_DEFAULT_ARP_SYNC,
+        BREATH_DEFAULT_DEPTH,
+        BREATH_DEFAULT_INTENSITY,
+        BREATH_DEFAULT_PERIOD_BARS,
+        BREATH_DEFAULT_PHASE,
+        BREATH_DEFAULT_SHAPE,
+        BREATH_PERIOD_BARS_MAX,
+        BREATH_PERIOD_BARS_MIN,
+        BREATH_SHAPES,
+        LOOP_GRAIN_BREATH_DEFAULT,
+        LOOP_GRAIN_BREATH_RATE_DEFAULT,
+        LOOP_GRAIN_BREATH_RATE_MAX,
+        LOOP_GRAIN_BREATH_RATE_MIN,
         DRUM_LANE_DEFAULT_MASK,
         DRUM_LANE_DEFS,
         DRUM_RATE_LABELS,
@@ -302,6 +396,35 @@ else:  # pragma: no cover - direct ``python ui/ji_ui.py``
         LOOP_BEATS_DEFAULT,
         LOOP_BEATS_MAX,
         LOOP_BEATS_MIN,
+        LOOP_COUNT_IN_OPTIONS,
+        LOOP_DIVISION_LABELS,
+        LOOP_GRAIN_DEPTH_DEFAULT,
+        LOOP_GRAIN_FREEZE_DEFAULT,
+        LOOP_GRAIN_MOTIONS,
+        LOOP_GRAIN_MOTION_DEFAULT,
+        LOOP_GRAIN_FILTER_DEFAULT,
+        LOOP_GRAIN_FILTER_RATE_DEFAULT,
+        LOOP_GRAIN_FILTER_RATE_MAX,
+        LOOP_GRAIN_FILTER_RATE_MIN,
+        LOOP_GRAIN_MELT_DEFAULT,
+        LOOP_GRAIN_MORPH_DEFAULT,
+        LOOP_GRAIN_PITCH_DEFAULT,
+        LOOP_GRAIN_PITCH_JITTER_DEFAULT,
+        LOOP_GRAIN_PITCH_SNAP_DEFAULT,
+        LOOP_GRAIN_POS_DEFAULT,
+        LOOP_GRAIN_RATE_DEFAULT,
+        LOOP_GRAIN_RATE_MAX,
+        LOOP_GRAIN_SCATTER_DEFAULT,
+        LOOP_GRAIN_SIZE_DEFAULT_MS,
+        LOOP_GRAIN_SIZE_JITTER_DEFAULT,
+        LOOP_GRAIN_SMEAR_DEFAULT,
+        LOOP_GRAIN_SPEED_DEFAULT,
+        LOOP_GRAIN_SPEED_MAX,
+        LOOP_GRAIN_SPEED_MIN,
+        LOOP_MEM_SLOT_NAMES,
+        LOOP_RATE_DEFAULT,
+        LOOP_RATE_LABELS,
+        LOOP_RATE_VALUES,
         LOOP_LENGTH_DEFAULT,
         LOOP_LENGTH_MAX,
         LOOP_LENGTH_MIN,
@@ -316,6 +439,21 @@ else:  # pragma: no cover - direct ``python ui/ji_ui.py``
         StatusStore,
         grid_steps_for_meter,
     )
+
+# Stage 8.8: the pure note/tuning maths, imported independently of the big
+# osc_control block above (it has no PyQt6 and no OSC dependency).
+if __package__:
+    from . import fretboard
+else:  # pragma: no cover - direct ``python ui/ji_ui.py``
+    import fretboard  # type: ignore[no-redef]
+
+# Stage 9.1: the QWERTY map lives in the pure control module (one source of
+# truth for the widget and the harness).  Resolve the project root so the
+# direct ``python ui/ji_ui.py`` path also finds ``control``.
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+from control.lead_input import key_midi  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -466,12 +604,410 @@ class _StatusRelay(QObject):
 
 
 # ---------------------------------------------------------------------------
+# Stage 8.8: fretboard improvisation aid
+# ---------------------------------------------------------------------------
+
+FRETBOARD_ACCENT_ROOT = QColor("#d9822b")
+FRETBOARD_ACCENT_SCALE = QColor("#3d7ea6")
+FRETBOARD_ACCENT_ANCHOR = QColor("#8e44ad")
+FRETBOARD_INLAYS: tuple[int, ...] = (3, 5, 7, 9, 12, 15, 17, 19, 21, 24)
+FRETBOARD_MARGIN_LEFT = 64.0
+FRETBOARD_MARGIN_RIGHT = 12.0
+FRETBOARD_MARGIN_TOP = 20.0
+FRETBOARD_MARGIN_BOTTOM = 8.0
+FRETBOARD_OPEN_WIDTH = 28.0
+
+
+def _cents_text(cents: float) -> str:
+    """Signed whole cents with a half-up rounding, never ``-0``."""
+
+    value = float(cents)
+    rounded = (
+        int(math.floor(value + 0.5))
+        if value >= 0.0
+        else int(math.ceil(value - 0.5))
+    )
+    return f"{rounded:+d}"
+
+
+def _fretboard_ratio_label(ratio: float) -> str:
+    """The JI fraction for a real set member.
+
+    ``osc_control.ji_ratio_label`` snaps to the fixed grain vocabulary, so it
+    is used when the member really is one of those ratios; otherwise the GUI's
+    exact ``Fraction`` helper (its decimal/fraction fallback) keeps duplicate
+    sources such as ``10/9`` distinct from ``9/8``.
+    """
+
+    try:
+        value = float(ratio)
+    except (TypeError, ValueError):
+        return "?"
+    label = osc_control.ji_ratio_label(value)
+    for candidate, candidate_label in osc_control.JI_RATIO_LABELS:
+        if candidate_label == label and abs(candidate - value) <= 1e-6:
+            return label
+    return _ratio_label(value)
+
+
+class FretboardWidget(QWidget):
+    """Read-only painted guitar neck marking the live 12-TET set.
+
+    It never sends OSC and owns no timer: ``set_board`` rebuilds the cells and
+    one repaint draws them.  String 0 (the lowest) is drawn at the bottom.
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._tuning = fretboard.DEFAULT_TUNING
+        self._degrees: tuple[fretboard.ScaleDegree, ...] = ()
+        self._cells: tuple[fretboard.FretboardCell, ...] = ()
+        self._cell_lookup: dict[tuple[int, int], fretboard.FretboardCell] = {}
+        self._frets = fretboard.DEFAULT_FRETS
+        self._show_names = True
+        self._root_pc: int | None = None
+        self._anchor_pc: int | None = None
+        self._fundamental: float | None = None
+        self.setMouseTracking(True)
+        self.setMinimumWidth(900)
+        self.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        self._rebuild()
+
+    # -- public read-only state (the Qt test uses these) -----------------
+
+    @property
+    def cells(self) -> tuple[fretboard.FretboardCell, ...]:
+        return self._cells
+
+    @property
+    def degrees(self) -> tuple[fretboard.ScaleDegree, ...]:
+        return self._degrees
+
+    @property
+    def frets(self) -> int:
+        return self._frets
+
+    @property
+    def show_names(self) -> bool:
+        return self._show_names
+
+    @property
+    def tuning(self) -> fretboard.GuitarTuning:
+        return self._tuning
+
+    # -- board updates ---------------------------------------------------
+
+    def set_board(
+        self,
+        tuning: fretboard.GuitarTuning,
+        degrees: Any,
+        *,
+        root_pc: object | None = None,
+        anchor_pc: object | None = None,
+        frets: object = fretboard.DEFAULT_FRETS,
+        show_names: bool = True,
+        fundamental: object | None = None,
+    ) -> None:
+        """Store a validated board and repaint (no signals, no OSC)."""
+
+        if not isinstance(tuning, fretboard.GuitarTuning):
+            raise TypeError("tuning must be a GuitarTuning")
+        if isinstance(degrees, (str, bytes)):
+            raise TypeError("degrees must be a sequence of ScaleDegree")
+        items = tuple(degrees)
+        cells = fretboard.build_fretboard(
+            tuning,
+            items,
+            frets=frets,
+            root_pc=root_pc,
+            anchor_pc=anchor_pc,
+        )
+        fundamental_value: float | None = None
+        if fundamental is not None:
+            try:
+                fundamental_value = float(fundamental)
+            except (TypeError, ValueError) as exc:
+                raise TypeError("fundamental must be a number") from exc
+            if not math.isfinite(fundamental_value) or fundamental_value <= 0.0:
+                raise ValueError("fundamental must be finite and > 0")
+
+        self._tuning = tuning
+        self._degrees = items
+        self._cells = cells
+        self._cell_lookup = {
+            (cell.string, cell.fret): cell for cell in cells
+        }
+        self._frets = cells[-1].fret if cells else 0
+        self._root_pc = None if root_pc is None else int(root_pc)
+        self._anchor_pc = None if anchor_pc is None else int(anchor_pc)
+        self._show_names = bool(show_names)
+        self._fundamental = fundamental_value
+        self.updateGeometry()
+        self.update()
+
+    def _rebuild(self) -> None:
+        self.set_board(
+            self._tuning,
+            self._degrees,
+            root_pc=self._root_pc,
+            anchor_pc=self._anchor_pc,
+            frets=self._frets,
+            show_names=self._show_names,
+            fundamental=self._fundamental,
+        )
+
+    # -- geometry --------------------------------------------------------
+
+    def _layout(self) -> tuple[float, float, float, float, float, float, float]:
+        width = max(1.0, float(self.width()))
+        height = max(1.0, float(self.height()))
+        count = max(1, self._tuning.string_count)
+        board_left = FRETBOARD_MARGIN_LEFT
+        board_right = max(
+            board_left + 10.0, width - FRETBOARD_MARGIN_RIGHT
+        )
+        top = FRETBOARD_MARGIN_TOP
+        bottom = max(top + 4.0, height - FRETBOARD_MARGIN_BOTTOM)
+        row_height = (bottom - top) / count
+        nut_x = board_left + FRETBOARD_OPEN_WIDTH
+        available = max(1.0, board_right - nut_x)
+        fret_width = available / self._frets if self._frets > 0 else available
+        return (
+            board_left,
+            board_right,
+            top,
+            bottom,
+            row_height,
+            nut_x,
+            fret_width,
+        )
+
+    def _string_y(self, index: int) -> float:
+        _left, _right, top, bottom, row_height, _nut, _fw = self._layout()
+        return bottom - (index + 0.5) * row_height
+
+    def _fret_x(self, fret: int) -> float:
+        left, _right, _top, _bottom, _row, nut_x, fret_width = self._layout()
+        if fret <= 0:
+            return left + FRETBOARD_OPEN_WIDTH / 2.0
+        return nut_x + (fret - 0.5) * fret_width
+
+    def _cell_for_position(
+        self, x: float, y: float
+    ) -> fretboard.FretboardCell | None:
+        left, right, top, bottom, row_height, nut_x, fret_width = self._layout()
+        if not (left <= x <= right and top <= y <= bottom):
+            return None
+        index = int((bottom - y) / row_height)
+        if not 0 <= index < self._tuning.string_count:
+            return None
+        if x < nut_x:
+            fret = 0
+        else:
+            if self._frets <= 0:
+                return None
+            fret = int((x - nut_x) / fret_width) + 1
+            if fret > self._frets:
+                return None
+        return self._cell_lookup.get((index, fret))
+
+    # -- painting --------------------------------------------------------
+
+    def paintEvent(self, _event: Any) -> None:  # noqa: N802 (Qt API)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        palette = self.palette()
+        window = palette.color(QPalette.ColorRole.Window)
+        base = palette.color(QPalette.ColorRole.Base)
+        ink = palette.color(QPalette.ColorRole.WindowText)
+        muted = palette.color(QPalette.ColorRole.Mid)
+        painter.fillRect(self.rect(), window)
+
+        left, right, top, bottom, row_height, nut_x, fret_width = (
+            self._layout()
+        )
+        board_rect = QRectF(left, top, right - left, bottom - top)
+        painter.fillRect(board_rect, base)
+
+        inlay = QColor(muted)
+        inlay.setAlpha(110)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(inlay))
+        centre_y = (top + bottom) / 2.0
+        for fret in FRETBOARD_INLAYS:
+            if fret > self._frets:
+                continue
+            x = nut_x + (fret - 0.5) * fret_width
+            if fret in (12, 24):
+                offset = max(4.0, row_height * 1.4)
+                ys = (centre_y - offset, centre_y + offset)
+            else:
+                ys = (centre_y,)
+            for y in ys:
+                painter.drawEllipse(QRectF(x - 3.0, y - 3.0, 6.0, 6.0))
+
+        string_pen = QPen(QColor(ink.red(), ink.green(), ink.blue(), 170), 1.0)
+        painter.setPen(string_pen)
+        for index in range(self._tuning.string_count):
+            y = self._string_y(index)
+            painter.drawLine(QPointF(left, y), QPointF(right, y))
+
+        painter.setPen(QPen(muted, 1.0))
+        for fret in range(1, self._frets + 1):
+            x = nut_x + fret * fret_width
+            painter.drawLine(QPointF(x, top), QPointF(x, bottom))
+        painter.setPen(QPen(ink, 3.0))
+        painter.drawLine(QPointF(nut_x, top), QPointF(nut_x, bottom))
+
+        label_font = QFont(self.font())
+        label_font.setPointSize(7)
+        painter.setFont(label_font)
+        painter.setPen(ink)
+        for index, label in enumerate(self._tuning.labels):
+            y = self._string_y(index)
+            painter.drawText(
+                QRectF(0.0, y - row_height / 2.0, left - 8.0, row_height),
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                label,
+            )
+
+        if self._frets and fret_width >= 12.0:
+            number_font = QFont(self.font())
+            number_font.setPointSize(7)
+            number_metrics = QFontMetrics(number_font)
+            painter.setFont(number_font)
+            painter.setPen(muted)
+            for fret in range(1, self._frets + 1):
+                text = str(fret)
+                width = number_metrics.horizontalAdvance(text) + 4.0
+                if width > fret_width:
+                    continue
+                x = nut_x + (fret - 0.5) * fret_width
+                painter.drawText(
+                    QRectF(x - width / 2.0, 1.0, width, top - 2.0),
+                    Qt.AlignmentFlag.AlignCenter,
+                    text,
+                )
+
+        if self._degrees:
+            self._paint_markers(painter, row_height, fret_width)
+        painter.end()
+
+    def _paint_markers(
+        self,
+        painter: QPainter,
+        row_height: float,
+        fret_width: float,
+    ) -> None:
+        marker_font = QFont(self.font())
+        marker_font.setPointSizeF(6.5)
+        marker_font.setBold(True)
+        metrics = QFontMetrics(marker_font)
+        outline = QColor(self.palette().color(QPalette.ColorRole.Light))
+        outline.setAlpha(230)
+        for cell in self._cells:
+            degree = cell.degree
+            if degree is None:
+                continue
+            x = self._fret_x(cell.fret)
+            y = self._string_y(cell.string)
+            column = FRETBOARD_OPEN_WIDTH if cell.fret <= 0 else fret_width
+            radius = max(3.5, min(10.0, row_height * 0.42, column * 0.42))
+            colour = (
+                FRETBOARD_ACCENT_ROOT if cell.is_root else FRETBOARD_ACCENT_SCALE
+            )
+            painter.setPen(QPen(outline, 1.2))
+            painter.setBrush(QBrush(colour))
+            painter.drawEllipse(
+                QRectF(x - radius, y - radius, radius * 2.0, radius * 2.0)
+            )
+            if cell.is_anchor:
+                ring = radius + 2.5
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.setPen(QPen(FRETBOARD_ACCENT_ANCHOR, 2.0))
+                painter.drawEllipse(
+                    QRectF(x - ring, y - ring, ring * 2.0, ring * 2.0)
+                )
+            if not self._show_names:
+                continue
+            text = degree.name
+            if (
+                metrics.horizontalAdvance(text) <= radius * 2.0 - 2.0
+                and metrics.height() <= radius * 2.0
+            ):
+                painter.setFont(marker_font)
+                painter.setPen(QPen(QColor("#ffffff")))
+                painter.drawText(
+                    QRectF(
+                        x - radius, y - radius, radius * 2.0, radius * 2.0
+                    ),
+                    Qt.AlignmentFlag.AlignCenter,
+                    text,
+                )
+
+    # -- tooltip ---------------------------------------------------------
+
+    def _tooltip_for(self, cell: fretboard.FretboardCell) -> str:
+        degree = cell.degree
+        if degree is None:
+            return ""
+        source = degree.best_source
+        parts = [
+            f"{self._tuning.labels[cell.string]} fret {cell.fret}",
+            degree.name,
+            _fretboard_ratio_label(source.ratio),
+            f"{_cents_text(source.cents)}¢",
+        ]
+        if self._fundamental is not None:
+            parts.append(f"{self._fundamental * source.ratio:.2f} Hz")
+        text = " · ".join(parts)
+        if len(degree.sources) > 1:
+            extras = " / ".join(
+                f"{_fretboard_ratio_label(other.ratio)} "
+                f"{_cents_text(other.cents)}¢"
+                for other in degree.sources[1:]
+            )
+            text += f" (also {extras})"
+        return text
+
+    def mouseMoveEvent(self, event: Any) -> None:  # noqa: N802 (Qt API)
+        position = event.position()
+        cell = self._cell_for_position(position.x(), position.y())
+        if cell is None or cell.degree is None:
+            QToolTip.hideText()
+        else:
+            QToolTip.showText(
+                self.mapToGlobal(position.toPoint()),
+                self._tooltip_for(cell),
+                self,
+            )
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event: Any) -> None:  # noqa: N802 (Qt API)
+        QToolTip.hideText()
+        super().leaveEvent(event)
+
+    # -- size ------------------------------------------------------------
+
+    def _preferred_size(self) -> QSize:
+        return QSize(940, 28 + 18 * self._tuning.string_count)
+
+    def sizeHint(self) -> QSize:  # noqa: N802 (Qt API)
+        return self._preferred_size()
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802 (Qt API)
+        return QSize(900, 28 + 18 * self._tuning.string_count)
+
+
+# ---------------------------------------------------------------------------
 # Main window
 # ---------------------------------------------------------------------------
 
 
 class MainWindow(QMainWindow):
-    """One screen: Mutation, Home, State, Autotune, Loops, Rhythm, Groove, Bass, Arp, Drone, Lead, Status."""
+    """One screen: Mutation, Home, State, Autotune, Loops, Rhythm, Groove, Bass, Arp, Drone, Lead, Fretboard, Status."""
 
     def __init__(
         self,
@@ -490,11 +1026,25 @@ class MainWindow(QMainWindow):
         self._rhythm_sync = False
         self._drum_sync = False
         self._loop_sync = False
+        self._loop_edit_sync = False
         self._loop_custom: set[int] = set()
+        self._loop_mem_sync = False
         self._groove_sync = False
         self._bass_sync = False
+        self._bass_hits_sync = False
+        self._breath_sync = False
+        self._fretboard_sync = False
+        self._fretboard_tuning = fretboard.DEFAULT_TUNING
+        self._fretboard_degrees: tuple[fretboard.ScaleDegree, ...] = ()
+        self._fretboard_root_pc: int | None = None
+        self._fretboard_anchor_pc: int | None = None
+        self._fretboard_fundamental: float | None = None
         self._arp_sync = False
         self._lead_sync = False
+        self._lead_input_sync = False
+        self._melody_sync = False
+        self._keys_down: set[int] = set()
+        self._keyboard_octave = 0
         self._drone_sync = False
         self._home_sync = False
         self._state_sync = False
@@ -511,12 +1061,19 @@ class MainWindow(QMainWindow):
             self._on_status_message, Qt.ConnectionType.QueuedConnection
         )
         self._wire_controller_callback()
+        application = QApplication.instance()
+        if application is not None:
+            application.focusChanged.connect(self._on_focus_changed)
 
-        self.setWindowTitle("JI Station - Stage 8.5 Performance")
-        # One row taller than the 8.4 window (which was one row taller than
-        # 8.3d) so the State row does not push Status below the fold; the
-        # scroll area remains the small-screen safety net.
-        self.resize(1280, 800)
+        self.setWindowTitle("JI Station - Stage 9.1 Lead Input")
+        # Stage 8.6 added the Loop edit row and the Grain row (1280x880); 8.6.1
+        # added the Grain motion row (1280x910); 8.6.2 added the Morph row
+        # (1280x940); 8.7 added one Rhythm row (Breath) and a hidden Bass Hits
+        # row (1280x966); 8.8 adds the full-width Fretboard group (~200 px),
+        # 1280x1172; 9.0 adds one Harm row (~26 px) -> 1198; 9.1 adds the
+        # Lead input group (~60 px), so the default grows to 1258.  The scroll
+        # area remains the small-screen safety net.
+        self.resize(1280, 1258)
         self.setMinimumSize(1080, 600)
         compact = QFont()
         compact.setPointSize(8)
@@ -546,6 +1103,8 @@ class MainWindow(QMainWindow):
         arp_drone_row.addWidget(self._build_drone_group(), 2)
         outer.addLayout(arp_drone_row)
         outer.addWidget(self._build_lead_group())
+        outer.addWidget(self._build_lead_input_group())
+        outer.addWidget(self._build_fretboard_group())
         outer.addWidget(self._build_status_group())
         outer.addStretch(1)
 
@@ -571,6 +1130,10 @@ class MainWindow(QMainWindow):
         self._refresh_status_labels()
         self._sync_home_controls()  # start disabled until a slot is captured
         self._sync_state_controls()  # start disabled until a name is typed/known
+        self._sync_loop_edit_row(1)  # Stage 8.6 edit/grain rows
+        self._sync_loop_mem(0)
+        self._sync_fretboard_controls()  # Stage 8.8: Standard E until changed
+        self._sync_fretboard()  # waiting for the set until /ji/freqset/changed
 
         if autostart:
             self.start_controller()
@@ -606,9 +1169,18 @@ class MainWindow(QMainWindow):
         if address == osc_control.LOOP_STATE:
             index = int(round(float(args[0])))
             self._refresh_loop_label(index)
+            self._refresh_harm_enabled()
         if address == osc_control.LOOP_CONFIG:
             index = int(round(float(args[0])))
             self._sync_loop_config(index)
+        if address == osc_control.LOOP_EDIT:
+            edit = self.store.loop_edits.get(int(round(float(args[0]))))
+            if edit is not None and edit.index == self._selected_loop():
+                self._sync_loop_edit_row(edit.index)
+        if address == osc_control.LOOP_MEM:
+            self._sync_loop_mem(int(round(float(args[0]))))
+        if address == osc_control.LOOP_COUNT:
+            self._refresh_loop_label(int(round(float(args[0]))))
         if address in (osc_control.MIDI_STATUS, osc_control.MIDI_STATE):
             self._sync_midi_controls()
         if address == osc_control.RHYTHM_STATE:
@@ -624,14 +1196,27 @@ class MainWindow(QMainWindow):
             self._sync_quantize()
         if address == osc_control.BASS_STATE:
             self._sync_bass_controls()
+        if address == osc_control.BASS_HITS:
+            self._sync_bass_hits()
         if address == osc_control.BASS_NOTE:
             self._update_bass_label()
+        if address == osc_control.FREQSET_CHANGED:
+            self._sync_fretboard()
+        if address == osc_control.BREATH_STATE:
+            self._sync_breath_controls()
         if address == osc_control.ARP_STATE:
             self._sync_arp_controls()
         if address == osc_control.LEAD_STATE:
             self._sync_lead_controls()
         if address == osc_control.LEAD_NOTE:
             self._update_lead_label()
+        if address == osc_control.LEAD_INPUT_STATE:
+            self._sync_lead_input_controls()
+            self._update_lead_input_label()
+        if address == osc_control.LEAD_MELODY_LIST:
+            self._sync_melody_list()
+        if address == osc_control.LEAD_MELODY_STATE:
+            self._update_lead_input_label()
         if address == osc_control.DRONE_STATE:
             self._sync_drone_controls()
         if address == osc_control.HOME_STATE:
@@ -1055,6 +1640,11 @@ class MainWindow(QMainWindow):
                     ),
                 ),
                 (
+                    "dub",
+                    "Dub",
+                    lambda _checked=False, i=index: self._dub_loop(i),
+                ),
+                (
                     "clear",
                     "Clear",
                     lambda _checked=False, i=index: self._guard(
@@ -1067,7 +1657,8 @@ class MainWindow(QMainWindow):
                 (0, 1, 1, 1),
                 (0, 2, 1, 1),
                 (1, 0, 1, 1),
-                (1, 1, 1, 2),
+                (1, 1, 1, 1),
+                (1, 2, 1, 1),
             )
             for (name, text, slot), (row, column, row_span, col_span) in zip(
                 actions, placements
@@ -1077,10 +1668,723 @@ class MainWindow(QMainWindow):
                 button.clicked.connect(slot)
                 self.loop_buttons[(index, name)] = button
                 grid.addWidget(button, row, column, row_span, col_span)
+            self.loop_buttons[(index, "dub")].setToolTip(
+                "Overdub: records OVER the loop for one pass, keeping what is "
+                "already there (the loop keeps playing). On an empty loop it "
+                "records a fresh take. Rec still replaces."
+            )
             loop_layout.addLayout(grid)
             loop_row.addWidget(loop_group)
 
         layout.addLayout(loop_row)
+
+        # --- Stage 8.6: ONE loop edit row (selected loop) -----------------
+        edit_row = QHBoxLayout()
+        edit_row.setSpacing(4)
+        self.loop_edit_selector = QComboBox()
+        self.loop_edit_selector.addItems([str(i) for i in range(1, 5)])
+        self.loop_edit_selector.setFixedWidth(44)
+        self.loop_edit_selector.setToolTip(
+            "Which loop the edit and grain rows show and change."
+        )
+        self.loop_edit_selector.currentIndexChanged.connect(
+            self._on_loop_edit_selected
+        )
+        edit_row.addWidget(QLabel("Loop"))
+        edit_row.addWidget(self.loop_edit_selector)
+
+        self.loop_reverse_checkbox = QCheckBox("Rev")
+        self.loop_reverse_checkbox.setToolTip(
+            "Play the loop backwards. The read head keeps its position and "
+            "the direction flips (no restart, no click)."
+        )
+        self.loop_reverse_checkbox.toggled.connect(self._on_loop_reverse)
+        edit_row.addWidget(self.loop_reverse_checkbox)
+
+        edit_row.addWidget(QLabel("Rate"))
+        self.loop_rate_combo = QComboBox()
+        self.loop_rate_combo.addItems(list(LOOP_RATE_LABELS))
+        self.loop_rate_combo.setCurrentText("1/1")
+        self.loop_rate_combo.setFixedWidth(64)
+        self.loop_rate_combo.setToolTip(
+            "Varispeed: the loop plays at this ratio of its own speed and is "
+            "re-pitched by it (2/1 = octave up, 2/3 = down a fifth). It still "
+            "runs through the JI autotune, so the current set may pull it "
+            "partly back toward a class — that is intended (new material, not "
+            "an exact transposition)."
+        )
+        self.loop_rate_combo.currentIndexChanged.connect(self._on_loop_rate)
+        edit_row.addWidget(self.loop_rate_combo)
+
+        edit_row.addWidget(QLabel("Gain"))
+        self.loop_gain_spin = QDoubleSpinBox()
+        self.loop_gain_spin.setDecimals(2)
+        self.loop_gain_spin.setRange(0.0, 1.0)
+        self.loop_gain_spin.setSingleStep(0.05)
+        self.loop_gain_spin.setValue(0.7)
+        self.loop_gain_spin.setFixedWidth(58)
+        self.loop_gain_spin.setToolTip(
+            "Per-loop output gain. 0.70 is the accepted stage-4 loudness."
+        )
+        self.loop_gain_spin.valueChanged.connect(self._on_loop_gain)
+        edit_row.addWidget(self.loop_gain_spin)
+
+        edit_row.addWidget(QLabel("Count-in"))
+        self.loop_count_in_combo = QComboBox()
+        self.loop_count_in_combo.addItems(list(LOOP_COUNT_IN_OPTIONS))
+        self.loop_count_in_combo.setFixedWidth(72)
+        self.loop_count_in_combo.setToolTip(
+            "Count-in delays a Rec by the chosen amount on the beat clock "
+            "(1 bar follows the current meter). Free mode counts while the "
+            "transport is stopped; beat mode is cancelled by a transport "
+            "stop; a second Rec skips the count-in. It applies to Rec only, "
+            "not to a dub."
+        )
+        self.loop_count_in_combo.currentTextChanged.connect(
+            self._on_loop_count_in
+        )
+        edit_row.addWidget(self.loop_count_in_combo)
+
+        self.loop_auto_checkbox = QCheckBox("Auto")
+        self.loop_auto_checkbox.setToolTip(
+            "Auto-play: start the loop as soon as a take (or an empty-loop "
+            "dub) finishes. Beat mode needs a running transport, otherwise "
+            "the take stays recorded and one line says why."
+        )
+        self.loop_auto_checkbox.toggled.connect(self._on_loop_auto)
+        edit_row.addWidget(self.loop_auto_checkbox)
+
+        edit_row.addWidget(QLabel("Mem"))
+        self.loop_mem_combo = QComboBox()
+        self.loop_mem_combo.addItems(list(LOOP_MEM_SLOT_NAMES))
+        self.loop_mem_combo.setFixedWidth(48)
+        self.loop_mem_combo.setToolTip(
+            "Session-only memory slots A-D: save copies of a loop's audio and "
+            "its edit state. They are lost when sclang re-evaluates the rig; "
+            "nothing is written to disk."
+        )
+        self.loop_mem_combo.currentIndexChanged.connect(self._on_loop_mem_selected)
+        edit_row.addWidget(self.loop_mem_combo)
+
+        self.loop_mem_save_button = QPushButton("Save")
+        self.loop_mem_recall_button = QPushButton("Recall")
+        self.loop_mem_clear_button = QPushButton("Clr")
+        for button, slot in (
+            (self.loop_mem_save_button, self._on_loop_mem_save),
+            (self.loop_mem_recall_button, self._on_loop_mem_recall),
+            (self.loop_mem_clear_button, self._on_loop_mem_clear),
+        ):
+            button.setMinimumHeight(20)
+            button.setMinimumWidth(52)
+            button.clicked.connect(slot)
+            edit_row.addWidget(button)
+        self.loop_mem_save_button.setToolTip(
+            "Copy the selected loop's audio + edit state into the selected "
+            "memory slot (refused while recording or dubbing)."
+        )
+        self.loop_mem_recall_button.setToolTip(
+            "Copy the selected slot back into the selected loop. The loop "
+            "stays stopped — press Play."
+        )
+        self.loop_mem_clear_button.setToolTip("Free the selected memory slot.")
+
+        #  The status line lives on the Morph row (Stage 8.6.2): the edit row is
+        #  already full and the morph status is the headline of that row.
+        edit_row.addStretch(1)
+        layout.addLayout(edit_row)
+
+        # --- Stage 8.6: ONE grain row (selected loop) ---------------------
+        grain_row = QHBoxLayout()
+        grain_row.setSpacing(4)
+        self.grain_checkbox = QCheckBox("Grain")
+        self.grain_checkbox.setToolTip(
+            "Granular playback: the loop becomes a grain cloud that still "
+            "goes through the JI autotune (tuned, detuned or both depending "
+            "on the material and the set). switch off for normal playback."
+        )
+        self.grain_checkbox.toggled.connect(self._on_grain_toggled)
+        grain_row.addWidget(self.grain_checkbox)
+
+        grain_row.addWidget(QLabel("Sync"))
+        self.grain_sync_combo = QComboBox()
+        self.grain_sync_combo.addItems(["free", "beat"])
+        self.grain_sync_combo.setFixedWidth(62)
+        self.grain_sync_combo.setToolTip(
+            "free = grains run on their own clock (transport stopped is "
+            "fine). beat = one grain per division, locked to the transport; "
+            "stopping the transport stops the loop."
+        )
+        self.grain_sync_combo.currentIndexChanged.connect(self._on_grain_sync)
+        grain_row.addWidget(self.grain_sync_combo)
+
+        grain_row.addWidget(QLabel("Div"))
+        self.grain_div_combo = QComboBox()
+        self.grain_div_combo.addItems(list(LOOP_DIVISION_LABELS))
+        self.grain_div_combo.setFixedWidth(58)
+        self.grain_div_combo.setToolTip("Beat-synced grain interval.")
+        self.grain_div_combo.currentTextChanged.connect(self._on_grain_div)
+        grain_row.addWidget(self.grain_div_combo)
+
+        grain_row.addWidget(QLabel("Rate"))
+        self.grain_rate_spin = QDoubleSpinBox()
+        self.grain_rate_spin.setDecimals(1)
+        self.grain_rate_spin.setRange(0.5, LOOP_GRAIN_RATE_MAX)
+        self.grain_rate_spin.setSingleStep(0.5)
+        self.grain_rate_spin.setValue(LOOP_GRAIN_RATE_DEFAULT)
+        self.grain_rate_spin.setFixedWidth(58)
+        self.grain_rate_spin.setToolTip(
+            "Free-mode grains per second (Sync = free). 20 with a 120 ms "
+            "grain is a continuous cloud; 5 vs 60 is a clear density change. "
+            "Beat mode uses Div."
+        )
+        grain_row.addWidget(self.grain_rate_spin)
+
+        grain_row.addWidget(QLabel("Size"))
+        self.grain_size_spin = QDoubleSpinBox()
+        self.grain_size_spin.setDecimals(0)
+        self.grain_size_spin.setRange(5, 500)
+        self.grain_size_spin.setSingleStep(5)
+        self.grain_size_spin.setValue(LOOP_GRAIN_SIZE_DEFAULT_MS)
+        self.grain_size_spin.setSuffix(" ms")
+        self.grain_size_spin.setFixedWidth(68)
+        self.grain_size_spin.setToolTip(
+            "Grain duration. Longer grains = smoother/warmer, shorter = "
+            "glitchier. Overlapping grains (Rate x Size) make a texture "
+            "instead of a stutter. The grain is always kept inside the buffer."
+        )
+        grain_row.addWidget(self.grain_size_spin)
+
+        grain_row.addWidget(QLabel("Pos"))
+        self.grain_pos_spin = QDoubleSpinBox()
+        self.grain_pos_spin.setDecimals(0)
+        self.grain_pos_spin.setRange(0, 100)
+        self.grain_pos_spin.setSingleStep(5)
+        self.grain_pos_spin.setValue(LOOP_GRAIN_POS_DEFAULT * 100.0)
+        self.grain_pos_spin.setSuffix(" %")
+        self.grain_pos_spin.setFixedWidth(62)
+        self.grain_pos_spin.setToolTip(
+            "Centre of the read position in the loop (0 % = the very start). "
+            "Motion scans around it, so Pos is the middle of the scan. If a "
+            "take begins with silence, 0 % with Motion off is silent too -- "
+            "move Pos or add Scatter."
+        )
+        grain_row.addWidget(self.grain_pos_spin)
+
+        grain_row.addWidget(QLabel("Scatter"))
+        self.grain_scatter_spin = QDoubleSpinBox()
+        self.grain_scatter_spin.setDecimals(0)
+        self.grain_scatter_spin.setRange(0, 100)
+        self.grain_scatter_spin.setSingleStep(5)
+        self.grain_scatter_spin.setValue(LOOP_GRAIN_SCATTER_DEFAULT * 100.0)
+        self.grain_scatter_spin.setSuffix(" %")
+        self.grain_scatter_spin.setFixedWidth(62)
+        self.grain_scatter_spin.setToolTip(
+            "Random spread around the travelling position, as a fraction of "
+            "the loop. 0 % pins every grain to one slice; higher spreads the "
+            "cloud."
+        )
+        grain_row.addWidget(self.grain_scatter_spin)
+
+        grain_row.addWidget(QLabel("Pitch"))
+        self.grain_pitch_spin = QDoubleSpinBox()
+        self.grain_pitch_spin.setDecimals(2)
+        self.grain_pitch_spin.setRange(0.25, 4.0)
+        self.grain_pitch_spin.setSingleStep(0.05)
+        self.grain_pitch_spin.setValue(LOOP_GRAIN_PITCH_DEFAULT)
+        self.grain_pitch_spin.setFixedWidth(60)
+        self.grain_pitch_spin.setToolTip(
+            "Grain pitch ratio (0.25-4.0): the REQUESTED ratio. With Snap on "
+            "it is snapped to the nearest ratio of the CURRENT JI set (x "
+            "octaves) before the voice gets it, so 1.5 becomes a true 3/2 "
+            "interval of the set; the status line shows the effective ratio. "
+            "Snap off passes the raw ratio. The grains still go through the "
+            "JI autotune."
+        )
+        grain_row.addWidget(self.grain_pitch_spin)
+
+        grain_row.addWidget(QLabel("Rev%"))
+        self.grain_reverse_spin = QDoubleSpinBox()
+        self.grain_reverse_spin.setDecimals(0)
+        self.grain_reverse_spin.setRange(0, 100)
+        self.grain_reverse_spin.setSingleStep(5)
+        self.grain_reverse_spin.setSuffix(" %")
+        self.grain_reverse_spin.setFixedWidth(62)
+        self.grain_reverse_spin.setToolTip(
+            "Chance that a single grain plays backwards (TGrains negative "
+            "rate), chosen per grain."
+        )
+        grain_row.addWidget(self.grain_reverse_spin)
+
+        self.grain_hint = QLabel("")
+        self.grain_hint.setMinimumWidth(180)
+        grain_row.addWidget(self.grain_hint)
+        grain_row.addStretch(1)
+        layout.addLayout(grain_row)
+
+        # --- Stage 8.6.1: ONE grain MOTION row (selected loop) -------------
+        #  Motion moves the grain read position through the buffer, so the
+        #  cloud evolves instead of repeating one slice.  Every control here
+        #  is disabled while Grain is off.
+        motion_row = QHBoxLayout()
+        motion_row.setSpacing(4)
+        motion_row.addWidget(QLabel("Motion"))
+        self.grain_motion_combo = QComboBox()
+        self.grain_motion_combo.addItems(list(LOOP_GRAIN_MOTIONS))
+        self.grain_motion_combo.setCurrentText(LOOP_GRAIN_MOTION_DEFAULT)
+        self.grain_motion_combo.setFixedWidth(76)
+        self.grain_motion_combo.setToolTip(
+            "How the grain read position travels through the loop: off = the "
+            "position stays at Pos (the 8.6 behaviour), forward / backward "
+            "scan the buffer, pingpong bounces, drift is a slow random walk. "
+            "Motion is what makes the texture evolve; with off and a low "
+            "Scatter the same slice repeats."
+        )
+        self.grain_motion_combo.currentTextChanged.connect(self._on_grain_motion)
+        motion_row.addWidget(self.grain_motion_combo)
+
+        motion_row.addWidget(QLabel("Speed"))
+        self.grain_speed_spin = QDoubleSpinBox()
+        self.grain_speed_spin.setDecimals(3)
+        self.grain_speed_spin.setRange(LOOP_GRAIN_SPEED_MIN, LOOP_GRAIN_SPEED_MAX)
+        self.grain_speed_spin.setSingleStep(0.005)
+        self.grain_speed_spin.setValue(LOOP_GRAIN_SPEED_DEFAULT)
+        self.grain_speed_spin.setFixedWidth(64)
+        self.grain_speed_spin.setToolTip(
+            "Scan speed in loop lengths per second: 0.03 crosses an 8 s loop "
+            "in about 33 s. Higher = faster travel through the material."
+        )
+        motion_row.addWidget(self.grain_speed_spin)
+
+        motion_row.addWidget(QLabel("Depth"))
+        self.grain_depth_spin = QDoubleSpinBox()
+        self.grain_depth_spin.setDecimals(0)
+        self.grain_depth_spin.setRange(0, 100)
+        self.grain_depth_spin.setSingleStep(5)
+        self.grain_depth_spin.setValue(LOOP_GRAIN_DEPTH_DEFAULT * 100.0)
+        self.grain_depth_spin.setSuffix(" %")
+        self.grain_depth_spin.setFixedWidth(62)
+        self.grain_depth_spin.setToolTip(
+            "How far around Pos the scan travels (100 % = half the loop each "
+            "way). 0 % pins the position even with Motion on."
+        )
+        motion_row.addWidget(self.grain_depth_spin)
+
+        motion_row.addWidget(QLabel("Size Jit"))
+        self.grain_size_jitter_spin = QDoubleSpinBox()
+        self.grain_size_jitter_spin.setDecimals(0)
+        self.grain_size_jitter_spin.setRange(0, 100)
+        self.grain_size_jitter_spin.setSingleStep(5)
+        self.grain_size_jitter_spin.setValue(
+            LOOP_GRAIN_SIZE_JITTER_DEFAULT * 100.0
+        )
+        self.grain_size_jitter_spin.setSuffix(" %")
+        self.grain_size_jitter_spin.setFixedWidth(62)
+        self.grain_size_jitter_spin.setToolTip(
+            "Per-grain size variation: thickens the cloud (grains of slightly "
+            "different lengths) instead of a machine-gun of identical grains."
+        )
+        motion_row.addWidget(self.grain_size_jitter_spin)
+
+        motion_row.addWidget(QLabel("Pitch Jit"))
+        self.grain_pitch_jitter_spin = QDoubleSpinBox()
+        self.grain_pitch_jitter_spin.setDecimals(0)
+        self.grain_pitch_jitter_spin.setRange(0, 100)
+        self.grain_pitch_jitter_spin.setSingleStep(5)
+        self.grain_pitch_jitter_spin.setValue(
+            LOOP_GRAIN_PITCH_JITTER_DEFAULT * 100.0
+        )
+        self.grain_pitch_jitter_spin.setSuffix(" %")
+        self.grain_pitch_jitter_spin.setFixedWidth(62)
+        self.grain_pitch_jitter_spin.setToolTip(
+            "Per-grain pitch scatter: a shimmer/detune on top of the snapped "
+            "ratio. 0 = every grain at exactly the effective ratio. Heavy "
+            "values make Tartini warble (lower it if the cloud sounds unstable)."
+        )
+        motion_row.addWidget(self.grain_pitch_jitter_spin)
+
+        self.grain_snap_checkbox = QCheckBox("Snap")
+        self.grain_snap_checkbox.setChecked(bool(LOOP_GRAIN_PITCH_SNAP_DEFAULT))
+        self.grain_snap_checkbox.setToolTip(
+            "Snap the grain ratio to the nearest ratio of the CURRENT JI set "
+            "(x octaves). The status line then shows the effective ratio "
+            "(e.g. x3/2) instead of the raw float. A set change re-snaps a "
+            "playing grain loop."
+        )
+        self.grain_snap_checkbox.toggled.connect(self._on_grain_snap)
+        motion_row.addWidget(self.grain_snap_checkbox)
+
+        motion_row.addWidget(QLabel("Smear"))
+        self.grain_smear_spin = QDoubleSpinBox()
+        self.grain_smear_spin.setDecimals(0)
+        self.grain_smear_spin.setRange(0, 100)
+        self.grain_smear_spin.setSingleStep(5)
+        self.grain_smear_spin.setValue(LOOP_GRAIN_SMEAR_DEFAULT * 100.0)
+        self.grain_smear_spin.setSuffix(" %")
+        self.grain_smear_spin.setFixedWidth(62)
+        self.grain_smear_spin.setToolTip(
+            "Post-autotune diffusion (two short allpasses): blur/space on top "
+            "of the tuned loop. 0 % is the dry accepted chain; low values are "
+            "subtle."
+        )
+        motion_row.addWidget(self.grain_smear_spin)
+
+        self.grain_freeze_checkbox = QCheckBox("Freeze")
+        self.grain_freeze_checkbox.setToolTip(
+            "Hold the motion where it is (the cloud keeps sounding). Unfreeze "
+            "continues from the same position -- no jump."
+        )
+        self.grain_freeze_checkbox.toggled.connect(self._on_grain_freeze)
+        motion_row.addWidget(self.grain_freeze_checkbox)
+
+        self.grain_rate_spin.valueChanged.connect(
+            lambda value: self._on_grain_value(
+                "grain_rate", round(float(value), 1)
+            )
+        )
+        self.grain_size_spin.valueChanged.connect(
+            lambda value: self._on_grain_value(
+                "grain_size", round(float(value), 0)
+            )
+        )
+        self.grain_pos_spin.valueChanged.connect(
+            lambda value: self._on_grain_value(
+                "grain_pos", round(float(value) / 100.0, 3)
+            )
+        )
+        self.grain_scatter_spin.valueChanged.connect(
+            lambda value: self._on_grain_value(
+                "grain_scatter", round(float(value) / 100.0, 3)
+            )
+        )
+        self.grain_pitch_spin.valueChanged.connect(
+            lambda value: self._on_grain_value(
+                "grain_pitch", round(float(value), 2)
+            )
+        )
+        self.grain_reverse_spin.valueChanged.connect(
+            lambda value: self._on_grain_value(
+                "grain_reverse", round(float(value) / 100.0, 3)
+            )
+        )
+        self.grain_speed_spin.valueChanged.connect(
+            lambda value: self._on_grain_value(
+                "grain_speed", round(float(value), 3)
+            )
+        )
+        self.grain_depth_spin.valueChanged.connect(
+            lambda value: self._on_grain_value(
+                "grain_depth", round(float(value) / 100.0, 3)
+            )
+        )
+        self.grain_size_jitter_spin.valueChanged.connect(
+            lambda value: self._on_grain_value(
+                "grain_size_jitter", round(float(value) / 100.0, 3)
+            )
+        )
+        self.grain_pitch_jitter_spin.valueChanged.connect(
+            lambda value: self._on_grain_value(
+                "grain_pitch_jitter", round(float(value) / 100.0, 3)
+            )
+        )
+        self.grain_smear_spin.valueChanged.connect(
+            lambda value: self._on_grain_value(
+                "grain_smear", round(float(value) / 100.0, 3)
+            )
+        )
+        motion_row.addStretch(1)
+        layout.addLayout(motion_row);
+
+        # --- Stage 8.6.2: ONE MORPH row (dry loop <-> grain, selected loop) -
+        #  Morph is the main gesture: 0 is the ORIGINAL loop, 1 is the full
+        #  grain cloud, and everything in between is the smear of the two.
+        #  Melt makes the loop start at the original and ramp to the Morph
+        #  value; Filter is a moving post-autotune filter that fuses the two
+        #  layers (it also works on the plain loop).
+        morph_row = QHBoxLayout()
+        morph_row.setSpacing(4)
+        morph_row.addWidget(QLabel("Morph"))
+        self.grain_morph_spin = QDoubleSpinBox()
+        self.grain_morph_spin.setDecimals(0)
+        self.grain_morph_spin.setRange(0, 100)
+        self.grain_morph_spin.setSingleStep(5)
+        self.grain_morph_spin.setValue(LOOP_GRAIN_MORPH_DEFAULT * 100.0)
+        self.grain_morph_spin.setSuffix(" %")
+        self.grain_morph_spin.setFixedWidth(62)
+        self.grain_morph_spin.setToolTip(
+            "Dry loop <-> grain cloud. 0 % = the original loop (normal "
+            "playback, through the JI autotune), 100 % = the full grain cloud, "
+            "in between = the two smeared together. Needs Grain on."
+        )
+        morph_row.addWidget(self.grain_morph_spin)
+
+        self.grain_melt_checkbox = QCheckBox("Melt")
+        self.grain_melt_checkbox.setToolTip(
+            "Start from the original and progressively melt into the grains: "
+            "Play (or ticking Melt) ramps the Morph amount from 0 to the Morph "
+            "slider over about 4 s. Untick to melt back to the original. "
+            "Changing Morph while melting re-targets the ramp."
+        )
+        morph_row.addWidget(self.grain_melt_checkbox)
+
+        morph_row.addWidget(QLabel("Filter"))
+        self.grain_filter_spin = QDoubleSpinBox()
+        self.grain_filter_spin.setDecimals(0)
+        self.grain_filter_spin.setRange(0, 100)
+        self.grain_filter_spin.setSingleStep(5)
+        self.grain_filter_spin.setValue(LOOP_GRAIN_FILTER_DEFAULT * 100.0)
+        self.grain_filter_spin.setSuffix(" %")
+        self.grain_filter_spin.setFixedWidth(62)
+        self.grain_filter_spin.setToolTip(
+            "Moving melt filter (post-autotune): a resonant lowpass and a low "
+            "cut, each on its own slow LFO, sweep the dry+grain mix so the two "
+            "layers fuse into one texture. 0 % is bypass (the dry chain); it "
+            "works on the plain loop too."
+        )
+        morph_row.addWidget(self.grain_filter_spin)
+
+        morph_row.addWidget(QLabel("F.Rate"))
+        self.grain_filter_rate_spin = QDoubleSpinBox()
+        self.grain_filter_rate_spin.setDecimals(2)
+        self.grain_filter_rate_spin.setRange(
+            LOOP_GRAIN_FILTER_RATE_MIN, 1.0
+        )
+        self.grain_filter_rate_spin.setSingleStep(0.01)
+        self.grain_filter_rate_spin.setValue(LOOP_GRAIN_FILTER_RATE_DEFAULT)
+        self.grain_filter_rate_spin.setFixedWidth(58)
+        self.grain_filter_rate_spin.setToolTip(
+            "Filter movement speed in Hz: 0.12 is a slow sweep (about 8 s per "
+            "cycle); higher is a more obvious wobble."
+        )
+        morph_row.addWidget(self.grain_filter_rate_spin)
+
+        # Stage 8.7: the loop's own grain-breath LFO (independent of the
+        # bridge's breathing rhythm engine; 0 % is an exact bypass).
+        morph_row.addWidget(QLabel("Breath"))
+        self.grain_breath_spin = QDoubleSpinBox()
+        self.grain_breath_spin.setDecimals(0)
+        self.grain_breath_spin.setRange(0, 100)
+        self.grain_breath_spin.setSingleStep(5)
+        self.grain_breath_spin.setValue(LOOP_GRAIN_BREATH_DEFAULT * 100.0)
+        self.grain_breath_spin.setSuffix(" %")
+        self.grain_breath_spin.setFixedWidth(60)
+        self.grain_breath_spin.setToolTip(
+            "The loop's own grain breath: density and grain size swell on a "
+            "slow LFO inside the voice. 0 % is exactly unchanged. Needs Grain "
+            "on."
+        )
+        morph_row.addWidget(self.grain_breath_spin)
+
+        morph_row.addWidget(QLabel("B.Rate"))
+        self.grain_breath_rate_spin = QDoubleSpinBox()
+        self.grain_breath_rate_spin.setDecimals(2)
+        self.grain_breath_rate_spin.setRange(
+            LOOP_GRAIN_BREATH_RATE_MIN, LOOP_GRAIN_BREATH_RATE_MAX
+        )
+        self.grain_breath_rate_spin.setSingleStep(0.01)
+        self.grain_breath_rate_spin.setValue(LOOP_GRAIN_BREATH_RATE_DEFAULT)
+        self.grain_breath_rate_spin.setFixedWidth(58)
+        self.grain_breath_rate_spin.setToolTip(
+            "Grain-breath speed in Hz: 0.03 is a long breath, 0.3 a pulse."
+        )
+        morph_row.addWidget(self.grain_breath_rate_spin)
+
+        self.grain_morph_spin.valueChanged.connect(
+            lambda value: self._on_grain_value(
+                "grain_morph", round(float(value) / 100.0, 3)
+            )
+        )
+        self.grain_melt_checkbox.toggled.connect(self._on_grain_melt)
+        self.grain_filter_spin.valueChanged.connect(
+            lambda value: self._on_grain_value(
+                "grain_filter", round(float(value) / 100.0, 3)
+            )
+        )
+        self.grain_filter_rate_spin.valueChanged.connect(
+            lambda value: self._on_grain_value(
+                "grain_filter_rate", round(float(value), 2)
+            )
+        )
+        self.grain_breath_spin.valueChanged.connect(
+            lambda value: self._on_grain_value(
+                "grain_breath", round(float(value) / 100.0, 3)
+            )
+        )
+        self.grain_breath_rate_spin.valueChanged.connect(
+            lambda value: self._on_grain_value(
+                "grain_breath_rate", round(float(value), 2)
+            )
+        )
+
+        morph_row.addStretch(1)
+        layout.addLayout(morph_row)
+
+        # --- Stage 9.0: ONE HARM row (post-PitchShift delay FX) -----------
+        #  Harm = off / Cascade (one captured segment, harmonics entering in
+        #  order) / Delay (continuous harmonized buffer delay).  Mix/Time/
+        #  TimeSync/Steps/Fall work in both active modes; Space/Auto/Fire are
+        #  Cascade-only.  Time can be FREE seconds or a fixed musical division
+        #  (owner follow-up: quarter notes, dotted, triplets, a bar); the
+        #  seconds spin becomes a read-only display of the tempo-derived time.
+        harm_row = QHBoxLayout()
+        harm_row.setSpacing(4)
+        harm_row.addWidget(QLabel("Harm"))
+        self.harm_mode_combo = QComboBox()
+        self.harm_mode_combo.addItems(["off", "Cascade", "Delay"])
+        self.harm_mode_combo.setFixedWidth(82)
+        self.harm_mode_combo.setToolTip(
+            "Per-loop harmonic-series delay, AFTER the JI PitchShift (it uses "
+            "the tuned loop, never a second autotune). off = no FX synth. "
+            "Cascade = capture a segment and play it at 1x, 2x, 3x ... in "
+            "order on Fire/Auto. Delay = a continuous harmonized buffer delay "
+            "(varispeed character, no trigger)."
+        )
+        self.harm_mode_combo.currentTextChanged.connect(self._on_harm_mode)
+        harm_row.addWidget(self.harm_mode_combo)
+
+        harm_row.addWidget(QLabel("Mix"))
+        self.harm_mix_spin = QDoubleSpinBox()
+        self.harm_mix_spin.setDecimals(0)
+        self.harm_mix_spin.setRange(0, 100)
+        self.harm_mix_spin.setSingleStep(5)
+        self.harm_mix_spin.setValue(osc_control.LOOP_HARM_MIX_DEFAULT * 100.0)
+        self.harm_mix_spin.setSuffix(" %")
+        self.harm_mix_spin.setFixedWidth(62)
+        self.harm_mix_spin.setToolTip(
+            "Wet return level. The dry loop is always upstream, so 0 % is the "
+            "accepted loop and 100 % is the full harmonic stack."
+        )
+        harm_row.addWidget(self.harm_mix_spin)
+
+        harm_row.addWidget(QLabel("Time"))
+        self.harm_time_spin = QDoubleSpinBox()
+        self.harm_time_spin.setDecimals(2)
+        self.harm_time_spin.setRange(
+            osc_control.LOOP_HARM_TIME_MIN, osc_control.LOOP_HARM_TIME_MAX
+        )
+        self.harm_time_spin.setSingleStep(0.05)
+        self.harm_time_spin.setValue(osc_control.LOOP_HARM_TIME_DEFAULT)
+        self.harm_time_spin.setSuffix(" s")
+        self.harm_time_spin.setFixedWidth(72)
+        self.harm_time_spin.setToolTip(
+            "Cascade segment length / Delay base window in seconds "
+            "(0.05-2.00, the FX buffer size). Disabled when TimeSync is a "
+            "musical division; the spin then shows the tempo-derived seconds."
+        )
+        harm_row.addWidget(self.harm_time_spin)
+
+        self.harm_time_sync_combo = QComboBox()
+        self.harm_time_sync_combo.addItems(
+            list(osc_control.LOOP_HARM_TIME_SYNCS)
+        )
+        self.harm_time_sync_combo.setFixedWidth(64)
+        self.harm_time_sync_combo.setToolTip(
+            "Fixed (tempo-locked) delay time: free = use the seconds spin; "
+            "1/4 = a quarter note, 1/4d = dotted, 1/4t = triplet, 1 bar = the "
+            "current meter. Values are clamped to the 2 s FX buffer."
+        )
+        harm_row.addWidget(self.harm_time_sync_combo)
+
+        harm_row.addWidget(QLabel("Steps"))
+        self.harm_steps_spin = QSpinBox()
+        self.harm_steps_spin.setRange(
+            osc_control.LOOP_HARM_STEPS_MIN, osc_control.LOOP_HARM_STEPS_MAX
+        )
+        self.harm_steps_spin.setValue(osc_control.LOOP_HARM_STEPS_DEFAULT)
+        self.harm_steps_spin.setFixedWidth(48)
+        self.harm_steps_spin.setToolTip(
+            "Harmonics 1..N: 1 = the fundamental only, 2 adds the octave, "
+            "3 the 12th, 4 the 16th ... up to 8 (all exact integer multiples)."
+        )
+        harm_row.addWidget(self.harm_steps_spin)
+
+        harm_row.addWidget(QLabel("Space"))
+        self.harm_spacing_spin = QDoubleSpinBox()
+        self.harm_spacing_spin.setDecimals(0)
+        self.harm_spacing_spin.setRange(0, 1000)
+        self.harm_spacing_spin.setSingleStep(10)
+        self.harm_spacing_spin.setValue(
+            osc_control.LOOP_HARM_SPACING_DEFAULT * 1000.0
+        )
+        self.harm_spacing_spin.setSuffix(" ms")
+        self.harm_spacing_spin.setFixedWidth(74)
+        self.harm_spacing_spin.setToolTip(
+            "Cascade entry spacing (0-1000 ms): each harmonic enters this long "
+            "after the previous one. 0 = all harmonics together. Inert in "
+            "Delay mode."
+        )
+        harm_row.addWidget(self.harm_spacing_spin)
+
+        harm_row.addWidget(QLabel("Fall"))
+        self.harm_falloff_spin = QDoubleSpinBox()
+        self.harm_falloff_spin.setDecimals(0)
+        self.harm_falloff_spin.setRange(0, 100)
+        self.harm_falloff_spin.setSingleStep(5)
+        self.harm_falloff_spin.setValue(
+            osc_control.LOOP_HARM_FALLOFF_DEFAULT * 100.0
+        )
+        self.harm_falloff_spin.setSuffix(" %")
+        self.harm_falloff_spin.setFixedWidth(62)
+        self.harm_falloff_spin.setToolTip(
+            "High-harmonic roll-off: amplitude = 1 / k^(0.5 + 1.5 * Fall). "
+            "0 % is gentle (1/sqrt(k)); 100 % is 1/k^2 (dark, fundamental-"
+            "heavy)."
+        )
+        harm_row.addWidget(self.harm_falloff_spin)
+
+        self.harm_auto_checkbox = QCheckBox("Auto")
+        self.harm_auto_checkbox.setChecked(bool(osc_control.LOOP_HARM_AUTO_DEFAULT))
+        self.harm_auto_checkbox.setToolTip(
+            "Cascade auto-fire: the first capture fires after one segment "
+            "length, then after each cascade. Inert in Delay mode."
+        )
+        harm_row.addWidget(self.harm_auto_checkbox)
+
+        self.harm_fire_button = QPushButton("Fire")
+        self.harm_fire_button.setMinimumHeight(20)
+        self.harm_fire_button.setMinimumWidth(52)
+        self.harm_fire_button.setToolTip(
+            "Fire one Cascade pass now (enabled only in Cascade while the "
+            "selected loop is playing). It sends /ji/loop/fx_fire, not an "
+            "edit."
+        )
+        harm_row.addWidget(self.harm_fire_button)
+
+        self.loop_edit_label = QLabel("Loop 1 · ×1/1 · count-in off · gain 0.70")
+        self.loop_edit_label.setMinimumWidth(300)
+        harm_row.addWidget(self.loop_edit_label)
+        harm_row.addStretch(1)
+        layout.addLayout(harm_row)
+
+        self.harm_time_sync_combo.currentTextChanged.connect(
+            self._on_harm_time_sync
+        )
+        self.harm_mix_spin.valueChanged.connect(
+            lambda value: self._on_harm_value(
+                "harm_mix", round(float(value) / 100.0, 3)
+            )
+        )
+        self.harm_time_spin.valueChanged.connect(
+            lambda value: self._on_harm_value(
+                "harm_time", round(float(value), 3)
+            )
+        )
+        self.harm_steps_spin.valueChanged.connect(
+            lambda value: self._on_harm_value("harm_steps", int(value))
+        )
+        self.harm_spacing_spin.valueChanged.connect(
+            lambda value: self._on_harm_value(
+                "harm_spacing", round(float(value) / 1000.0, 3)
+            )
+        )
+        self.harm_falloff_spin.valueChanged.connect(
+            lambda value: self._on_harm_value(
+                "harm_falloff", round(float(value) / 100.0, 3)
+            )
+        )
+        self.harm_auto_checkbox.toggled.connect(
+            lambda checked: self._on_harm_value("harm_auto", 1 if checked else 0)
+        )
+        self.harm_fire_button.clicked.connect(self._on_harm_fire)
 
         bottom = QHBoxLayout()
         bottom.setSpacing(5)
@@ -1186,6 +2490,139 @@ class MainWindow(QMainWindow):
         top.addWidget(self.resync_button)
         top.addStretch(1)
         layout.addLayout(top)
+
+        # --- Stage 8.7: ONE Breath row (the whole grid breathes) -----------
+        breath_row = QHBoxLayout()
+        breath_row.setSpacing(4)
+        self.breath_enable_checkbox = QCheckBox("Breath")
+        self.breath_enable_checkbox.setChecked(False)
+        self.breath_enable_checkbox.setToolTip(
+            "Make the played grid breathe: events arrive early/late and "
+            "velocities swell in a slow, physical cycle. The canonical tempo "
+            "and bar grid never move. Off is exactly the old timing."
+        )
+        self.breath_enable_checkbox.toggled.connect(self._on_breath_enabled)
+        breath_row.addWidget(self.breath_enable_checkbox)
+
+        breath_row.addWidget(QLabel("Depth"))
+        self.breath_depth_spin = QSpinBox()
+        self.breath_depth_spin.setRange(0, 100)
+        self.breath_depth_spin.setValue(int(round(BREATH_DEFAULT_DEPTH * 100)))
+        self.breath_depth_spin.setSuffix(" %")
+        self.breath_depth_spin.setFixedWidth(58)
+        self.breath_depth_spin.setToolTip(
+            "How far events move early/late: up to +/- half a 16th at 100 %."
+        )
+        self.breath_depth_spin.valueChanged.connect(
+            lambda value: self._on_breath_value(
+                "depth", round(float(value) / 100.0, 3)
+            )
+        )
+        breath_row.addWidget(self.breath_depth_spin)
+
+        breath_row.addWidget(QLabel("Period"))
+        self.breath_period_spin = QSpinBox()
+        self.breath_period_spin.setRange(
+            BREATH_PERIOD_BARS_MIN, BREATH_PERIOD_BARS_MAX
+        )
+        self.breath_period_spin.setValue(BREATH_DEFAULT_PERIOD_BARS)
+        self.breath_period_spin.setSuffix(" b")
+        self.breath_period_spin.setFixedWidth(54)
+        self.breath_period_spin.setToolTip(
+            "One full inhale + exhale, in bars (1 = a fast pulse, 16 = a long "
+            "swell)."
+        )
+        self.breath_period_spin.valueChanged.connect(
+            lambda value: self._on_breath_value("period_bars", int(value))
+        )
+        breath_row.addWidget(self.breath_period_spin)
+
+        breath_row.addWidget(QLabel("Shape"))
+        self.breath_shape_combo = QComboBox()
+        self.breath_shape_combo.addItems(list(BREATH_SHAPES))
+        self.breath_shape_combo.setCurrentText(BREATH_DEFAULT_SHAPE)
+        self.breath_shape_combo.setFixedWidth(76)
+        self.breath_shape_combo.setToolTip(
+            "Where the breath accelerates: sine/triangle are even, inhale "
+            "fills fast and releases slowly, exhale the opposite."
+        )
+        self.breath_shape_combo.currentTextChanged.connect(
+            lambda text: self._on_breath_value("shape", str(text))
+        )
+        breath_row.addWidget(self.breath_shape_combo)
+
+        breath_row.addWidget(QLabel("Intensity"))
+        self.breath_intensity_spin = QSpinBox()
+        self.breath_intensity_spin.setRange(0, 100)
+        self.breath_intensity_spin.setValue(
+            int(round(BREATH_DEFAULT_INTENSITY * 100))
+        )
+        self.breath_intensity_spin.setSuffix(" %")
+        self.breath_intensity_spin.setFixedWidth(58)
+        self.breath_intensity_spin.setToolTip(
+            "Velocity/expression swell. 0 % is timing only; 100 % is a strong "
+            "swell."
+        )
+        self.breath_intensity_spin.valueChanged.connect(
+            lambda value: self._on_breath_value(
+                "intensity", round(float(value) / 100.0, 3)
+            )
+        )
+        breath_row.addWidget(self.breath_intensity_spin)
+
+        breath_row.addWidget(QLabel("Phase"))
+        self.breath_phase_spin = QSpinBox()
+        self.breath_phase_spin.setRange(0, 100)
+        self.breath_phase_spin.setValue(int(round(BREATH_DEFAULT_PHASE * 100)))
+        self.breath_phase_spin.setSuffix(" %")
+        self.breath_phase_spin.setFixedWidth(58)
+        self.breath_phase_spin.setToolTip(
+            "Rotate the breath against the bar (0 % starts at the bottom of "
+            "the inhale)."
+        )
+        self.breath_phase_spin.valueChanged.connect(
+            lambda value: self._on_breath_value(
+                "phase", round(float(value) / 100.0, 3)
+            )
+        )
+        breath_row.addWidget(self.breath_phase_spin)
+
+        breath_row.addWidget(QLabel("Arp local"))
+        self.breath_arp_spin = QSpinBox()
+        self.breath_arp_spin.setRange(0, 100)
+        self.breath_arp_spin.setValue(int(round(BREATH_DEFAULT_ARP_LOCAL * 100)))
+        self.breath_arp_spin.setSuffix(" %")
+        self.breath_arp_spin.setFixedWidth(58)
+        self.breath_arp_spin.setToolTip(
+            "The arp's extra breath depth. With Arp sync off it breathes half "
+            "a cycle out of phase (against the groove); with Arp sync on it "
+            "uses the master phase and is just deeper."
+        )
+        self.breath_arp_spin.valueChanged.connect(
+            lambda value: self._on_breath_value(
+                "arp_local", round(float(value) / 100.0, 3)
+            )
+        )
+        breath_row.addWidget(self.breath_arp_spin)
+
+        self.breath_arp_sync_checkbox = QCheckBox("Arp sync")
+        self.breath_arp_sync_checkbox.setChecked(BREATH_DEFAULT_ARP_SYNC)
+        self.breath_arp_sync_checkbox.setToolTip(
+            "Use the master breath phase for the arp instead of its own "
+            "half-cycle phase: the arp inhales/exhales with the rest of the "
+            "groove. Arp local still adds depth. (Breath phase, not the Arp "
+            "group's beat Sync.)"
+        )
+        self.breath_arp_sync_checkbox.toggled.connect(
+            self._on_breath_arp_sync
+        )
+        breath_row.addWidget(self.breath_arp_sync_checkbox)
+
+        self.breath_hint = QLabel("breath off")
+        self.breath_hint.setMinimumWidth(100)
+        breath_row.addWidget(self.breath_hint)
+        breath_row.addStretch(1)
+        layout.addLayout(breath_row)
 
         self.rhythm_label = QLabel("Rhythm: waiting for bridge")
         self.drum_label = QLabel("Drums: waiting for bridge")
@@ -1437,10 +2874,55 @@ class MainWindow(QMainWindow):
         self.bass_note_label = QLabel("Last: --")
         status_row = QHBoxLayout()
         status_row.setSpacing(8)
+        # Stage 8.7: the editable one-bar hit row lives on the status row.
+        self.bass_hits_checkbox = QCheckBox("Hits")
+        self.bass_hits_checkbox.setChecked(BASS_HITS_DEFAULT_ENABLED)
+        self.bass_hits_checkbox.setToolTip(
+            "One editable row of bass hits per bar (no pitch, no per-step "
+            "velocity). While Hits is on, Len is not used: the row is one bar "
+            "of the current Grid. Enabling seeds the row from the generated "
+            "pattern if it is empty."
+        )
+        self.bass_hits_checkbox.toggled.connect(self._on_bass_hits_enabled)
+        status_row.addWidget(self.bass_hits_checkbox)
+        self.bass_hits_copy_button = QPushButton("Copy")
+        self.bass_hits_copy_button.setMinimumHeight(22)
+        self.bass_hits_copy_button.setToolTip(
+            "Seed the hit row from the generated pattern of bar 1 (the pitch, "
+            "accent and gate stay as they are)."
+        )
+        self.bass_hits_copy_button.clicked.connect(
+            lambda: self._guard(self.controller.bass_copy_hits)
+        )
+        status_row.addWidget(self.bass_hits_copy_button)
+        self.bass_hits_clear_button = QPushButton("Clear")
+        self.bass_hits_clear_button.setMinimumHeight(22)
+        self.bass_hits_clear_button.setToolTip(
+            "Turn every hit off (deliberate silence); use Copy to get a row "
+            "back."
+        )
+        self.bass_hits_clear_button.clicked.connect(
+            lambda: self._guard(self.controller.bass_clear_hits)
+        )
+        status_row.addWidget(self.bass_hits_clear_button)
         status_row.addWidget(self.bass_label)
         status_row.addWidget(self.bass_note_label)
         status_row.addStretch(1)
         layout.addLayout(status_row)
+
+        # Hidden by default; showing it does not change the default height.
+        self.bass_hits_scroll = QScrollArea()
+        self.bass_hits_scroll.setWidgetResizable(True)
+        self.bass_hits_scroll.setVisible(False)
+        self.bass_hits_scroll.setMaximumHeight(34)
+        self.bass_hits_container = QWidget()
+        self.bass_hits_layout = QHBoxLayout(self.bass_hits_container)
+        self.bass_hits_layout.setContentsMargins(0, 0, 0, 0)
+        self.bass_hits_layout.setSpacing(2)
+        self.bass_hits_scroll.setWidget(self.bass_hits_container)
+        layout.addWidget(self.bass_hits_scroll)
+        self.bass_hit_buttons: dict[int, QPushButton] = {}
+        self._bass_hits_built = 0
 
         self.bass_controls: list[QWidget] = [
             self.bass_enable_checkbox,
@@ -1453,6 +2935,10 @@ class MainWindow(QMainWindow):
             self.bass_octave_range_spin,
             self.bass_base_octave_spin,
             self.bass_seed_spin,
+            self.bass_hits_checkbox,
+            self.bass_hits_copy_button,
+            self.bass_hits_clear_button,
+            self.bass_hits_scroll,
             *self.bass_knobs.values(),
         ]
         return group
@@ -1927,8 +3413,69 @@ class MainWindow(QMainWindow):
                 f"Last: {note.note_name} {note.hz:.2f} Hz"
             )
 
-    # -- Stage 8.3b arp controls ----------------------------------------
+    # -- Stage 8.7 bass hit row -----------------------------------------
 
+    def _on_bass_hits_enabled(self, checked: bool) -> None:
+        if self._bass_hits_sync:
+            return
+        self._guard(self.controller.bass_set_hits_enabled, bool(checked))
+        self.bass_hits_scroll.setVisible(bool(checked))
+        self._set_message(
+            "Bass hits on (row seeded from the pattern)" if checked
+            else "Bass hits off (generated pattern)"
+        )
+
+    def _on_bass_hit_toggled(self, index: int, checked: bool) -> None:
+        if self._bass_hits_sync:
+            return
+        self._guard(self.controller.bass_set_hit, int(index), bool(checked))
+
+    def _rebuild_bass_hits(self, count: int) -> None:
+        """(Re)build the one-bar hit buttons for ``count`` cells."""
+
+        while self.bass_hits_layout.count():
+            item = self.bass_hits_layout.takeAt(0)
+            widget = item.widget() if item is not None else None
+            if widget is not None:
+                widget.deleteLater()
+        self.bass_hit_buttons = {}
+        for index in range(count):
+            button = QPushButton(str(index))
+            button.setCheckable(True)
+            button.setFixedSize(30, 26)
+            button.setToolTip(f"Hit {index} of the bar")
+            button.toggled.connect(
+                lambda checked, i=index: self._on_bass_hit_toggled(i, checked)
+            )
+            self.bass_hits_layout.addWidget(button)
+            self.bass_hit_buttons[index] = button
+        self.bass_hits_layout.addStretch(1)
+        self._bass_hits_built = count
+
+    def _sync_bass_hits(self) -> None:
+        """Mirror ``/ji/bass/hits`` into the Hits checkbox and its row."""
+
+        enabled = bool(self.store.bass_hits_enabled)
+        hits = self.store.bass_hits or ()
+        was_sync = self._bass_hits_sync
+        self._bass_hits_sync = True
+        try:
+            if self.bass_hits_checkbox.isChecked() != enabled:
+                self.bass_hits_checkbox.setChecked(enabled)
+        finally:
+            self._bass_hits_sync = was_sync
+        if len(hits) != self._bass_hits_built:
+            self._rebuild_bass_hits(len(hits))
+        for index, button in self.bass_hit_buttons.items():
+            wanted = bool(hits[index]) if index < len(hits) else False
+            button.blockSignals(True)
+            try:
+                button.setChecked(wanted)
+            finally:
+                button.blockSignals(False)
+        self.bass_hits_scroll.setVisible(bool(enabled and hits))
+
+    # -- Stage 8.3b arp controls ----------------------------------------
     def _arp_message(self, label: str) -> None:
         self._set_message(
             f"{label} queued for the next beat"
@@ -2194,6 +3741,18 @@ class MainWindow(QMainWindow):
             f"Lead groove link {'on' if checked else 'off'}"
         )
 
+    def _on_lead_note_len(self, checked: bool) -> None:
+        if self._lead_sync:
+            return
+        self._guard(
+            self.controller.set_lead_setting,
+            "gate_mode",
+            "note" if checked else "beat",
+        )
+        self._lead_message(
+            f"Lead gate mode {'note length' if checked else 'beat'}"
+        )
+
     def _sync_lead_controls(self) -> None:
         """Reflect ``/ji/lead/state`` with signals blocked (no feedback OSC)."""
 
@@ -2221,6 +3780,7 @@ class MainWindow(QMainWindow):
             self.lead_seed_spin.setValue(int(lead.seed))
             self.lead_variation_bars_spin.setValue(int(lead.variation_bars))
             self.lead_groove_link_checkbox.setChecked(bool(lead.groove_link))
+            self.lead_note_len_checkbox.setChecked(bool(lead.note_gate))
         finally:
             self._lead_sync = False
         self._update_lead_label()
@@ -2241,7 +3801,15 @@ class MainWindow(QMainWindow):
                 "Lead: disabled (Bus 5 not available; start with --lead)"
             )
         else:
-            self.lead_label.setText("Lead: " + lead.status_line())
+            line = "Lead: " + lead.status_line()
+            status = self.store.lead_input
+            if status is not None and (
+                status.melody_name or status.source != "generated"
+            ):
+                line += f" | {status.source}"
+                if status.melody_name:
+                    line += f' "{status.melody_name}"'
+            self.lead_label.setText(line)
         note = self.store.lead_note
         if note is None:
             self.lead_note_label.setText("Last: --")
@@ -2251,6 +3819,423 @@ class MainWindow(QMainWindow):
             )
 
     # -- Stage 8.3d drone mode controls ----------------------------------
+
+    # -- Stage 9.1 lead input --------------------------------------------
+
+    def _build_lead_input_group(self) -> QGroupBox:
+        """One compact Lead input group (two rows + status)."""
+
+        group = QGroupBox("Lead input")
+        layout = QVBoxLayout(group)
+        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setSpacing(2)
+        self._lead_input_sync = True
+
+        row = QHBoxLayout()
+        row.setSpacing(3)
+        row.addWidget(QLabel("Port:"))
+        self.lead_input_port_label = QLabel("--")
+        self.lead_input_port_label.setMinimumWidth(140)
+        self.lead_input_port_label.setToolTip(
+            "The controller the bridge opened. Edit config/lead_input_config.json "
+            "(or --lead-in-port) and press Refresh to change it."
+        )
+        row.addWidget(self.lead_input_port_label)
+        self.lead_input_refresh_button = QPushButton("Refresh")
+        self.lead_input_refresh_button.setMinimumHeight(24)
+        self.lead_input_refresh_button.setToolTip(
+            "Close and re-open the configured MIDI input."
+        )
+        self.lead_input_refresh_button.clicked.connect(self._on_lead_input_refresh)
+        row.addWidget(self.lead_input_refresh_button)
+
+        self.lead_input_keys_checkbox = QCheckBox("Keys")
+        self.lead_input_keys_checkbox.setToolTip(
+            "QWERTY a w s e d f t g y h u j play the mapped line; z/x shift the "
+            "octave. GUI-local: keys only sound while Live or Rec is on."
+        )
+        self.lead_input_keys_checkbox.toggled.connect(self._on_lead_input_keys)
+        row.addWidget(self.lead_input_keys_checkbox)
+
+        self.lead_input_live_checkbox = QCheckBox("Live")
+        self.lead_input_live_checkbox.setToolTip(
+            "Monitor the input: the sequencer stops while Live is on and "
+            "resumes on the next bar line when it is turned off."
+        )
+        self.lead_input_live_checkbox.toggled.connect(self._on_lead_input_live)
+        row.addWidget(self.lead_input_live_checkbox)
+
+        self.lead_input_record_button = QPushButton("Rec")
+        self.lead_input_record_button.setMinimumHeight(24)
+        self.lead_input_record_button.setToolTip(
+            "Record the played line from the next bar line (needs Play)."
+        )
+        self.lead_input_record_button.clicked.connect(self._on_lead_input_record)
+        row.addWidget(self.lead_input_record_button)
+
+        self.lead_input_stop_button = QPushButton("Stop")
+        self.lead_input_stop_button.setMinimumHeight(24)
+        self.lead_input_stop_button.setToolTip(
+            "Stop the count-in, or keep the partial take."
+        )
+        self.lead_input_stop_button.clicked.connect(self._on_lead_input_stop)
+        row.addWidget(self.lead_input_stop_button)
+
+        self.lead_input_revert_button = QPushButton("Revert")
+        self.lead_input_revert_button.setMinimumHeight(24)
+        self.lead_input_revert_button.setToolTip(
+            "Restore the recorded base (all variations undone)."
+        )
+        self.lead_input_revert_button.clicked.connect(self._on_lead_input_revert)
+        row.addWidget(self.lead_input_revert_button)
+
+        self.lead_input_clear_button = QPushButton("Clear")
+        self.lead_input_clear_button.setMinimumHeight(24)
+        self.lead_input_clear_button.setToolTip(
+            "Clear the melody and return to the generated line."
+        )
+        self.lead_input_clear_button.clicked.connect(self._on_lead_input_clear)
+        row.addWidget(self.lead_input_clear_button)
+        row.addStretch(1)
+        layout.addLayout(row)
+
+        row2 = QHBoxLayout()
+        row2.setSpacing(3)
+        self.lead_input_quant_knob = Knob(
+            "Quant",
+            0.0,
+            1.0,
+            LEAD_INPUT_QUANTIZE_DEFAULT,
+            steps=100,
+            fmt="{:.0%}",
+        )
+        self.lead_input_quant_knob.valueChanged.connect(
+            self._on_lead_input_quantize
+        )
+        row2.addWidget(self.lead_input_quant_knob)
+
+        row2.addWidget(QLabel("Count-in"))
+        self.lead_input_count_in_combo = QComboBox()
+        self.lead_input_count_in_combo.addItems(list(LEAD_INPUT_COUNT_INS))
+        self.lead_input_count_in_combo.setCurrentText(
+            LEAD_INPUT_COUNT_IN_DEFAULT
+        )
+        self.lead_input_count_in_combo.setToolTip(
+            "Silent count-in before the take starts on the next bar line."
+        )
+        self.lead_input_count_in_combo.currentTextChanged.connect(
+            self._on_lead_input_count_in
+        )
+        row2.addWidget(self.lead_input_count_in_combo)
+
+        row2.addWidget(QLabel("Bars"))
+        self.lead_input_bars_spin = QSpinBox()
+        self.lead_input_bars_spin.setRange(
+            LEAD_INPUT_BARS_MIN, LEAD_INPUT_BARS_MAX
+        )
+        self.lead_input_bars_spin.setValue(LEAD_INPUT_BARS_DEFAULT)
+        self.lead_input_bars_spin.setFixedWidth(46)
+        self.lead_input_bars_spin.setSuffix(" b")
+        self.lead_input_bars_spin.setToolTip("Take length in bars (1..8).")
+        self.lead_input_bars_spin.valueChanged.connect(
+            self._on_lead_input_bars
+        )
+        row2.addWidget(self.lead_input_bars_spin)
+
+        row2.addWidget(QLabel("Melody"))
+        self.lead_melody_combo = QComboBox()
+        self.lead_melody_combo.setMinimumWidth(120)
+        self.lead_melody_combo.setToolTip(
+            "Saved melodies from the bridge (melodies/<name>.json)."
+        )
+        self.lead_melody_combo.currentTextChanged.connect(
+            self._on_melody_combo_changed
+        )
+        row2.addWidget(self.lead_melody_combo)
+
+        row2.addWidget(QLabel("Name"))
+        self.lead_melody_name_edit = QLineEdit()
+        self.lead_melody_name_edit.setMinimumWidth(110)
+        self.lead_melody_name_edit.setPlaceholderText("melody name")
+        self.lead_melody_name_edit.setToolTip(
+            "Save name (1-40 characters, no path separators)."
+        )
+        self.lead_melody_name_edit.textChanged.connect(
+            self._on_melody_name_changed
+        )
+        row2.addWidget(self.lead_melody_name_edit)
+
+        self.lead_melody_save_button = QPushButton("Save")
+        self.lead_melody_save_button.setMinimumHeight(24)
+        self.lead_melody_save_button.clicked.connect(self._on_melody_save)
+        row2.addWidget(self.lead_melody_save_button)
+
+        self.lead_melody_load_button = QPushButton("Load")
+        self.lead_melody_load_button.setMinimumHeight(24)
+        self.lead_melody_load_button.clicked.connect(self._on_melody_load)
+        row2.addWidget(self.lead_melody_load_button)
+
+        self.lead_melody_delete_button = QPushButton("Del")
+        self.lead_melody_delete_button.setMinimumHeight(24)
+        self.lead_melody_delete_button.clicked.connect(self._on_melody_delete)
+        row2.addWidget(self.lead_melody_delete_button)
+        row2.addStretch(1)
+        layout.addLayout(row2)
+
+        status_row = QHBoxLayout()
+        status_row.setSpacing(10)
+        self.lead_input_status_label = QLabel("Input: waiting for bridge")
+        self.melody_status_label = QLabel("Melody: --")
+        status_row.addWidget(self.lead_input_status_label)
+        status_row.addWidget(self.melody_status_label)
+        status_row.addStretch(1)
+        layout.addLayout(status_row)
+
+        self.lead_input_controls: list[QWidget] = [
+            self.lead_input_port_label,
+            self.lead_input_refresh_button,
+            self.lead_input_keys_checkbox,
+            self.lead_input_live_checkbox,
+            self.lead_input_record_button,
+            self.lead_input_stop_button,
+            self.lead_input_revert_button,
+            self.lead_input_clear_button,
+            self.lead_input_quant_knob,
+            self.lead_input_count_in_combo,
+            self.lead_input_bars_spin,
+            self.lead_melody_combo,
+            self.lead_melody_name_edit,
+            self.lead_melody_save_button,
+            self.lead_melody_load_button,
+            self.lead_melody_delete_button,
+        ]
+        self._lead_input_sync = False
+        self._sync_lead_input_controls()
+        self._sync_melody_list()
+        self._update_lead_input_label()
+        return group
+
+    def _on_lead_input_refresh(self) -> None:
+        self._guard(self.controller.refresh_lead_input)
+        self._set_message("Lead input refresh requested")
+
+    def _on_lead_input_keys(self, checked: bool) -> None:
+        if not checked:
+            self._release_keys()
+        self._set_message(f"Keys {'on' if checked else 'off'}")
+
+    def _on_lead_input_live(self, checked: bool) -> None:
+        if self._lead_input_sync:
+            return
+        self._guard(self.controller.set_lead_input_enabled, bool(checked))
+        self._set_message(f"Live {'on' if checked else 'off'}")
+
+    def _on_lead_input_record(self) -> None:
+        self._guard(self.controller.lead_input_record)
+        self._set_message("Recording requested")
+
+    def _on_lead_input_stop(self) -> None:
+        self._guard(self.controller.lead_input_stop)
+        self._set_message("Recording stopped")
+
+    def _on_lead_input_revert(self) -> None:
+        self._guard(self.controller.lead_input_revert)
+        self._set_message("Revert to the recorded base")
+
+    def _on_lead_input_clear(self) -> None:
+        self._guard(self.controller.lead_input_clear)
+        self._set_message("Melody cleared; generated line restored")
+
+    def _on_lead_input_quantize(self, value: float) -> None:
+        if self._lead_input_sync:
+            return
+        self._pending[("lead_input", "quantize")] = float(value)
+
+    def _on_lead_input_count_in(self, text: str) -> None:
+        if self._lead_input_sync:
+            return
+        self._guard(self.controller.set_lead_input_count_in, text)
+
+    def _on_lead_input_bars(self, value: int) -> None:
+        if self._lead_input_sync:
+            return
+        self._guard(self.controller.set_lead_input_bars, int(value))
+
+    def _sync_lead_input_controls(self) -> None:
+        """Reflect ``/ji/lead/input/state`` with signals blocked."""
+
+        status = self.store.lead_input
+        self._lead_input_sync = True
+        try:
+            if status is not None:
+                self.lead_input_port_label.setText(status.port_name or "(none)")
+                self.lead_input_live_checkbox.setChecked(bool(status.live))
+                if status.count_in in LEAD_INPUT_COUNT_INS:
+                    self.lead_input_count_in_combo.setCurrentText(status.count_in)
+                self.lead_input_bars_spin.setValue(int(status.bars))
+                self.lead_input_quant_knob.set_value(status.quantize, emit=False)
+            live = bool(status.live) if status is not None else False
+            port_ok = bool(status.port_ok) if status is not None else False
+            source = status.source if status is not None else "generated"
+            rhythm = self.store.rhythm
+            running = bool(rhythm.running) if rhythm is not None else False
+            self.lead_input_record_button.setEnabled(running and port_ok)
+            self.lead_input_stop_button.setEnabled(
+                bool(status.recording) if status is not None else False
+            )
+            self.lead_input_revert_button.setEnabled(source == "played")
+            self.lead_input_clear_button.setEnabled(source == "played")
+            self.lead_input_live_checkbox.setEnabled(port_ok)
+            self.lead_input_refresh_button.setEnabled(True)
+            if not live:
+                self._release_keys()
+        finally:
+            self._lead_input_sync = False
+        self._update_melody_buttons()
+
+    def _update_lead_input_label(self) -> None:
+        status = self.store.lead_input
+        if status is None:
+            self.lead_input_status_label.setText("Input: waiting for bridge")
+            self.melody_status_label.setText("Melody: --")
+            return
+        self.lead_input_status_label.setText("Input: " + status.input_line())
+        self.melody_status_label.setText("Melody: " + status.melody_line())
+
+    # -- melody list -----------------------------------------------------
+
+    def _sync_melody_list(self) -> None:
+        names = list(self.store.melody_names)
+        self._melody_sync = True
+        try:
+            current = self.lead_melody_combo.currentText()
+            self.lead_melody_combo.clear()
+            self.lead_melody_combo.addItems(names)
+            if current in names:
+                self.lead_melody_combo.setCurrentText(current)
+            elif names:
+                self.lead_melody_combo.setCurrentIndex(0)
+        finally:
+            self._melody_sync = False
+        self._on_melody_combo_changed(self.lead_melody_combo.currentText())
+
+    def _on_melody_combo_changed(self, text: str) -> None:
+        if self._melody_sync:
+            return
+        if text:
+            self.lead_melody_name_edit.setText(text)
+        self._update_melody_buttons()
+
+    def _on_melody_name_changed(self, _text: str) -> None:
+        self._update_melody_buttons()
+
+    def _update_melody_buttons(self) -> None:
+        name = self.lead_melody_combo.currentText()
+        known = bool(name) and name in self.store.melody_names
+        self.lead_melody_load_button.setEnabled(known)
+        self.lead_melody_delete_button.setEnabled(known)
+        self.lead_melody_save_button.setEnabled(
+            bool(self.lead_melody_name_edit.text().strip())
+        )
+
+    def _selected_melody(self) -> str:
+        return self.lead_melody_name_edit.text().strip() or (
+            self.lead_melody_combo.currentText()
+        )
+
+    def _on_melody_save(self) -> None:
+        name = self.lead_melody_name_edit.text().strip()
+        if not name:
+            self._set_message("Type a melody name first")
+            return
+        self._guard(self.controller.melody_save, name)
+        self._set_message(f'Save melody "{name}"')
+
+    def _on_melody_load(self) -> None:
+        name = self.lead_melody_combo.currentText()
+        if not name:
+            self._set_message("Select a melody first")
+            return
+        self._guard(self.controller.melody_load, name)
+        self._set_message(f'Load melody "{name}"')
+
+    def _on_melody_delete(self) -> None:
+        name = self.lead_melody_combo.currentText()
+        if not name:
+            self._set_message("Select a melody first")
+            return
+        self._guard(self.controller.melody_delete, name)
+        self._set_message(f'Delete melody "{name}"')
+
+    # -- QWERTY ----------------------------------------------------------
+
+    def _typing_focus(self) -> bool:
+        widget = QApplication.focusWidget()
+        return isinstance(
+            widget, (QLineEdit, QComboBox, QAbstractSpinBox)
+        )
+
+    def _keys_active(self) -> bool:
+        return bool(self.lead_input_keys_checkbox.isChecked()) and not self._typing_focus()
+
+    def _release_keys(self) -> None:
+        if not getattr(self, "_keys_down", None):
+            self._keys_down = set()
+            self._key_notes = {}
+            return
+        for note in sorted(self._keys_down):
+            self._guard(self.controller.lead_input_note_off, int(note))
+        self._keys_down = set()
+        self._key_notes = {}
+
+    def _on_focus_changed(self, _old: Any, new: Any) -> None:
+        if new is None or isinstance(
+            new, (QLineEdit, QComboBox, QAbstractSpinBox)
+        ):
+            self._release_keys()
+            return
+        if isinstance(new, QWidget) and not self.isAncestorOf(new):
+            self._release_keys()
+
+    def keyPressEvent(self, event: Any) -> None:  # noqa: N802 (Qt API)
+        if (
+            event.isAutoRepeat()
+            or not self._keys_active()
+            or event.modifiers() != Qt.KeyboardModifier.NoModifier
+        ):
+            super().keyPressEvent(event)
+            return
+        text = str(event.text()).strip().lower()
+        if text in ("z", "x"):
+            shift = -1 if text == "z" else 1
+            self._keyboard_octave = max(-2, min(2, self._keyboard_octave + shift))
+            self._set_message(f"Keys octave {self._keyboard_octave:+d}")
+            event.accept()
+            return
+        note = key_midi(text, self._keyboard_octave)
+        if note is None:
+            super().keyPressEvent(event)
+            return
+        if note not in self._keys_down:
+            self._keys_down.add(note)
+            if not hasattr(self, "_key_notes"):
+                self._key_notes = {}
+            self._key_notes[text] = note
+            self._guard(self.controller.lead_input_note_on, int(note), 100)
+        event.accept()
+
+    def keyReleaseEvent(self, event: Any) -> None:  # noqa: N802 (Qt API)
+        if event.isAutoRepeat():
+            super().keyReleaseEvent(event)
+            return
+        text = str(event.text()).strip().lower()
+        note = getattr(self, "_key_notes", {}).pop(text, None)
+        if note is not None:
+            self._keys_down.discard(note)
+            self._guard(self.controller.lead_input_note_off, int(note))
+            event.accept()
+            return
+        super().keyReleaseEvent(event)
 
     def _drone_message(self, label: str) -> None:
         self._set_message(
@@ -2686,6 +4671,14 @@ class MainWindow(QMainWindow):
             self.lead_knobs[spec.key] = knob
             row2.addWidget(knob)
 
+        self.lead_note_len_checkbox = QCheckBox("Note len")
+        self.lead_note_len_checkbox.setToolTip(
+            "On: a note's own length sets the gate (recorded takes). "
+            "Off: the Gate knob caps every note (the generated line)."
+        )
+        self.lead_note_len_checkbox.toggled.connect(self._on_lead_note_len)
+        row2.addWidget(self.lead_note_len_checkbox)
+
         self.lead_groove_link_checkbox = QCheckBox("Groove link")
         self.lead_groove_link_checkbox.setChecked(True)
         self.lead_groove_link_checkbox.setToolTip(
@@ -2773,6 +4766,7 @@ class MainWindow(QMainWindow):
             self.lead_variation_combo,
             self.lead_phrase_spin,
             self.lead_vary_button,
+            self.lead_note_len_checkbox,
             self.lead_groove_link_checkbox,
             self.lead_octave_range_spin,
             self.lead_base_octave_spin,
@@ -3031,6 +5025,272 @@ class MainWindow(QMainWindow):
         self._update_drone_label()
         return group
 
+    def _build_fretboard_group(self) -> QGroupBox:
+        """Stage 8.8 improvisation aid: one full-width group, no OSC."""
+
+        group = QGroupBox("Fretboard")
+        layout = QVBoxLayout(group)
+        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setSpacing(2)
+
+        # Every combo/spin in this group is signal-blocked while it is built:
+        # the aid is read-only and must never send a control message.
+        self._fretboard_sync = True
+        row = QHBoxLayout()
+        row.setSpacing(3)
+
+        row.addWidget(QLabel("Strings"))
+        self.fretboard_strings_spin = QSpinBox()
+        self.fretboard_strings_spin.setRange(
+            fretboard.MIN_STRINGS, fretboard.MAX_STRINGS
+        )
+        self.fretboard_strings_spin.setValue(
+            fretboard.DEFAULT_TUNING.string_count
+        )
+        self.fretboard_strings_spin.setFixedWidth(42)
+        self.fretboard_strings_spin.setToolTip(
+            "6, 7 or 8 strings. Adding one prepends a string a fourth below "
+            "the current lowest; removing drops the lowest strings."
+        )
+        self.fretboard_strings_spin.valueChanged.connect(
+            self._on_fretboard_strings
+        )
+        row.addWidget(self.fretboard_strings_spin)
+
+        row.addWidget(QLabel("Frets"))
+        self.fretboard_frets_spin = QSpinBox()
+        self.fretboard_frets_spin.setRange(
+            fretboard.MIN_FRETS, fretboard.MAX_FRETS
+        )
+        self.fretboard_frets_spin.setValue(fretboard.DEFAULT_FRETS)
+        self.fretboard_frets_spin.setFixedWidth(42)
+        self.fretboard_frets_spin.setToolTip(
+            "0..24 frets. The open-string column is always drawn."
+        )
+        self.fretboard_frets_spin.valueChanged.connect(self._on_fretboard_frets)
+        row.addWidget(self.fretboard_frets_spin)
+
+        row.addWidget(QLabel("Tuning"))
+        self.fretboard_tuning_combo = QComboBox()
+        self.fretboard_tuning_combo.addItems(
+            [label for label, _strings in fretboard.TUNING_PRESETS]
+            + [fretboard.CUSTOM_PRESET]
+        )
+        self.fretboard_tuning_combo.setCurrentText("Standard E")
+        self.fretboard_tuning_combo.setMinimumWidth(124)
+        self.fretboard_tuning_combo.setToolTip(
+            "Whole-neck presets (Standard E, Drop D, DADGAD, Open G/D, …). "
+            "Editing one string below switches the label to Custom. This is "
+            "a session-only aid: it is never saved and never sent."
+        )
+        self.fretboard_tuning_combo.currentIndexChanged.connect(
+            self._on_fretboard_preset
+        )
+        row.addWidget(self.fretboard_tuning_combo)
+
+        self.fretboard_string_combos: list[QComboBox] = []
+        for index in range(fretboard.MAX_STRINGS):
+            combo = QComboBox()
+            for midi in range(128):
+                combo.addItem(fretboard.midi_note_name(midi), midi)
+            combo.setFixedWidth(58)
+            combo.setToolTip(
+                f"Open string {index + 1} (low to high), any MIDI note 0..127."
+            )
+            combo.currentIndexChanged.connect(
+                lambda _position, string=index: (
+                    self._on_fretboard_string_changed(string)
+                )
+            )
+            combo.setVisible(index < fretboard.DEFAULT_TUNING.string_count)
+            self.fretboard_string_combos.append(combo)
+            row.addWidget(combo)
+
+        self.fretboard_names_checkbox = QCheckBox("Names")
+        self.fretboard_names_checkbox.setChecked(True)
+        self.fretboard_names_checkbox.setToolTip(
+            "Draw the note name inside each marker. Markers stay when off."
+        )
+        self.fretboard_names_checkbox.toggled.connect(self._on_fretboard_names)
+        row.addWidget(self.fretboard_names_checkbox)
+        row.addStretch(1)
+        layout.addLayout(row)
+
+        # The set summary and the degree legend share one compact row so the
+        # default window fits without scrolling; the legend wraps on a narrow
+        # screen and the scroll area remains the net.
+        labels_row = QHBoxLayout()
+        labels_row.setSpacing(8)
+        self.fretboard_set_label = QLabel("Fretboard: waiting for the set")
+        self.fretboard_set_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        labels_row.addWidget(self.fretboard_set_label)
+        self.fretboard_legend_label = QLabel("")
+        self.fretboard_legend_label.setWordWrap(True)
+        self.fretboard_legend_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        labels_row.addWidget(self.fretboard_legend_label, 1)
+        layout.addLayout(labels_row)
+
+        self.fretboard_widget = FretboardWidget()
+        layout.addWidget(self.fretboard_widget)
+        self._fretboard_sync = False
+        return group
+
+    # -- Stage 8.8 fretboard handlers (never call the controller) -------
+
+    def _on_fretboard_strings(self, value: int) -> None:
+        if self._fretboard_sync:
+            return
+        try:
+            self._fretboard_tuning = self._fretboard_tuning.with_count(
+                int(value)
+            )
+        except (TypeError, ValueError):
+            self._sync_fretboard_controls()
+            return
+        self._sync_fretboard_controls()
+        self._redraw_fretboard()
+
+    def _on_fretboard_frets(self, _value: int) -> None:
+        if self._fretboard_sync:
+            return
+        self._redraw_fretboard()
+
+    def _on_fretboard_preset(self, _position: int = 0) -> None:
+        if self._fretboard_sync:
+            return
+        strings = fretboard.TUNING_PRESET_MAP.get(
+            self.fretboard_tuning_combo.currentText()
+        )
+        if strings is None:
+            # "Custom" is display-only: restore the real tuning's label.
+            self._sync_fretboard_controls()
+            return
+        self._fretboard_tuning = fretboard.GuitarTuning.create(strings)
+        self._sync_fretboard_controls()
+        self._redraw_fretboard()
+
+    def _on_fretboard_string_changed(self, index: int) -> None:
+        if self._fretboard_sync:
+            return
+        if not 0 <= index < len(self.fretboard_string_combos):
+            return
+        midi = self.fretboard_string_combos[index].currentData()
+        if midi is None:
+            return
+        try:
+            self._fretboard_tuning = self._fretboard_tuning.with_string(
+                index, int(midi)
+            )
+        except (TypeError, ValueError):
+            self._sync_fretboard_controls()
+            return
+        self._sync_fretboard_controls()
+        self._redraw_fretboard()
+
+    def _on_fretboard_names(self, _checked: bool) -> None:
+        if self._fretboard_sync:
+            return
+        self._redraw_fretboard()
+
+    def _sync_fretboard_controls(self) -> None:
+        """Reflect ``self._fretboard_tuning`` with signals blocked."""
+
+        if not hasattr(self, "fretboard_strings_spin"):
+            return
+        was_sync = self._fretboard_sync
+        self._fretboard_sync = True
+        try:
+            tuning = self._fretboard_tuning
+            self.fretboard_strings_spin.setValue(tuning.string_count)
+            self.fretboard_tuning_combo.setCurrentText(tuning.preset)
+            for index, combo in enumerate(self.fretboard_string_combos):
+                visible = index < tuning.string_count
+                combo.setVisible(visible)
+                if visible:
+                    position = combo.findData(tuning.strings[index])
+                    if position >= 0:
+                        combo.setCurrentIndex(position)
+        finally:
+            self._fretboard_sync = was_sync
+
+    def _redraw_fretboard(self) -> None:
+        if not hasattr(self, "fretboard_widget"):
+            return
+        self.fretboard_widget.set_board(
+            self._fretboard_tuning,
+            self._fretboard_degrees,
+            root_pc=self._fretboard_root_pc,
+            anchor_pc=self._fretboard_anchor_pc,
+            frets=int(self.fretboard_frets_spin.value()),
+            show_names=bool(self.fretboard_names_checkbox.isChecked()),
+            fundamental=self._fretboard_fundamental,
+        )
+
+    def _sync_fretboard(self) -> None:
+        """Follow ``/ji/freqset/changed``; never sends anything."""
+
+        if not hasattr(self, "fretboard_widget"):
+            return
+        freqset = self.store.freqset
+        if freqset is None:
+            self._fretboard_degrees = ()
+            self._fretboard_root_pc = None
+            self._fretboard_anchor_pc = None
+            self._fretboard_fundamental = None
+            self.fretboard_set_label.setText("Fretboard: waiting for the set")
+            self.fretboard_legend_label.setText("")
+            self._redraw_fretboard()
+            return
+        try:
+            degrees = fretboard.scale_degrees(
+                freqset.fundamental, freqset.ratios
+            )
+            root_pc = fretboard.root_pitch_class(freqset.fundamental)
+            anchor_pc = (
+                fretboard.ratio_pitch_class(
+                    freqset.fundamental, freqset.anchor
+                )
+                if freqset.anchor is not None
+                else None
+            )
+        except (TypeError, ValueError):
+            # store.apply already rejects malformed sets; keep the last good
+            # diagram if a bad object ever reaches here.
+            self.fretboard_set_label.setText("Fretboard: invalid set (ignored)")
+            return
+        self._fretboard_degrees = degrees
+        self._fretboard_root_pc = root_pc
+        self._fretboard_anchor_pc = anchor_pc
+        self._fretboard_fundamental = float(freqset.fundamental)
+        summary = fretboard.scale_summary(degrees)
+        self.fretboard_set_label.setText(
+            f"12-TET set (A = {freqset.fundamental:.2f} Hz): {summary}"
+        )
+        self.fretboard_legend_label.setText(self._fretboard_legend(degrees))
+        self._redraw_fretboard()
+
+    def _fretboard_legend(self, degrees: Any) -> str:
+        parts = []
+        for degree in degrees:
+            source = degree.best_source
+            text = (
+                f"{degree.name} {_fretboard_ratio_label(source.ratio)} "
+                f"{_cents_text(source.cents)}¢"
+            )
+            if len(degree.sources) > 1:
+                extras = ", ".join(
+                    f"{_fretboard_ratio_label(other.ratio)} "
+                    f"{_cents_text(other.cents)}¢"
+                    for other in degree.sources[1:]
+                )
+                text += f" ({extras})"
+            parts.append(text)
+        return " · ".join(parts)
+
     def _build_status_group(self) -> QGroupBox:
         group = QGroupBox("Status")
         grid = QGridLayout(group)
@@ -3038,7 +5298,9 @@ class MainWindow(QMainWindow):
         grid.setHorizontalSpacing(8)
         grid.setVerticalSpacing(1)
 
-        fixed = QFont("Monospace")
+        # The platform's fixed-width font (Menlo on macOS, DejaVu Sans Mono
+        # elsewhere).  "Monospace" is a Linux alias Qt cannot resolve on macOS.
+        fixed = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
         fixed.setStyleHint(QFont.StyleHint.TypeWriter)
         fixed.setPointSize(8)
 
@@ -3248,6 +5510,376 @@ class MainWindow(QMainWindow):
         if self._loop_mode(index) == "beat":
             self._set_message(f"Loop {index} play queued for the next beat")
 
+    # -- Stage 8.6 loop editing ----------------------------------------
+
+    def _selected_loop(self) -> int:
+        return int(self.loop_edit_selector.currentIndex()) + 1
+
+    def _selected_mem_slot(self) -> int:
+        return int(self.loop_mem_combo.currentIndex())
+
+    def _loop_edit_for(self, index: int) -> osc_control.LoopEdit:
+        edit = self.store.loop_edits.get(index)
+        if edit is None:
+            edit = osc_control.LoopEdit(index=index)
+            self.store.loop_edits[index] = edit
+        return edit
+
+    def _bpm(self) -> float:
+        """Bridge BPM for the fixed-time display (120 when unknown)."""
+
+        rhythm = self.store.rhythm
+        return float(rhythm.bpm) if rhythm is not None else 120.0
+
+    def _bar_beats(self) -> float:
+        """Current meter bar in quarter beats (4/4 when unknown)."""
+
+        rhythm = self.store.rhythm
+        if rhythm is None:
+            return 4.0
+        return max(1.0, rhythm.meter_num * 4.0 / rhythm.meter_den)
+
+    def _dub_loop(self, index: int) -> None:
+        self._guard(self.controller.loop_dub, index)
+        self._set_message(
+            f"Loop {index} overdub: one pass over what is already there"
+        )
+
+    def _on_loop_edit_selected(self, _position: int = 0) -> None:
+        if self._loop_edit_sync:
+            return
+        self._sync_loop_edit_row(self._selected_loop())
+
+    def _send_loop_edit(self, param: str, value: Any) -> None:
+        if self._loop_edit_sync:
+            return
+        index = self._selected_loop()
+        self._guard(self.controller.set_loop_edit, index, param, value)
+        # Optimistic local echo so the row and its status line react at once;
+        # the authoritative /ji/loop/edit reply overwrites this.
+        self._apply_local_edit(self._loop_edit_for(index), param, value)
+        self._refresh_loop_edit_label(index)
+
+    def _effective_pitch(self, edit: osc_control.LoopEdit) -> float:
+        """The ratio the voice gets (optimistic mirror of sclang's snap)."""
+
+        if edit.is_snapped:
+            freqset = self.store.freqset
+            ratios = (
+                list(freqset.ratios)
+                if freqset is not None and freqset.ratios
+                else [1.0]
+            )
+            return osc_control.loop_snap_pitch(edit.grain_pitch, ratios)
+        return min(4.0, max(0.25, float(edit.grain_pitch)))
+
+    def _apply_local_edit(
+        self, edit: osc_control.LoopEdit, param: str, value: Any
+    ) -> None:
+        if param == "reverse":
+            edit.reverse = 1 if value else 0
+        elif param == "rate":
+            edit.rate = float(value)
+        elif param == "gain":
+            edit.gain = float(value)
+        elif param == "mode":
+            edit.mode = 1 if value else 0
+        elif param == "sync":
+            edit.sync = 1 if value else 0
+        elif param == "division":
+            edit.division = str(value)
+        elif param == "grain_rate":
+            edit.grain_rate = float(value)
+        elif param == "grain_size":
+            edit.grain_size_ms = float(value)
+        elif param == "grain_pos":
+            edit.grain_pos = float(value)
+        elif param == "grain_scatter":
+            edit.grain_scatter = float(value)
+        elif param == "grain_pitch":
+            edit.grain_pitch = float(value)
+            edit.effective_pitch = self._effective_pitch(edit)
+        elif param == "grain_reverse":
+            edit.grain_reverse = float(value)
+        elif param == "grain_size_jitter":
+            edit.grain_size_jitter = float(value)
+        elif param == "grain_pitch_jitter":
+            edit.grain_pitch_jitter = float(value)
+        elif param == "grain_pitch_snap":
+            edit.grain_pitch_snap = 1 if value else 0
+            edit.effective_pitch = self._effective_pitch(edit)
+        elif param == "grain_smear":
+            edit.grain_smear = float(value)
+        elif param == "grain_freeze":
+            edit.grain_freeze = 1 if value else 0
+        elif param == "grain_motion":
+            edit.grain_motion = str(value)
+        elif param == "grain_speed":
+            edit.grain_speed = float(value)
+        elif param == "grain_depth":
+            edit.grain_depth = float(value)
+        elif param == "grain_burst":
+            edit.grain_burst = float(value)
+        elif param == "grain_morph":
+            edit.grain_morph = float(value)
+        elif param == "grain_melt":
+            edit.grain_melt = 1 if value else 0
+        elif param == "grain_filter":
+            edit.grain_filter = float(value)
+        elif param == "grain_filter_rate":
+            edit.grain_filter_rate = float(value)
+        elif param == "grain_breath":
+            edit.grain_breath = float(value)
+        elif param == "grain_breath_rate":
+            edit.grain_breath_rate = float(value)
+        elif param == "count_in":
+            edit.count_in = str(value)
+        elif param == "auto_play":
+            edit.auto_play = 1 if value else 0
+        elif param == "harm_mode":
+            edit.harm_mode = str(value)
+        elif param == "harm_mix":
+            edit.harm_mix = float(value)
+        elif param == "harm_time":
+            edit.harm_time = float(value)
+        elif param == "harm_time_sync":
+            edit.harm_time_sync = str(value)
+        elif param == "harm_steps":
+            edit.harm_steps = int(value)
+        elif param == "harm_spacing":
+            edit.harm_spacing = float(value)
+        elif param == "harm_falloff":
+            edit.harm_falloff = float(value)
+        elif param == "harm_auto":
+            edit.harm_auto = 1 if value else 0
+
+    def _refresh_loop_edit_label(self, index: int) -> None:
+        self.loop_edit_label.setText(
+            self._loop_edit_for(index).status_line(
+                self._bpm(), self._bar_beats()
+            )
+        )
+
+    def _on_loop_reverse(self, checked: bool) -> None:
+        self._send_loop_edit("reverse", 1 if checked else 0)
+
+    def _on_loop_rate(self, position: int) -> None:
+        if 0 <= position < len(LOOP_RATE_VALUES):
+            self._send_loop_edit("rate", LOOP_RATE_VALUES[position])
+
+    def _on_loop_gain(self, value: float) -> None:
+        self._send_loop_edit("gain", round(float(value), 2))
+
+    def _on_loop_count_in(self, text: str) -> None:
+        if text:
+            self._send_loop_edit("count_in", text)
+
+    def _on_loop_auto(self, checked: bool) -> None:
+        self._send_loop_edit("auto_play", 1 if checked else 0)
+
+    # -- Stage 9.0 harmonic-series delay FX ------------------------------
+
+    def _on_harm_mode(self, text: str) -> None:
+        if self._loop_edit_sync:
+            return
+        mode = str(text).strip().lower()
+        if mode not in osc_control.LOOP_HARM_MODES:
+            return
+        self._send_loop_edit("harm_mode", mode)
+        self._refresh_harm_enabled()
+
+    def _on_harm_time_sync(self, text: str) -> None:
+        if self._loop_edit_sync or not text:
+            return
+        self._reassert_harm_mode()
+        self._send_loop_edit("harm_time_sync", text)
+        #  Show the derived seconds immediately; the sclang echo then makes it
+        #  authoritative.  Set the spin with the guard so this display update
+        #  never sends a harm_time edit.
+        edit = self._loop_edit_for(self._selected_loop())
+        was_sync = self._loop_edit_sync
+        self._loop_edit_sync = True
+        try:
+            self.harm_time_spin.setValue(
+                edit.harm_time
+                if edit.harm_time_sync == "free"
+                else edit.harm_time_seconds(self._bpm(), self._bar_beats())
+            )
+        finally:
+            self._loop_edit_sync = was_sync
+        self._refresh_harm_enabled()
+
+    def _reassert_harm_mode(self) -> None:
+        """Send the mode the combo shows before a parameter edit.
+
+        The Harm mode is the one piece of FX state that gates the whole synth.
+        Re-asserting it here makes a lost/ignored mode message self-healing:
+        changing Mix/Time/Steps/Space/Fall/Auto on a loop that the UI shows as
+        Cascade/Delay now always sends `harm_mode` first.  It is a no-op when
+        the mode is off.
+        """
+
+        mode = str(self.harm_mode_combo.currentText()).strip().lower()
+        if mode in ("cascade", "delay"):
+            self._send_loop_edit("harm_mode", mode)
+
+    def _on_harm_value(self, param: str, value: Any) -> None:
+        self._reassert_harm_mode()
+        self._send_loop_edit(param, value)
+
+    def _on_harm_fire(self) -> None:
+        index = self._selected_loop()
+        #  Fire is enabled only for Cascade; re-assert the mode so a dropped
+        #  earlier edit cannot leave the fire with no FX synth to trigger.
+        self._reassert_harm_mode()
+        self._guard(self.controller.loop_fx_fire, index)
+        self._set_message(
+            f"Loop {index} harmonic cascade fired" if self.harm_fire_button.isEnabled()
+            else f"Loop {index} Fire ignored (not Cascade/playing)"
+        )
+
+    def _refresh_harm_enabled(self) -> None:
+        """Enable only the FX controls that matter in the current mode.
+
+        Mix/Time/TimeSync/Steps/Fall work in both active modes; Space/Auto are
+        Cascade-only; Fire is Cascade + the selected loop playing.  With Harm
+        off every FX control except the mode combo is disabled.  The Time spin
+        is editable only in ``free``; a fixed division shows the tempo-derived
+        seconds read-only.  It stays ENABLED in that case (read-only, no step
+        buttons) so Qt does not move keyboard focus to the next control (the
+        old behaviour looked like the edit had jumped to `Default len`).
+        """
+
+        if not hasattr(self, "harm_mix_spin"):
+            return
+        edit = self._loop_edit_for(self._selected_loop())
+        active = edit.harm_mode in ("cascade", "delay")
+        cascade = edit.harm_mode == "cascade"
+        for widget in (
+            self.harm_mix_spin,
+            self.harm_time_spin,
+            self.harm_time_sync_combo,
+            self.harm_steps_spin,
+            self.harm_falloff_spin,
+        ):
+            widget.setEnabled(active)
+        for widget in (self.harm_spacing_spin, self.harm_auto_checkbox):
+            widget.setEnabled(cascade)
+        free_time = edit.harm_time_sync == "free"
+        self.harm_time_spin.setReadOnly(not free_time)
+        self.harm_time_spin.setButtonSymbols(
+            QAbstractSpinBox.ButtonSymbols.UpDownArrows
+            if free_time
+            else QAbstractSpinBox.ButtonSymbols.NoButtons
+        )
+        playing = self.store.loop_states.get(self._selected_loop()) == "playing"
+        self.harm_fire_button.setEnabled(cascade and playing)
+
+    def _on_grain_toggled(self, checked: bool) -> None:
+        self._send_loop_edit("mode", 1 if checked else 0)
+        self._refresh_grain_enabled()
+
+    def _on_grain_sync(self, position: int) -> None:
+        self._send_loop_edit("sync", 1 if position == 1 else 0)
+        self._refresh_grain_enabled()
+
+    def _on_grain_div(self, text: str) -> None:
+        if text:
+            self._send_loop_edit("division", text)
+
+    def _on_grain_motion(self, text: str) -> None:
+        if text:
+            self._send_loop_edit("grain_motion", text)
+            self._refresh_grain_enabled()
+
+    def _on_grain_snap(self, checked: bool) -> None:
+        self._send_loop_edit("grain_pitch_snap", 1 if checked else 0)
+
+    def _on_grain_freeze(self, checked: bool) -> None:
+        self._send_loop_edit("grain_freeze", 1 if checked else 0)
+        self._refresh_grain_enabled()
+
+    def _on_grain_melt(self, checked: bool) -> None:
+        self._send_loop_edit("grain_melt", 1 if checked else 0)
+        self._refresh_grain_enabled()
+
+    def _on_grain_value(self, param: str, value: float) -> None:
+        self._send_loop_edit(param, value)
+
+    def _on_loop_mem_selected(self, _position: int = 0) -> None:
+        self._sync_loop_mem(self._selected_mem_slot())
+
+    def _on_loop_mem_save(self) -> None:
+        slot = self._selected_mem_slot()
+        index = self._selected_loop()
+        self._guard(self.controller.loop_mem_save, slot, index)
+        self._set_message(
+            f"Loop {index} -> memory {LOOP_MEM_SLOT_NAMES[slot]} (session only)"
+        )
+
+    def _on_loop_mem_recall(self) -> None:
+        slot = self._selected_mem_slot()
+        index = self._selected_loop()
+        self._guard(self.controller.loop_mem_recall, slot, index)
+        self._set_message(
+            f"Memory {LOOP_MEM_SLOT_NAMES[slot]} -> loop {index} (stopped; "
+            "press Play)"
+        )
+
+    def _on_loop_mem_clear(self) -> None:
+        slot = self._selected_mem_slot()
+        self._guard(self.controller.loop_mem_clear, slot)
+        self._set_message(f"Memory {LOOP_MEM_SLOT_NAMES[slot]} cleared")
+
+    def _refresh_grain_enabled(self) -> None:
+        """Grain, motion, morph and loop-breath controls need Grain on.
+
+        The hint explains the current clock/motion state (beat+stopped is the
+        only combination that needs an action from the human); the moving
+        filter stays usable on the plain loop.
+        """
+
+        grain_on = self.grain_checkbox.isChecked()
+        for widget in (
+            self.grain_sync_combo,
+            self.grain_div_combo,
+            self.grain_rate_spin,
+            self.grain_size_spin,
+            self.grain_pos_spin,
+            self.grain_scatter_spin,
+            self.grain_pitch_spin,
+            self.grain_reverse_spin,
+            self.grain_motion_combo,
+            self.grain_speed_spin,
+            self.grain_depth_spin,
+            self.grain_size_jitter_spin,
+            self.grain_pitch_jitter_spin,
+            self.grain_snap_checkbox,
+            self.grain_smear_spin,
+            self.grain_freeze_checkbox,
+            # Stage 8.7: the loop's own grain breath follows the grain switch.
+            self.grain_breath_spin,
+            self.grain_breath_rate_spin,
+        ):
+            widget.setEnabled(grain_on)
+        #  Morph/Melt are grain-mode controls; the moving filter is a
+        #  post-autotune texture and stays usable on the plain loop.
+        self.grain_morph_spin.setEnabled(grain_on)
+        self.grain_melt_checkbox.setEnabled(grain_on)
+        beat = self.grain_sync_combo.currentIndex() == 1
+        if not grain_on:
+            self.grain_hint.setText("")
+        elif beat and not self._transport_running():
+            self.grain_hint.setText("beat grains need the transport (press Play)")
+        elif self.grain_freeze_checkbox.isChecked():
+            self.grain_hint.setText("motion frozen")
+        elif beat:
+            self.grain_hint.setText("locked to the transport")
+        else:
+            self.grain_hint.setText("free-running")
+
+    # -- end Stage 8.6.2 ------------------------------------------------
+
     def _on_mutate_clicked(self) -> None:
         self._guard(self.controller.trigger_mutation)
         self._set_message(
@@ -3322,6 +5954,8 @@ class MainWindow(QMainWindow):
                 self._guard(self.controller.set_arp_param, key[1], value)
             elif key[0] == "lead":
                 self._guard(self.controller.set_lead_param, key[1], value)
+            elif key[0] == "lead_input":
+                self._guard(self.controller.set_lead_input_quantize, value)
             elif key[0] == "drone":
                 self._guard(self.controller.set_drone_param, key[1], value)
             elif key[0] == "home":
@@ -3351,6 +5985,9 @@ class MainWindow(QMainWindow):
     def _sync_rhythm_controls(self) -> None:
         """Reflect the bridge tempo/meter/transport snapshot."""
 
+        if hasattr(self, "grain_hint"):
+            self._refresh_grain_enabled()
+
         rhythm = self.store.rhythm
         if rhythm is None:
             return
@@ -3365,10 +6002,81 @@ class MainWindow(QMainWindow):
             )
         finally:
             self._rhythm_sync = False
+        #  A fixed-time FX display follows the tempo: refresh the Harm row
+        #  (signal-blocked, no OSC) when the BPM/meter snapshot changes.
+        if hasattr(self, "harm_time_spin") and not self._loop_edit_sync:
+            self._sync_loop_edit_row(self._selected_loop())
+
+    # -- Stage 8.7 breath row -------------------------------------------
+
+    def _on_breath_enabled(self, checked: bool) -> None:
+        if self._breath_sync:
+            return
+        self._guard(
+            self.controller.set_breath_param,
+            "enabled",
+            1 if checked else 0,
+        )
+        self._set_message(
+            "Breath on (the grid breathes)" if checked else "Breath off"
+        )
+
+    def _on_breath_value(self, name: str, value: Any) -> None:
+        if self._breath_sync:
+            return
+        self._guard(self.controller.set_breath_param, name, value)
+
+    def _on_breath_arp_sync(self, checked: bool) -> None:
+        if self._breath_sync:
+            return
+        self._guard(
+            self.controller.set_breath_param,
+            "arp_sync",
+            1 if checked else 0,
+        )
+        self._set_message(
+            "Arp breath in sync with the groove" if checked
+            else "Arp breath on its own half-cycle phase"
+        )
+
+    def _refresh_breath_hint(self, breath: Any | None = None) -> None:
+        if breath is None:
+            breath = self.store.breath
+        if breath is None or not breath.enabled:
+            self.breath_hint.setText("breath off")
+            return
+        if breath.depth <= 0.0 and breath.intensity <= 0.0:
+            self.breath_hint.setText("breathing (no depth)")
+            return
+        self.breath_hint.setText(f"breathing · {breath.period_bars} bars")
+
+    def _sync_breath_controls(self) -> None:
+        """Mirror ``/ji/breath/state`` signal-blocked (never echo back)."""
+
+        breath = self.store.breath
+        if breath is None:
+            return
+        self._breath_sync = True
+        try:
+            self.breath_enable_checkbox.setChecked(bool(breath.enabled))
+            self.breath_depth_spin.setValue(int(round(breath.depth * 100.0)))
+            self.breath_period_spin.setValue(int(breath.period_bars))
+            if self.breath_shape_combo.currentText() != breath.shape:
+                self.breath_shape_combo.setCurrentText(breath.shape)
+            self.breath_intensity_spin.setValue(
+                int(round(breath.intensity * 100.0))
+            )
+            self.breath_phase_spin.setValue(int(round(breath.phase * 100.0)))
+            self.breath_arp_spin.setValue(
+                int(round(breath.arp_local * 100.0))
+            )
+            self.breath_arp_sync_checkbox.setChecked(bool(breath.arp_sync))
+        finally:
+            self._breath_sync = False
+        self._refresh_breath_hint(breath)
 
     def _sync_drum_controls(self) -> None:
         """Reflect drum enabled/port/rate/lane-mask state without echoing OSC."""
-
         drums = self.store.drums
         if drums is None:
             return
@@ -3408,11 +6116,100 @@ class MainWindow(QMainWindow):
 
     # -- status labels ---------------------------------------------------
 
+    def _sync_loop_edit_row(self, index: int) -> None:
+        """Mirror one loop's edit state into the edit/grain/motion widgets.
+
+        Signal-blocked: setting a widget here never sends OSC back.  A widget
+        is only touched when the incoming value differs, so an echo that
+        carries the value the human just chose cannot move anything.
+        """
+
+        edit = self._loop_edit_for(index)
+        was_sync = self._loop_edit_sync
+        self._loop_edit_sync = True
+        try:
+            self.loop_reverse_checkbox.setChecked(bool(edit.reverse))
+            if self.loop_rate_combo.currentText() != edit.rate_label:
+                self.loop_rate_combo.setCurrentText(edit.rate_label)
+            self.loop_gain_spin.setValue(edit.gain)
+            if self.loop_count_in_combo.currentText() != edit.count_in:
+                self.loop_count_in_combo.setCurrentText(edit.count_in)
+            self.loop_auto_checkbox.setChecked(bool(edit.auto_play))
+            self.grain_checkbox.setChecked(edit.is_grain)
+            self.grain_sync_combo.setCurrentIndex(1 if edit.is_beat else 0)
+            if self.grain_div_combo.currentText() != edit.division:
+                self.grain_div_combo.setCurrentText(edit.division)
+            self.grain_rate_spin.setValue(edit.grain_rate)
+            self.grain_size_spin.setValue(edit.grain_size_ms)
+            self.grain_pos_spin.setValue(edit.grain_pos * 100.0)
+            self.grain_scatter_spin.setValue(edit.grain_scatter * 100.0)
+            self.grain_pitch_spin.setValue(edit.grain_pitch)
+            self.grain_reverse_spin.setValue(edit.grain_reverse * 100.0)
+            if self.grain_motion_combo.currentText() != edit.grain_motion:
+                self.grain_motion_combo.setCurrentText(edit.grain_motion)
+            self.grain_speed_spin.setValue(edit.grain_speed)
+            self.grain_depth_spin.setValue(edit.grain_depth * 100.0)
+            self.grain_size_jitter_spin.setValue(edit.grain_size_jitter * 100.0)
+            self.grain_pitch_jitter_spin.setValue(
+                edit.grain_pitch_jitter * 100.0
+            )
+            self.grain_snap_checkbox.setChecked(edit.is_snapped)
+            self.grain_smear_spin.setValue(edit.grain_smear * 100.0)
+            self.grain_freeze_checkbox.setChecked(edit.is_frozen)
+            self.grain_morph_spin.setValue(edit.grain_morph * 100.0)
+            self.grain_melt_checkbox.setChecked(edit.is_melting)
+            self.grain_filter_spin.setValue(edit.grain_filter * 100.0)
+            self.grain_filter_rate_spin.setValue(edit.grain_filter_rate)
+            self.grain_breath_spin.setValue(edit.grain_breath * 100.0)
+            self.grain_breath_rate_spin.setValue(edit.grain_breath_rate)
+            #  Stage 9.0 Harm row.
+            labels = {"off": "off", "cascade": "Cascade", "delay": "Delay"}
+            self.harm_mode_combo.setCurrentText(
+                labels.get(edit.harm_mode, "off")
+            )
+            if self.harm_time_sync_combo.currentText() != edit.harm_time_sync:
+                self.harm_time_sync_combo.setCurrentText(edit.harm_time_sync)
+            self.harm_mix_spin.setValue(edit.harm_mix * 100.0)
+            self.harm_time_spin.setValue(
+                edit.harm_time
+                if edit.harm_time_sync == "free"
+                else edit.harm_time_seconds(self._bpm(), self._bar_beats())
+            )
+            self.harm_steps_spin.setValue(int(edit.harm_steps))
+            self.harm_spacing_spin.setValue(edit.harm_spacing * 1000.0)
+            self.harm_falloff_spin.setValue(edit.harm_falloff * 100.0)
+            self.harm_auto_checkbox.setChecked(bool(edit.harm_auto))
+        finally:
+            self._loop_edit_sync = was_sync
+        self.loop_edit_label.setText(
+            edit.status_line(self._bpm(), self._bar_beats())
+        )
+        self._refresh_grain_enabled()
+        self._refresh_harm_enabled()
+
+    def _sync_loop_mem(self, slot: int) -> None:
+        """Enable Recall/Clr only for a filled, selected slot."""
+
+        mem = self.store.loop_mem.get(slot)
+        filled = bool(mem is not None and mem.is_filled)
+        name = LOOP_MEM_SLOT_NAMES[slot] if 0 <= slot < len(LOOP_MEM_SLOT_NAMES) else "?"
+        if slot == self._selected_mem_slot():
+            self.loop_mem_recall_button.setEnabled(filled)
+            self.loop_mem_clear_button.setEnabled(filled)
+            self.loop_mem_combo.setToolTip(
+                f"Memory {name}: "
+                + (mem.status_line() if mem is not None else "empty")
+                + ". Session-only; lost when sclang re-evaluates the rig."
+            )
+
     def _refresh_loop_label(self, index: int) -> None:
         label = self.loop_state_labels.get(index)
         if label is None:
             return
         state = self.store.loop_states.get(index, "waiting")
+        if state == "counting":
+            left = int(self.store.loop_counts.get(index, 0))
+            state = f"counting {left}" if left > 0 else "counting"
         config = self.store.loop_configs.get(
             index, osc_control.LoopConfig()
         )
@@ -3544,6 +6341,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: Any) -> None:  # noqa: N802 (Qt API)
         try:
+            self._release_keys()
             self._flush_pending()
         finally:
             self._send_timer.stop()
@@ -3589,7 +6387,7 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(f"{label} must be between 1 and 65535")
 
     app = QApplication(sys.argv[:1])
-    app.setApplicationName("JI Station Stage 8.5")
+    app.setApplicationName("JI Station Stage 8.8")
 
     controller = OSCController(
         bridge_host=args.bridge_host,

@@ -277,6 +277,77 @@ def test_check_mode_is_side_effect_free() -> None:
     )
 
 
+def test_lead_in_flags() -> None:
+    print("\n=== Test 8b: Stage 9.1 --lead-in flags and --check ===")
+    default = parse_args([])
+    assert default.lead_in is False
+    assert default.lead_in_port is None and default.melody_dir is None
+    assert "--lead-in" not in build_bridge_argv(default)
+    assert "--melody-dir" not in build_bridge_argv(default)
+
+    args = parse_args(
+        [
+            "--lead",
+            "--lead-in",
+            "--lead-in-port",
+            "Launchkey 49",
+            "--lead-in-config",
+            "cfg/lead_input.json",
+            "--melody-dir",
+            "mel",
+        ]
+    )
+    bridge = build_bridge_argv(args)
+    assert "--lead" in bridge and "--lead-in" in bridge, bridge
+    assert _option(bridge, "--lead-in-port") == "Launchkey 49", bridge
+    assert _option(bridge, "--lead-in-config") == "cfg/lead_input.json", bridge
+    assert _option(bridge, "--melody-dir") == "mel", bridge
+    assert "lead input: Launchkey 49" in build_plan(args).notes, build_plan(args).notes
+
+    # --lead-in without --lead is forwarded (the bridge prints one line and
+    # ignores it) and the plan says so.
+    ignored = parse_args(["--lead-in"])
+    assert "--lead-in" in build_bridge_argv(ignored)
+    notes = build_plan(ignored).notes
+    assert any("--lead-in ignored" in note for note in notes), notes
+
+    # --dry-run lists the new flags.
+    code, text = _dry_run(["--lead", "--lead-in", "--lead-in-port", "Launchkey"])
+    assert code == 0
+    bridge_line = [
+        line for line in text.splitlines() if line.startswith("[LAUNCH] bridge: ")
+    ][0]
+    for flag in ("--lead-in", "--lead-in-port"):
+        assert flag in bridge_line, bridge_line
+    assert "lead input: Launchkey" in text, text
+
+    # --check validates the lead input config and the melody directory.
+    melody_directory = tempfile.mkdtemp(prefix="ji-check-melodies-")
+    out = io.StringIO()
+    err = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = main(
+                [
+                    "--check",
+                    "--no-gui",
+                    "--no-midi",
+                    "--no-drums",
+                    "--no-bass",
+                    "--no-lead",
+                    "--melody-dir",
+                    melody_directory,
+                ]
+            )
+    finally:
+        shutil.rmtree(melody_directory, ignore_errors=True)
+    text = out.getvalue() + err.getvalue()
+    assert code in (0, 1), code
+    assert "lead input config ok" in text, text
+    assert "melody dir ok" in text and "melodies=0" in text, text
+    print("  defaults, forwarding, ignored warning, dry-run, --check")
+
+
 def test_format_command() -> None:
     print("\n=== Test 6: [LAUNCH] command formatting is shell-safe ===")
     printed = format_command(["/usr/bin/python", "/a b/c.py", "--flag", "x y"])
@@ -369,6 +440,11 @@ def test_start_here_docs() -> None:
         "--drone-config",
         "--home-config",
         "--state-dir",
+        "--lead-in",
+        "--no-lead-in",
+        "--lead-in-port",
+        "--lead-in-config",
+        "--melody-dir",
     ):
         assert flag in text, f"START_HERE.md must document {flag}"
     # One-time setup facts the owner asked for.
@@ -389,6 +465,9 @@ def test_start_here_docs() -> None:
         "Bass",
         "Sub",
         "Lead",
+        "Launchkey",
+        "melodies",
+        "Lead input",
     ):
         assert fact in text, f"START_HERE.md must mention {fact}"
     assert "source of truth" in text
@@ -406,6 +485,29 @@ def test_readme_links() -> None:
     assert "docs/README_stage8_3d.md" in text
     assert "docs/README_stage8_4.md" in text
     assert "docs/README_stage8_5.md" in text
+    assert "docs/README_stage9_0.md" in text
+    assert "docs/README_stage9_1.md" in text
+    stage91_doc = ROOT / "docs" / "README_stage9_1.md"
+    assert stage91_doc.exists(), stage91_doc
+    stage91 = stage91_doc.read_text(encoding="utf-8")
+    for heading in (
+        "Human acceptance checklist",
+        "nearest",
+        "quantis",
+        "Revert",
+    ):
+        assert heading in stage91, heading
+    stage9_doc = ROOT / "docs" / "README_stage9_0.md"
+    assert stage9_doc.exists(), stage9_doc
+    stage9 = stage9_doc.read_text(encoding="utf-8")
+    for heading in (
+        "Human acceptance checklist",
+        "Cascade",
+        "Delay",
+        "count-in",
+        "TimeSync",
+    ):
+        assert heading in stage9, heading
     assert STAGE_DOC.exists(), STAGE_DOC
     assert OLD_STAGE_DOC.exists(), OLD_STAGE_DOC
     stage = STAGE_DOC.read_text(encoding="utf-8")
@@ -426,7 +528,7 @@ def test_readme_links() -> None:
         "ji-performance-state",
     ):
         assert heading in body, heading
-    print("  README links START_HERE + 8.3d/8.5; stage docs have the checklists")
+    print("  README links START_HERE + 8.3d/8.5/9.0; stage docs have the checklists")
 
 
 def run() -> None:
@@ -438,6 +540,7 @@ def run() -> None:
     test_check_mode_is_side_effect_free()
     test_format_command()
     test_ji_start_scd()
+    test_lead_in_flags()
     test_start_here_docs()
     test_readme_links()
     print("\nALL STARTUP TESTS PASSED")

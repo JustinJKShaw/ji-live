@@ -800,6 +800,25 @@ class MIDIRig:
         if self.drums is not None:
             self.drums.set_meter(meter_num, meter_den)
 
+    # -- Stage 8.7 breath ------------------------------------------------
+
+    def set_breath(self, breath: Any | None) -> None:
+        """Forward the shared breath clock to every voice rig that supports it.
+
+        Each rig is guarded: a voice that was not configured (or a fake rig
+        without ``set_breath``) is simply skipped.
+        """
+
+        for name in ("drums", "bass", "arp", "lead", "drone_rig"):
+            rig = getattr(self, name, None)
+            setter = getattr(rig, "set_breath", None)
+            if not callable(setter):
+                continue
+            try:
+                setter(breath)
+            except Exception as exc:  # one voice must not break the others
+                print(f"[BREATH] {name} attach failed: {exc}", file=sys.stderr)
+
     # -- Stage 8.2 groove -------------------------------------------------
 
     def drums_groove_state(
@@ -895,6 +914,35 @@ class MIDIRig:
     def set_bass_note_callback(self, callback: Any | None) -> None:
         if self.bass is not None:
             self.bass.set_note_callback(callback)
+
+    # -- Stage 8.7 bass hit row ------------------------------------------
+
+    def bass_hits_payload(self) -> list[int]:
+        """``[enabled, count, hit_...]`` or ``[0, 0]`` without a bass rig."""
+
+        if self.bass is None:
+            return [0, 0]
+        return self.bass.hits_payload()
+
+    def set_bass_hits_enabled(self, enabled: bool) -> bool:
+        if self.bass is None:
+            return False
+        return self.bass.set_hits_enabled(enabled)
+
+    def set_bass_hit(self, index: int, on: bool) -> bool:
+        if self.bass is None:
+            raise RuntimeError("bass is not configured")
+        return self.bass.set_hit(index, on)
+
+    def clear_bass_hits(self) -> object:
+        if self.bass is None:
+            raise RuntimeError("bass is not configured")
+        return self.bass.clear_hits()
+
+    def copy_bass_hits(self) -> object:
+        if self.bass is None:
+            raise RuntimeError("bass is not configured")
+        return self.bass.copy_hits()
 
     # -- Stage 8.3d lead --------------------------------------------------
 

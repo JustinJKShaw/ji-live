@@ -1,9 +1,9 @@
 # JI Station — Stage 8.3c: beat-synced arp + self-evolution
 
-**Status:** implemented by the agent, **awaiting human acceptance**. Audio, MIDI,
-Ableton, IAC, sclang timing, and the live GUI were **not** tested by the agent.
-The owner is the authority; 8.3c is not complete until the checklist in §7 is
-confirmed.
+**Status:** implemented by the agent and **owner-approved (2026-11-02)**. §7
+is the regression checklist for future runs. Audio, MIDI, Ableton, IAC, sclang
+timing, and the live GUI were **not** tested by the agent; the owner is the
+authority.
 
 Two additions to the Stage 8.3b arp, both **off by default** so the accepted
 free-running arp is unchanged until you switch them on:
@@ -18,7 +18,7 @@ free-running arp is unchanged until you switch them on:
 Everything from 8.3b (step/gate/velocity/octaves/shared/order/seed, the beat
 queue, `/ji/arp/*`, the compact Arp group) still works the same way.
 
-**Stage 8.3d (built, awaiting acceptance) does not change the arp.** It adds a
+**Stage 8.3d (owner-approved 2026-11-02) does not change the arp.** It adds a
 separate lead/melody voice on `IAC Driver Bus 5` and drone pad modes
 (`hold`/`pulse`/`bend`) on Bus 1; the arp keeps free-running by design while the
 lead is transport-gated. See

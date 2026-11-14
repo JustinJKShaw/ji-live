@@ -66,16 +66,18 @@ from pythonosc.dispatcher import Dispatcher
 from pythonosc.osc_server import ThreadingOSCUDPServer
 
 try:  # Support both ``python -m control.osc_server`` and direct execution.
-    from . import arp, bass, drone, groove, home, lead, rhythm
+    from . import arp, bass, breath, drone, groove, home, lead, lead_input, rhythm
     from . import state as state_module
     from .mutation import MutationBatch, MutationEngine, MutationEvent, OctaveEvent
 except ImportError:  # pragma: no cover - exercised only by direct execution
     import arp  # type: ignore[no-redef]
     import bass  # type: ignore[no-redef]
+    import breath  # type: ignore[no-redef]
     import drone  # type: ignore[no-redef]
     import groove  # type: ignore[no-redef]
     import home  # type: ignore[no-redef]
     import lead  # type: ignore[no-redef]
+    import lead_input  # type: ignore[no-redef]
     import rhythm  # type: ignore[no-redef]
     import state as state_module  # type: ignore[no-redef]
     from mutation import (  # type: ignore[no-redef]
@@ -127,6 +129,22 @@ BASS_SET_BASE_OCTAVE_ADDRESS = "/ji/bass/set_base_octave"
 BASS_SET_SEED_ADDRESS = "/ji/bass/set_seed"
 BASS_SET_SUB_ENABLED_ADDRESS = "/ji/bass/set_sub_enabled"
 BASS_SET_SUB_OCTAVES_ADDRESS = "/ji/bass/set_sub_octaves"
+# Stage 8.7 bass hit row (UI -> Bridge).  Immediate: a hit edit is a
+# performance gesture, like a drum-grid step; it is never beat-queued.
+BASS_SET_HITS_ENABLED_ADDRESS = "/ji/bass/set_hits_enabled"
+BASS_SET_HIT_ADDRESS = "/ji/bass/set_hit"
+BASS_CLEAR_HITS_ADDRESS = "/ji/bass/clear_hits"
+BASS_COPY_HITS_ADDRESS = "/ji/bass/copy_hits"
+# Stage 8.7 breathing rhythm engine (UI -> Bridge).  Immediate; the bridge
+# validates, clamps, logs and echoes /ji/breath/state.
+BREATH_SET_ENABLED_ADDRESS = "/ji/breath/set_enabled"
+BREATH_SET_DEPTH_ADDRESS = "/ji/breath/set_depth"
+BREATH_SET_PERIOD_ADDRESS = "/ji/breath/set_period"
+BREATH_SET_SHAPE_ADDRESS = "/ji/breath/set_shape"
+BREATH_SET_INTENSITY_ADDRESS = "/ji/breath/set_intensity"
+BREATH_SET_PHASE_ADDRESS = "/ji/breath/set_phase"
+BREATH_SET_ARP_LOCAL_ADDRESS = "/ji/breath/set_arp_local"
+BREATH_SET_ARP_SYNC_ADDRESS = "/ji/breath/set_arp_sync"
 # Stage 8.3b arp parameters (UI -> Bridge).  The Drone/Arp enable switches stay
 # on /ji/midi/set_enabled; these only change the arp settings.  Quantization is
 # the bridge's job.
@@ -157,7 +175,24 @@ LEAD_SET_VARIATION_BARS_ADDRESS = "/ji/lead/set_variation_bars"
 LEAD_SET_SWING_ADDRESS = "/ji/lead/set_swing"
 LEAD_SET_GROOVE_LINK_ADDRESS = "/ji/lead/set_groove_link"
 LEAD_SET_SEED_ADDRESS = "/ji/lead/set_seed"
+LEAD_SET_GATE_MODE_ADDRESS = "/ji/lead/set_gate_mode"
 LEAD_VARY_ADDRESS = "/ji/lead/vary"
+# Stage 9.1 lead input (MIDI/QWERTY play-in, recording, melodies).
+LEAD_INPUT_SET_ENABLED_ADDRESS = "/ji/lead/input/set_enabled"
+LEAD_INPUT_SET_QUANTIZE_ADDRESS = "/ji/lead/input/set_quantize"
+LEAD_INPUT_SET_COUNT_IN_ADDRESS = "/ji/lead/input/set_count_in"
+LEAD_INPUT_SET_BARS_ADDRESS = "/ji/lead/input/set_bars"
+LEAD_INPUT_NOTE_ON_ADDRESS = "/ji/lead/input/note_on"
+LEAD_INPUT_NOTE_OFF_ADDRESS = "/ji/lead/input/note_off"
+LEAD_INPUT_RECORD_ADDRESS = "/ji/lead/input/record"
+LEAD_INPUT_STOP_ADDRESS = "/ji/lead/input/stop"
+LEAD_INPUT_REVERT_ADDRESS = "/ji/lead/input/revert"
+LEAD_INPUT_CLEAR_ADDRESS = "/ji/lead/input/clear"
+LEAD_INPUT_REFRESH_ADDRESS = "/ji/lead/input/refresh"
+LEAD_MELODY_SAVE_ADDRESS = "/ji/lead/melody/save"
+LEAD_MELODY_LOAD_ADDRESS = "/ji/lead/melody/load"
+LEAD_MELODY_DELETE_ADDRESS = "/ji/lead/melody/delete"
+LEAD_MELODY_REQUEST_ADDRESS = "/ji/lead/melody/request"
 # Stage 8.3d drone mode/pad controls (UI -> Bridge).
 DRONE_SET_MODE_ADDRESS = "/ji/drone/set_mode"
 DRONE_SET_VELOCITY_ADDRESS = "/ji/drone/set_velocity"
@@ -244,6 +279,18 @@ class MutationOSCServer:
     BASS_SET_SEED_ADDRESS = BASS_SET_SEED_ADDRESS
     BASS_SET_SUB_ENABLED_ADDRESS = BASS_SET_SUB_ENABLED_ADDRESS
     BASS_SET_SUB_OCTAVES_ADDRESS = BASS_SET_SUB_OCTAVES_ADDRESS
+    BASS_SET_HITS_ENABLED_ADDRESS = BASS_SET_HITS_ENABLED_ADDRESS
+    BASS_SET_HIT_ADDRESS = BASS_SET_HIT_ADDRESS
+    BASS_CLEAR_HITS_ADDRESS = BASS_CLEAR_HITS_ADDRESS
+    BASS_COPY_HITS_ADDRESS = BASS_COPY_HITS_ADDRESS
+    BREATH_SET_ENABLED_ADDRESS = BREATH_SET_ENABLED_ADDRESS
+    BREATH_SET_DEPTH_ADDRESS = BREATH_SET_DEPTH_ADDRESS
+    BREATH_SET_PERIOD_ADDRESS = BREATH_SET_PERIOD_ADDRESS
+    BREATH_SET_SHAPE_ADDRESS = BREATH_SET_SHAPE_ADDRESS
+    BREATH_SET_INTENSITY_ADDRESS = BREATH_SET_INTENSITY_ADDRESS
+    BREATH_SET_PHASE_ADDRESS = BREATH_SET_PHASE_ADDRESS
+    BREATH_SET_ARP_LOCAL_ADDRESS = BREATH_SET_ARP_LOCAL_ADDRESS
+    BREATH_SET_ARP_SYNC_ADDRESS = BREATH_SET_ARP_SYNC_ADDRESS
     ARP_SET_STEP_ADDRESS = ARP_SET_STEP_ADDRESS
     ARP_SET_GATE_ADDRESS = ARP_SET_GATE_ADDRESS
     ARP_SET_VELOCITY_ADDRESS = ARP_SET_VELOCITY_ADDRESS
@@ -269,7 +316,23 @@ class MutationOSCServer:
     LEAD_SET_SWING_ADDRESS = LEAD_SET_SWING_ADDRESS
     LEAD_SET_GROOVE_LINK_ADDRESS = LEAD_SET_GROOVE_LINK_ADDRESS
     LEAD_SET_SEED_ADDRESS = LEAD_SET_SEED_ADDRESS
+    LEAD_SET_GATE_MODE_ADDRESS = LEAD_SET_GATE_MODE_ADDRESS
     LEAD_VARY_ADDRESS = LEAD_VARY_ADDRESS
+    LEAD_INPUT_SET_ENABLED_ADDRESS = LEAD_INPUT_SET_ENABLED_ADDRESS
+    LEAD_INPUT_SET_QUANTIZE_ADDRESS = LEAD_INPUT_SET_QUANTIZE_ADDRESS
+    LEAD_INPUT_SET_COUNT_IN_ADDRESS = LEAD_INPUT_SET_COUNT_IN_ADDRESS
+    LEAD_INPUT_SET_BARS_ADDRESS = LEAD_INPUT_SET_BARS_ADDRESS
+    LEAD_INPUT_NOTE_ON_ADDRESS = LEAD_INPUT_NOTE_ON_ADDRESS
+    LEAD_INPUT_NOTE_OFF_ADDRESS = LEAD_INPUT_NOTE_OFF_ADDRESS
+    LEAD_INPUT_RECORD_ADDRESS = LEAD_INPUT_RECORD_ADDRESS
+    LEAD_INPUT_STOP_ADDRESS = LEAD_INPUT_STOP_ADDRESS
+    LEAD_INPUT_REVERT_ADDRESS = LEAD_INPUT_REVERT_ADDRESS
+    LEAD_INPUT_CLEAR_ADDRESS = LEAD_INPUT_CLEAR_ADDRESS
+    LEAD_INPUT_REFRESH_ADDRESS = LEAD_INPUT_REFRESH_ADDRESS
+    LEAD_MELODY_SAVE_ADDRESS = LEAD_MELODY_SAVE_ADDRESS
+    LEAD_MELODY_LOAD_ADDRESS = LEAD_MELODY_LOAD_ADDRESS
+    LEAD_MELODY_DELETE_ADDRESS = LEAD_MELODY_DELETE_ADDRESS
+    LEAD_MELODY_REQUEST_ADDRESS = LEAD_MELODY_REQUEST_ADDRESS
     DRONE_SET_MODE_ADDRESS = DRONE_SET_MODE_ADDRESS
     DRONE_SET_VELOCITY_ADDRESS = DRONE_SET_VELOCITY_ADDRESS
     DRONE_SET_PULSE_NOTES_ADDRESS = DRONE_SET_PULSE_NOTES_ADDRESS
@@ -330,7 +393,27 @@ class MutationOSCServer:
         on_arp_change: Callable[[str, Any], None] | None = None,
         on_lead_change: Callable[[str, Any], None] | None = None,
         on_lead_vary: Callable[[], None] | None = None,
+        on_lead_input_enabled: Callable[[bool], None] | None = None,
+        on_lead_input_quantize: Callable[[float], None] | None = None,
+        on_lead_input_count_in: Callable[[str], None] | None = None,
+        on_lead_input_bars: Callable[[int], None] | None = None,
+        on_lead_input_note_on: Callable[[int, int], None] | None = None,
+        on_lead_input_note_off: Callable[[int], None] | None = None,
+        on_lead_input_record: Callable[[], None] | None = None,
+        on_lead_input_stop: Callable[[], None] | None = None,
+        on_lead_input_revert: Callable[[], None] | None = None,
+        on_lead_input_clear: Callable[[], None] | None = None,
+        on_lead_input_refresh: Callable[[], None] | None = None,
+        on_lead_melody_save: Callable[[str], None] | None = None,
+        on_lead_melody_load: Callable[[str], None] | None = None,
+        on_lead_melody_delete: Callable[[str], None] | None = None,
+        on_lead_melody_request: Callable[[], None] | None = None,
         on_drone_change: Callable[[str, Any], None] | None = None,
+        on_breath_change: Callable[[str, Any], None] | None = None,
+        on_bass_hits_enabled: Callable[[bool], None] | None = None,
+        on_bass_hit: Callable[[int, bool], None] | None = None,
+        on_bass_clear_hits: Callable[[], None] | None = None,
+        on_bass_copy_hits: Callable[[], None] | None = None,
         on_home_capture: Callable[[int], None] | None = None,
         on_home_clear: Callable[[int], None] | None = None,
         on_home_go: Callable[[int], None] | None = None,
@@ -375,7 +458,27 @@ class MutationOSCServer:
             ("on_arp_change", on_arp_change),
             ("on_lead_change", on_lead_change),
             ("on_lead_vary", on_lead_vary),
+            ("on_lead_input_enabled", on_lead_input_enabled),
+            ("on_lead_input_quantize", on_lead_input_quantize),
+            ("on_lead_input_count_in", on_lead_input_count_in),
+            ("on_lead_input_bars", on_lead_input_bars),
+            ("on_lead_input_note_on", on_lead_input_note_on),
+            ("on_lead_input_note_off", on_lead_input_note_off),
+            ("on_lead_input_record", on_lead_input_record),
+            ("on_lead_input_stop", on_lead_input_stop),
+            ("on_lead_input_revert", on_lead_input_revert),
+            ("on_lead_input_clear", on_lead_input_clear),
+            ("on_lead_input_refresh", on_lead_input_refresh),
+            ("on_lead_melody_save", on_lead_melody_save),
+            ("on_lead_melody_load", on_lead_melody_load),
+            ("on_lead_melody_delete", on_lead_melody_delete),
+            ("on_lead_melody_request", on_lead_melody_request),
             ("on_drone_change", on_drone_change),
+            ("on_breath_change", on_breath_change),
+            ("on_bass_hits_enabled", on_bass_hits_enabled),
+            ("on_bass_hit", on_bass_hit),
+            ("on_bass_clear_hits", on_bass_clear_hits),
+            ("on_bass_copy_hits", on_bass_copy_hits),
             ("on_home_capture", on_home_capture),
             ("on_home_clear", on_home_clear),
             ("on_home_go", on_home_go),
@@ -419,7 +522,27 @@ class MutationOSCServer:
         self._on_arp_change = on_arp_change
         self._on_lead_change = on_lead_change
         self._on_lead_vary = on_lead_vary
+        self._on_lead_input_enabled = on_lead_input_enabled
+        self._on_lead_input_quantize = on_lead_input_quantize
+        self._on_lead_input_count_in = on_lead_input_count_in
+        self._on_lead_input_bars = on_lead_input_bars
+        self._on_lead_input_note_on = on_lead_input_note_on
+        self._on_lead_input_note_off = on_lead_input_note_off
+        self._on_lead_input_record = on_lead_input_record
+        self._on_lead_input_stop = on_lead_input_stop
+        self._on_lead_input_revert = on_lead_input_revert
+        self._on_lead_input_clear = on_lead_input_clear
+        self._on_lead_input_refresh = on_lead_input_refresh
+        self._on_lead_melody_save = on_lead_melody_save
+        self._on_lead_melody_load = on_lead_melody_load
+        self._on_lead_melody_delete = on_lead_melody_delete
+        self._on_lead_melody_request = on_lead_melody_request
         self._on_drone_change = on_drone_change
+        self._on_breath_change = on_breath_change
+        self._on_bass_hits_enabled = on_bass_hits_enabled
+        self._on_bass_hit = on_bass_hit
+        self._on_bass_clear_hits = on_bass_clear_hits
+        self._on_bass_copy_hits = on_bass_copy_hits
         self._on_home_capture = on_home_capture
         self._on_home_clear = on_home_clear
         self._on_home_go = on_home_go
@@ -520,6 +643,35 @@ class MutationOSCServer:
         )
         for address, handler in bass_map:
             dispatcher.map(address, handler)
+        # Stage 8.7: the breath controls and the bass hit row.
+        stage87_map = (
+            (self.BREATH_SET_ENABLED_ADDRESS, self._handle_breath_enabled),
+            (self.BREATH_SET_DEPTH_ADDRESS, self._handle_breath_depth),
+            (self.BREATH_SET_PERIOD_ADDRESS, self._handle_breath_period),
+            (self.BREATH_SET_SHAPE_ADDRESS, self._handle_breath_shape),
+            (
+                self.BREATH_SET_INTENSITY_ADDRESS,
+                self._handle_breath_intensity,
+            ),
+            (self.BREATH_SET_PHASE_ADDRESS, self._handle_breath_phase),
+            (
+                self.BREATH_SET_ARP_LOCAL_ADDRESS,
+                self._handle_breath_arp_local,
+            ),
+            (
+                self.BREATH_SET_ARP_SYNC_ADDRESS,
+                self._handle_breath_arp_sync,
+            ),
+            (
+                self.BASS_SET_HITS_ENABLED_ADDRESS,
+                self._handle_bass_hits_enabled,
+            ),
+            (self.BASS_SET_HIT_ADDRESS, self._handle_bass_hit),
+            (self.BASS_CLEAR_HITS_ADDRESS, self._handle_bass_clear_hits),
+            (self.BASS_COPY_HITS_ADDRESS, self._handle_bass_copy_hits),
+        )
+        for address, handler in stage87_map:
+            dispatcher.map(address, handler)
         # Stage 8.3b arp parameters.
         arp_map = (
             (self.ARP_SET_STEP_ADDRESS, self._handle_arp_step),
@@ -555,9 +707,29 @@ class MutationOSCServer:
             (self.LEAD_SET_SWING_ADDRESS, self._handle_lead_swing),
             (self.LEAD_SET_GROOVE_LINK_ADDRESS, self._handle_lead_groove_link),
             (self.LEAD_SET_SEED_ADDRESS, self._handle_lead_seed),
+            (self.LEAD_SET_GATE_MODE_ADDRESS, self._handle_lead_gate_mode),
             (self.LEAD_VARY_ADDRESS, self._handle_lead_vary),
         )
         for address, handler in lead_map:
+            dispatcher.map(address, handler)
+        lead_input_map = (
+            (self.LEAD_INPUT_SET_ENABLED_ADDRESS, self._handle_lead_input_enabled),
+            (self.LEAD_INPUT_SET_QUANTIZE_ADDRESS, self._handle_lead_input_quantize),
+            (self.LEAD_INPUT_SET_COUNT_IN_ADDRESS, self._handle_lead_input_count_in),
+            (self.LEAD_INPUT_SET_BARS_ADDRESS, self._handle_lead_input_bars),
+            (self.LEAD_INPUT_NOTE_ON_ADDRESS, self._handle_lead_input_note_on),
+            (self.LEAD_INPUT_NOTE_OFF_ADDRESS, self._handle_lead_input_note_off),
+            (self.LEAD_INPUT_RECORD_ADDRESS, self._handle_lead_input_record),
+            (self.LEAD_INPUT_STOP_ADDRESS, self._handle_lead_input_stop),
+            (self.LEAD_INPUT_REVERT_ADDRESS, self._handle_lead_input_revert),
+            (self.LEAD_INPUT_CLEAR_ADDRESS, self._handle_lead_input_clear),
+            (self.LEAD_INPUT_REFRESH_ADDRESS, self._handle_lead_input_refresh),
+            (self.LEAD_MELODY_SAVE_ADDRESS, self._handle_melody_save),
+            (self.LEAD_MELODY_LOAD_ADDRESS, self._handle_melody_load),
+            (self.LEAD_MELODY_DELETE_ADDRESS, self._handle_melody_delete),
+            (self.LEAD_MELODY_REQUEST_ADDRESS, self._handle_melody_request),
+        )
+        for address, handler in lead_input_map:
             dispatcher.map(address, handler)
         # Stage 8.3d drone mode/pad parameters.
         drone_map = (
@@ -1406,6 +1578,155 @@ class MutationOSCServer:
             ),
         )
 
+    # -- Stage 8.7 breath controls and bass hit row -----------------------
+
+    def _handle_breath_param(
+        self,
+        args: tuple[Any, ...],
+        address: str,
+        key: str,
+        parser: Callable[[Any], Any],
+        label: str,
+    ) -> None:
+        if len(args) != 1:
+            _warn(f"{address} expects one value; got {len(args)} arguments")
+            return
+        try:
+            value = parser(args[0])
+        except (TypeError, ValueError) as exc:
+            _warn(f"{address}: {exc}")
+            return
+        self._call_callback(
+            self._on_breath_change, "breath change", key, value
+        )
+
+    def _handle_breath_enabled(self, _address: str, *args: Any) -> None:
+        self._handle_breath_param(
+            args,
+            self.BREATH_SET_ENABLED_ADDRESS,
+            "enabled",
+            lambda value: _one_bool(value, "breath enabled"),
+            "breath enabled",
+        )
+
+    def _handle_breath_depth(self, _address: str, *args: Any) -> None:
+        self._handle_breath_param(
+            args,
+            self.BREATH_SET_DEPTH_ADDRESS,
+            "depth",
+            lambda value: breath.clamp_unit(value, "depth"),
+            "breath depth",
+        )
+
+    def _handle_breath_period(self, _address: str, *args: Any) -> None:
+        self._handle_breath_param(
+            args,
+            self.BREATH_SET_PERIOD_ADDRESS,
+            "period_bars",
+            lambda value: breath.validate_period_bars(
+                _one_int(value, "period_bars")
+            ),
+            "breath period",
+        )
+
+    def _handle_breath_shape(self, _address: str, *args: Any) -> None:
+        self._handle_breath_param(
+            args,
+            self.BREATH_SET_SHAPE_ADDRESS,
+            "shape",
+            breath.validate_shape,
+            "breath shape",
+        )
+
+    def _handle_breath_intensity(self, _address: str, *args: Any) -> None:
+        self._handle_breath_param(
+            args,
+            self.BREATH_SET_INTENSITY_ADDRESS,
+            "intensity",
+            lambda value: breath.clamp_unit(value, "intensity"),
+            "breath intensity",
+        )
+
+    def _handle_breath_phase(self, _address: str, *args: Any) -> None:
+        self._handle_breath_param(
+            args,
+            self.BREATH_SET_PHASE_ADDRESS,
+            "phase",
+            lambda value: breath.clamp_unit(value, "phase"),
+            "breath phase",
+        )
+
+    def _handle_breath_arp_local(self, _address: str, *args: Any) -> None:
+        self._handle_breath_param(
+            args,
+            self.BREATH_SET_ARP_LOCAL_ADDRESS,
+            "arp_local",
+            lambda value: breath.clamp_unit(value, "arp_local"),
+            "breath arp_local",
+        )
+
+    def _handle_breath_arp_sync(self, _address: str, *args: Any) -> None:
+        self._handle_breath_param(
+            args,
+            self.BREATH_SET_ARP_SYNC_ADDRESS,
+            "arp_sync",
+            lambda value: _one_bool(value, "breath arp_sync"),
+            "breath arp_sync",
+        )
+
+    def _handle_bass_hits_enabled(self, _address: str, *args: Any) -> None:
+        if len(args) != 1:
+            _warn(
+                f"{self.BASS_SET_HITS_ENABLED_ADDRESS} expects one 0/1 value; "
+                f"got {len(args)} arguments"
+            )
+            return
+        try:
+            enabled = _one_bool(args[0], "hits enabled")
+        except (TypeError, ValueError) as exc:
+            _warn(f"{self.BASS_SET_HITS_ENABLED_ADDRESS}: {exc}")
+            return
+        self._call_callback(
+            self._on_bass_hits_enabled, "bass hits enabled", enabled
+        )
+
+    def _handle_bass_hit(self, _address: str, *args: Any) -> None:
+        if len(args) != 2:
+            _warn(
+                f"{self.BASS_SET_HIT_ADDRESS} expects index and 0/1; "
+                f"got {len(args)} arguments"
+            )
+            return
+        try:
+            index = _one_int(args[0], "hit index")
+            if not 0 <= index < bass.BASS_HITS_MAX:
+                raise ValueError(
+                    f"hit index must be 0..{bass.BASS_HITS_MAX - 1}"
+                )
+            on = _one_bool(args[1], "hit on")
+        except (TypeError, ValueError) as exc:
+            _warn(f"{self.BASS_SET_HIT_ADDRESS}: {exc}")
+            return
+        self._call_callback(
+            self._on_bass_hit, "bass hit", index, on
+        )
+
+    def _handle_bass_clear_hits(self, _address: str, *args: Any) -> None:
+        if args:
+            _warn(
+                f"{self.BASS_CLEAR_HITS_ADDRESS} takes no arguments; "
+                "ignoring extras"
+            )
+        self._call_callback(self._on_bass_clear_hits, "bass clear hits")
+
+    def _handle_bass_copy_hits(self, _address: str, *args: Any) -> None:
+        if args:
+            _warn(
+                f"{self.BASS_COPY_HITS_ADDRESS} takes no arguments; "
+                "ignoring extras"
+            )
+        self._call_callback(self._on_bass_copy_hits, "bass copy hits")
+
     # -- Stage 8.3b arp parameters ----------------------------------------
 
     def _handle_arp_setting(
@@ -1620,10 +1941,153 @@ class MutationOSCServer:
             args, self.LEAD_SET_SEED_ADDRESS, "seed", lead.validate_seed
         )
 
+    def _handle_lead_gate_mode(self, _address: str, *args: Any) -> None:
+        self._handle_lead_setting(
+            args,
+            self.LEAD_SET_GATE_MODE_ADDRESS,
+            "gate_mode",
+            lead.validate_gate_mode,
+        )
+
     def _handle_lead_vary(self, _address: str, *args: Any) -> None:
         if args:
             _warn(f"{self.LEAD_VARY_ADDRESS} takes no arguments; ignoring extras")
         self._call_callback(self._on_lead_vary, "lead vary")
+
+    # -- Stage 9.1 lead input and melody library --------------------------
+
+    def _handle_lead_input_enabled(self, _address: str, *args: Any) -> None:
+        if len(args) != 1:
+            _warn(f"{self.LEAD_INPUT_SET_ENABLED_ADDRESS} expects 0/1")
+            return
+        try:
+            value = lead.validate_bool(args[0], "lead input enabled")
+        except (TypeError, ValueError) as exc:
+            _warn(f"invalid lead input enabled: {exc}")
+            return
+        self._call_callback(self._on_lead_input_enabled, "lead input enabled", bool(value))
+
+    def _handle_lead_input_quantize(self, _address: str, *args: Any) -> None:
+        if len(args) != 1:
+            _warn(f"{self.LEAD_INPUT_SET_QUANTIZE_ADDRESS} expects 0..1")
+            return
+        try:
+            value = lead_input.validate_quantize(args[0])
+        except (TypeError, ValueError) as exc:
+            _warn(f"invalid lead input quantize: {exc}")
+            return
+        self._call_callback(self._on_lead_input_quantize, "lead input quantize", value)
+
+    def _handle_lead_input_count_in(self, _address: str, *args: Any) -> None:
+        if len(args) != 1:
+            _warn(f"{self.LEAD_INPUT_SET_COUNT_IN_ADDRESS} expects one string")
+            return
+        try:
+            value = lead_input.validate_count_in(args[0])
+        except (TypeError, ValueError) as exc:
+            _warn(f"invalid lead input count-in: {exc}")
+            return
+        self._call_callback(self._on_lead_input_count_in, "lead input count-in", value)
+
+    def _handle_lead_input_bars(self, _address: str, *args: Any) -> None:
+        if len(args) != 1:
+            _warn(f"{self.LEAD_INPUT_SET_BARS_ADDRESS} expects 1..8")
+            return
+        try:
+            value = lead_input.validate_input_bars(args[0])
+        except (TypeError, ValueError) as exc:
+            _warn(f"invalid lead input bars: {exc}")
+            return
+        self._call_callback(self._on_lead_input_bars, "lead input bars", value)
+
+    def _handle_lead_input_note_on(self, _address: str, *args: Any) -> None:
+        if len(args) != 2:
+            _warn(f"{self.LEAD_INPUT_NOTE_ON_ADDRESS} expects midi, velocity")
+            return
+        try:
+            note = lead_input.validate_midi_note(args[0])
+            velocity = lead_input.validate_velocity(args[1])
+        except (TypeError, ValueError) as exc:
+            _warn(f"invalid lead input note-on: {exc}")
+            return
+        self._call_callback(
+            self._on_lead_input_note_on, "lead input note-on", note, velocity
+        )
+
+    def _handle_lead_input_note_off(self, _address: str, *args: Any) -> None:
+        if len(args) != 1:
+            _warn(f"{self.LEAD_INPUT_NOTE_OFF_ADDRESS} expects midi")
+            return
+        try:
+            note = lead_input.validate_midi_note(args[0])
+        except (TypeError, ValueError) as exc:
+            _warn(f"invalid lead input note-off: {exc}")
+            return
+        self._call_callback(self._on_lead_input_note_off, "lead input note-off", note)
+
+    def _handle_lead_input_record(self, _address: str, *args: Any) -> None:
+        if args:
+            _warn(f"{self.LEAD_INPUT_RECORD_ADDRESS} takes no arguments")
+        self._call_callback(self._on_lead_input_record, "lead input record")
+
+    def _handle_lead_input_stop(self, _address: str, *args: Any) -> None:
+        if args:
+            _warn(f"{self.LEAD_INPUT_STOP_ADDRESS} takes no arguments")
+        self._call_callback(self._on_lead_input_stop, "lead input stop")
+
+    def _handle_lead_input_revert(self, _address: str, *args: Any) -> None:
+        if args:
+            _warn(f"{self.LEAD_INPUT_REVERT_ADDRESS} takes no arguments")
+        self._call_callback(self._on_lead_input_revert, "lead input revert")
+
+    def _handle_lead_input_clear(self, _address: str, *args: Any) -> None:
+        if args:
+            _warn(f"{self.LEAD_INPUT_CLEAR_ADDRESS} takes no arguments")
+        self._call_callback(self._on_lead_input_clear, "lead input clear")
+
+    def _handle_lead_input_refresh(self, _address: str, *args: Any) -> None:
+        if args:
+            _warn(f"{self.LEAD_INPUT_REFRESH_ADDRESS} takes no arguments")
+        self._call_callback(self._on_lead_input_refresh, "lead input refresh")
+
+    def _handle_melody_name(
+        self,
+        args: tuple[Any, ...],
+        address: str,
+        callback: Callable[[str], None] | None,
+        label: str,
+    ) -> None:
+        if len(args) != 1:
+            _warn(f"{address} expects one melody name")
+            return
+        name = args[0]
+        if not isinstance(name, str):
+            _warn(f"{address}: a melody name must be text")
+            return
+        self._call_callback(callback, label, name.strip())
+
+    def _handle_melody_save(self, _address: str, *args: Any) -> None:
+        self._handle_melody_name(
+            args, self.LEAD_MELODY_SAVE_ADDRESS, self._on_lead_melody_save, "melody save"
+        )
+
+    def _handle_melody_load(self, _address: str, *args: Any) -> None:
+        self._handle_melody_name(
+            args, self.LEAD_MELODY_LOAD_ADDRESS, self._on_lead_melody_load, "melody load"
+        )
+
+    def _handle_melody_delete(self, _address: str, *args: Any) -> None:
+        self._handle_melody_name(
+            args,
+            self.LEAD_MELODY_DELETE_ADDRESS,
+            self._on_lead_melody_delete,
+            "melody delete",
+        )
+
+    def _handle_melody_request(self, _address: str, *args: Any) -> None:
+        if args:
+            _warn(f"{self.LEAD_MELODY_REQUEST_ADDRESS} takes no arguments")
+        self._call_callback(self._on_lead_melody_request, "melody request")
 
     # -- Stage 8.3d drone modes -------------------------------------------
 

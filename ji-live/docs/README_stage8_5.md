@@ -1,6 +1,6 @@
 # Stage 8.5 — Performance state save / recall
 
-**Status: built, agent-tested, awaiting the human checklist (§10).**
+**Status: built, agent-tested, and owner-approved (2026-11-02).** §10 stays as the regression checklist.
 No sclang, SynthDef, audio-DSP or new MIDI voice is involved. Everything is a
 Python/bridge change plus one compact GUI row.
 
@@ -30,7 +30,7 @@ and deliberately leaves loops, autotune and the transport alone.
 | `groove` | preset, density, syncopation, swing, probability, seed, and the 32-int grid payload (the `/ji/drums/grid` layout: per lane 0..15 `[mask_lo, mask_hi]`) |
 | `bass` | every `BassSettings` field (including `preset: "custom"`) |
 | `arp` | every `ArpSettings` field |
-| `lead` | every `LeadSettings` field + `variation_index` |
+| `lead` | every `LeadSettings` field + `variation_index`; **Stage 9.1 optionally adds** inline `notes`/`base_notes`/`history`/`melody`/`source` for a played line |
 | `drone` | every `DroneSettings` field |
 
 The settings sections are validated by the existing `BassSettings.create`,
@@ -90,7 +90,9 @@ models. There is no second validation layer.
   },
   "bass": {"enabled": false, "preset": "pulse", "grid": "1/4", "...": "..."},
   "arp": {"step_seconds": 0.25, "gate_seconds": 0.2, "velocity": 90, "...": "..."},
-  "lead": {"enabled": false, "grid": "1/8", "...": "...", "variation_index": 0},
+  "lead": {"enabled": false, "grid": "1/8", "...": "...", "variation_index": 0,
+           "notes": [], "base_notes": [], "history": [], "melody": "",
+           "source": "generated"},
   "drone": {"mode": "hold", "velocity": 90, "...": "..."}
 }
 ```
@@ -239,7 +241,7 @@ are refused.
 6. Restore tempo/meter and broadcast `/ji/rhythm/tempo`.
 7. Restore the groove (preset, modifiers, seed, then the exact 32-int grid) and
    the drum enable/rate/lane mask.
-8. Restore bass/arp/lead/drone settings (and the lead variation index) through
+8. Restore bass/arp/lead/drone settings, the lead variation index, and (9.1) an inline played line through
    the rigs' settings paths; a missing bus skips only that voice, with one line.
 9. Send **exactly one** `send_set(glide_time)` using the saved
    `mutation.glide_time` (a jump, not a smooth return), then one

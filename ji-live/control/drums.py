@@ -820,12 +820,15 @@ class DrumScheduler:
         bpm: float = BPM_DEFAULT,
         gate_seconds: float | None = None,
         now: Callable[[], float] = time.monotonic,
+        breath: Any | None = None,
     ) -> None:
         if not callable(now):
             raise TypeError("now must be callable")
         self.output = output
         self.engine = engine
         self._now = now
+        # Stage 8.7: a shared BreathClock, or None for exactly the old timing.
+        self._breath = breath
         self._bpm = rhythm.clamp_bpm(bpm)
         gate = engine.gate_seconds if gate_seconds is None else float(gate_seconds)
         self.gate_seconds = _positive_float(gate, "gate_seconds")
@@ -856,6 +859,39 @@ class DrumScheduler:
         with self._lock:
             self._bpm = value
             return value
+
+    # -- Stage 8.7 breath -----------------------------------------------
+
+    def set_breath(self, breath: Any | None) -> None:
+        """Attach/detach the shared breath clock (``None`` = exact old timing)."""
+
+        self._breath = breath
+
+    def _breath_offset(self, step_length: float) -> float:
+        """Clamped breath offset in seconds (0.0 when no breath is attached)."""
+
+        breath = self._breath
+        if breath is None:
+            return 0.0
+        try:
+            value = float(breath.offset_seconds("drums", self._now()))
+        except Exception:  # a broken clock must never stop the drums
+            return 0.0
+        limit = 0.45 * float(step_length)
+        return max(-limit, min(limit, value))
+
+    def _velocity_with_breath(self) -> int:
+        """The configured velocity plus the breath delta, clamped 1..127."""
+
+        base = int(getattr(self.output, "velocity", self.engine.velocity))
+        breath = self._breath
+        if breath is None:
+            return max(1, min(127, base))
+        try:
+            delta = int(breath.velocity_delta("drums"))
+        except Exception:
+            return max(1, min(127, base))
+        return max(1, min(127, base + delta))
 
     def start(self) -> None:
         """Start the scheduler at step 0.  Idempotent while running."""
@@ -907,38 +943,43 @@ class DrumScheduler:
                 rate = self.engine.rate
                 step_length = rhythm.step_seconds(bpm, rate)
 
-                # Stage 8.2 swing: delay odd 16ths by up to 50% of a step.  The
-                # nominal deadline still advances by exactly one step, so swing
-                # never accumulates drift and never fires a step early.
-                offset = self.engine.swing_offset(step, step_length)
+                # Stage 8.2 swing and Stage 8.7 breath are both added to the
+                # SLEEP TARGET only.  The nominal deadline below still advances
+                # by exactly one step, so neither can accumulate drift or fire
+                # a step early by more than its own clamp.
+                swing = self.engine.swing_offset(step, step_length)
+                offset = swing + self._breath_offset(step_length)
                 # Cap the gate at the time left before the next nominal step as
-                # well as the 8.1 80%-of-a-step ceiling, so a swung note-off can
-                # never run into the following step at fast tempos.
+                # well as the 8.1 80%-of-a-step ceiling, so a swung/breathed
+                # note-off can never run into the following step at fast tempos.
                 gate_limit = max(
                     0.001,
                     min(step_length * 0.8, max(0.001, step_length - offset)),
                 )
                 gate = min(self.gate_seconds, gate_limit)
-                if offset > 0.0:
-                    target = deadline + offset
-                    now = self._now()
-                    if target > now:
-                        if self._stop.wait(target - now):
-                            break
-                    if not self._swing_logged:
-                        print(
-                            f"[DRUMS] swing={self.engine.groove_spec.swing:.2f} "
-                            f"step={step} offset={offset:.3f} s"
-                        )
-                        self._swing_logged = True
+
+                target = deadline + offset
+                now = self._now()
+                if target > now:
+                    if self._stop.wait(target - now):
+                        break
+                elif self._stop.is_set():
+                    break
+                if swing > 0.0 and not self._swing_logged:
+                    print(
+                        f"[DRUMS] swing={self.engine.groove_spec.swing:.2f} "
+                        f"step={step} offset={swing:.3f} s"
+                    )
+                    self._swing_logged = True
 
                 notes = self.engine.notes_for_step(step)
 
                 if notes:
+                    velocity = self._velocity_with_breath()
                     with self._lock:
                         self._held = set(notes)
                     for note in notes:
-                        self.output.note_on(note)
+                        self.output.note_on(note, velocity=velocity)
                     stopped = self._stop.wait(gate)
                     for note in notes:
                         self.output.note_off(note)
@@ -956,9 +997,6 @@ class DrumScheduler:
                     # Fell behind (slow output); resume from now, never burst
                     # through missed steps.
                     deadline = now
-                wait = deadline - now
-                if wait > 0.0 and self._stop.wait(wait):
-                    break
         except Exception as exc:  # a closed/broken port must not crash quietly
             print(f"[DRUMS] scheduler error: {exc}", file=sys.stderr)
         finally:
@@ -1140,6 +1178,11 @@ class DrumRig:
 
     def set_bpm(self, bpm: object) -> float:
         return self.scheduler.set_bpm(bpm)
+
+    def set_breath(self, breath: Any | None) -> None:
+        """Forward the shared Stage 8.7 breath clock to the scheduler."""
+
+        self.scheduler.set_breath(breath)
 
     def set_meter(self, meter_num: object, meter_den: object) -> DrumPattern:
         before = self.engine.pattern

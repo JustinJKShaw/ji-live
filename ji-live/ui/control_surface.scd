@@ -11,11 +11,34 @@
 //                   /ji/loop/record | record_length | stop_record | play |
 //                   stop | stop_all | clear | set_default_length |
 //                   set_mode | set_beats | set_length
+//                   Stage 8.6: /ji/loop/dub | edit_set | mem_save |
+//                   mem_recall | mem_clear
+//                   Stage 8.6.2: the same addresses; /ji/loop/edit_set gains
+//                   grain_morph / grain_melt / grain_filter /
+//                   grain_filter_rate (sclang-side morph ramp).
+//                   Stage 8.7: edit_set also accepts grain_breath /
+//                   grain_breath_rate (29 params) and /ji/loop/edit carries
+//                   31 values.
+//                   Stage 9.0: edit_set also accepts the eight harm_* params,
+//                   /ji/loop/edit carries 39 values, /ji/loop/fx_fire triggers
+//                   a Cascade pass, and the count-in bugs A1-A4 are fixed.
 //                   /ji/status/query
 //    Bridge -> sclang /ji/rhythm/tempo [bpm, numerator, denominator, running]
 //    sclang -> UI   /ji/cpu [percent]
 //                   /ji/loop/state [index, state string]
 //                   /ji/loop/config [index, mode, beats, seconds]
+//                   Stage 8.6: /ji/loop/mem [slot, filled, frames, seconds]
+//                   | /ji/loop/count [index, beats_left]
+//                   Stage 8.6.1: /ji/loop/edit [25 values] (the 15 of 8.6 plus
+//                   grain size/pitch jitter, snap, smear, freeze, motion,
+//                   speed, depth, burst and the effective snapped pitch)
+//                   Stage 8.6.2: /ji/loop/edit [29 values] (+ morph, melt
+//                   flag, filter amount and filter rate)
+//                   Stage 8.7: /ji/loop/edit [31 values] (+ loop grain breath
+//                   depth and rate)
+//                   Stage 9.0: /ji/loop/edit [39 values] (+ harm mode/mix/time/
+//                   time-sync/steps/spacing/falloff/auto) and
+//                   /ji/loop/fx_fire [index] for a Cascade trigger
 //                   /ji/autotune/state [channel, retuneTime, mix, windowSize,
 //                                       pitchRangeLimit, tartiniThreshold,
 //                                       inputGain]
@@ -49,8 +72,16 @@
 
 // --- Version marker ---------------------------------------------------
 //  Printed on install so a stale editor buffer is obvious in the post
-//  window.  8.2.2 fixes beat-mode Record/Play (action.value(index)).
-~ji_ui_control_surface_version = "8.2.2";
+//  window.  8.2.2 fixed beat-mode Record/Play (action.value(index));
+//  8.6.0 adds dub, loop edits, count-in, auto-play, the memory slots and the
+//  beat-synced granular clock; 8.6.1 redesigns the granular half (motion,
+//  cloud jitter, JI pitch snap, smear, freeze, beat burst) and fixes the
+//  division/count-in edits being rejected by an identity-based string lookup;
+//  8.6.2 adds the dry<->grain Morph blend, the Melt ramp and the moving melt
+//  filter; 8.7.0 adds the loop grain breath (grain_breath / grain_breath_rate)
+//  and the 31-value /ji/loop/edit echo; 9.0.0 adds the per-loop harmonic-series
+//  delay FX, /ji/loop/fx_fire and the 39-value echo (+ fixed musical time).
+~ji_ui_control_surface_version = "9.0.0";
 
 // --- Require the accepted live rig ----------------------------------------
 ~ji_ui_rig_ready = ~ji_autotune_synth_ch0.notNil
@@ -214,6 +245,241 @@ if (~ji_ui_rig_ready.not) {
         if (index >= 1 and: { index <= 4 }) { index } { nil };
     };
 
+    // --- Stage 8.6 count-in ------------------------------------------------
+    //  A bar is the current meter's bar in quarter beats (4/4 = 4, 3/4 = 3,
+    //  6/8 = 3).  The count runs on ~ji_tempo_clock, so it survives a stopped
+    //  transport in free mode; beat mode cancels it on a transport stop.
+    ~ji_count_in_beats = { |index|
+        var i = index.asInteger.clip(1, 4);
+        var barBeats = ~ji_rhythm_meter_num * 4.0 / ~ji_rhythm_meter_den;
+        ~ji_loop_count_in_quarter_beats.(~ji_loop_edit[i - 1][\countIn], barBeats);
+    };
+
+    ~ji_loop_count_send = { |index, beatsLeft|
+        ~ji_ui_addr.sendMsg('/ji/loop/count', index, beatsLeft.asInteger.max(0));
+    };
+
+    //  Cancel a pending count-in.  restore = true puts the last NON-COUNTING
+    //  state back (empty/recorded/stopped) and never runs the auto-play step:
+    //  there is no new take.  Stage 9.0 fix: a stored \counting can never be
+    //  restored (that was the stuck-counting bug); when it is found, fall back
+    //  to \recorded for a valid buffer and \empty otherwise.
+    ~ji_cancel_count_in = { |index, restore, reason|
+        var i = (index ? 1).asInteger.clip(1, 4);
+        var shouldRestore = restore ? true;
+        var sched = ~ji_loop_count_sched[i - 1];
+        var wasCounting = ~ji_loop_states[i - 1] == \counting;
+        var previous, validBuffer;
+        if (sched.notNil or: { wasCounting }) {
+            // Bump the generation: the pending tempo-clock callback becomes a
+            // no-op.  Never .stop the object schedAbs returned (it may be the
+            // clock itself).
+            ~ji_loop_count_gen[i - 1] = ~ji_loop_count_gen[i - 1] + 1;
+            ~ji_loop_count_sched[i - 1] = nil;
+            if (shouldRestore) {
+                previous = ~ji_loop_count_prev[i - 1];
+                if (previous.isNil or: { previous == \counting }) {
+                    validBuffer = ~ji_buf_loop[i - 1].notNil
+                        and: { ~ji_buf_loop[i - 1].bufnum.notNil }
+                        and: { ~ji_buf_loop[i - 1].numFrames > 0 };
+                    previous = if (validBuffer) { \recorded } { \empty };
+                    ("[LOOP %] count-in restore: invalid previous state -> %").format(
+                        i, previous
+                    ).postln;
+                };
+                ~ji_loop_states[i - 1] = previous;
+            };
+            ~ji_loop_count_send.(i, 0);
+            ~ji_ui_send_loop_state.(i);
+            ("[LOOP %] count-in cancelled%").format(
+                i, if (reason.notNil) { " (" ++ reason ++ ")" } { "" }
+            ).postln;
+        };
+    };
+
+    //  The exact record path that used to sit inside ~ji_record_loop_action.
+    ~ji_record_loop_now = { |index|
+        var seconds = ~ji_loop_take_seconds.(index);
+        ~ji_record_loop.(index, seconds);
+        ~ji_ui_send_loop_state_later.(index);
+        ~ji_ui_send_loop_config.(index);
+        ("[RHYTHM] loop % record mode=% beats=% seconds=%").format(
+            index,
+            ~ji_loop_modes[index - 1].asString,
+            ~ji_fmtNum.(~ji_loop_beats[index - 1], 3),
+            ~ji_fmtNum.(seconds, 3)
+        ).postln;
+    };
+
+    //  Count in, then record.  The take length is recomputed at fire time.
+    ~ji_count_in_start = { |index|
+        var i = index.asInteger.clip(1, 4);
+        var beats = ~ji_count_in_beats.(i);
+        var previous;
+        var now, target, generation;
+
+        //  Stage 9.0 fix: resolve any pending count-in with restore = true
+        //  BEFORE sampling the previous state.  Otherwise previous would be
+        //  \counting and a later cancel would restore \counting (the stuck
+        //  state).  A second count-in never starts from \counting.
+        if (~ji_loop_states[i - 1] == \counting) {
+            ~ji_cancel_count_in.(i, true, "restart");
+        };
+        ~ji_cancel_loop_schedule.(i);
+        previous = ~ji_loop_states[i - 1];
+        if (previous == \counting) {
+            // Belt and braces: a state that is still counting is not a valid
+            // previous state; it is not stored below.
+            previous = if (~ji_buf_loop[i - 1].notNil
+                and: { ~ji_buf_loop[i - 1].bufnum.notNil }
+                and: { ~ji_buf_loop[i - 1].numFrames > 0 }) { \recorded } { \empty };
+        };
+        if (beats <= 0) {
+            ~ji_record_loop_now.(i);
+        } {
+            ~ji_loop_count_prev[i - 1] = previous;
+            now = ~ji_tempo_clock.beats;
+            target = now.ceil + beats;
+            generation = ~ji_loop_count_gen[i - 1] + 1;
+            ~ji_loop_count_gen[i - 1] = generation;
+            ~ji_loop_states[i - 1] = \counting;
+            ~ji_ui_addr.sendMsg('/ji/loop/state', i, "counting");
+            ~ji_loop_count_send.(i, beats);
+            // One tick per counted quarter beat: beats-1 ... 1, then 0 when
+            // the recorder starts.  Never per audio block.
+            if (beats > 1) {
+                (1..(beats - 1)).do { |left|
+                    ~ji_tempo_clock.schedAbs(target - left, {
+                        //  Stage 9.0 fix: every tick is generation-checked, so
+                        //  a cancelled count-in's old ticks are silent even if
+                        //  a new count-in has started for the same loop.
+                        if (~ji_loop_count_gen[i - 1] == generation
+                            and: { ~ji_loop_states[i - 1] == \counting }) {
+                            ~ji_loop_count_send.(i, left);
+                        };
+                        nil;
+                    });
+                };
+            };
+            ~ji_loop_count_sched[i - 1] = ~ji_tempo_clock.schedAbs(target, {
+                var seconds;
+                if (~ji_loop_count_gen[i - 1] != generation) {
+                    // Cancelled (Stop Rec / Clear / Stop All / Dub / second Rec
+                    // / transport stop): there is no take.
+                    nil;
+                } {
+                    ~ji_loop_count_sched[i - 1] = nil;
+                    ~ji_loop_count_send.(i, 0);
+                    seconds = ~ji_loop_take_seconds.(i);
+                    ~ji_record_loop.(i, seconds);
+                    ("[LOOP %] record start after count-in (% s)").format(
+                        i, ~ji_fmtNum.(seconds, 2)
+                    ).postln;
+                    ~ji_ui_send_loop_state_later.(i);
+                    ~ji_ui_send_loop_config.(i);
+                    nil;
+                };
+            });
+            ("[LOOP %] count-in % (% beats)").format(
+                i, ~ji_loop_count_in_string.(~ji_loop_edit[i - 1][\countIn]), beats
+            ).postln;
+        };
+    };
+
+    // --- Stage 8.6 beat-synced granular clock -----------------------------
+    //  Scheduled on ~ji_tempo_clock, never a sleep loop.  Each callback sends
+    //  ONE incrementing grainTrig (a change fires exactly one grain); no log
+    //  line is written per grain.  The next target is the previous target plus
+    //  the division, so the interval can never become zero or negative.
+    ~ji_loop_grain_schedule = { |index, target, generation|
+        var i = index.asInteger.clip(1, 4);
+        ~ji_loop_grain_sched[i - 1] = ~ji_tempo_clock.schedAbs(target, {
+            var edit = ~ji_loop_edit[i - 1];
+            var d = ~ji_loop_division_subdivision.(edit[\division]);
+            var player = ~ji_loop_players[i - 1];
+
+            if (~ji_loop_grain_gen[i - 1] == generation
+                and: { ~ji_loop_states[i - 1] == \playing }
+                and: { edit[\mode] == \grain }
+                and: { edit[\sync] == \beat }
+                and: { (~ji_rhythm_running ? false) }
+                and: { player.notNil }) {
+                ~ji_loop_grain_count[i - 1] = (~ji_loop_grain_count[i - 1] ? 0) + 1;
+                player.set(\grainTrig, ~ji_loop_grain_count[i - 1]);
+                ~ji_loop_grain_schedule.(i, target + d, generation);
+            } {
+                // Token expired or no longer eligible: the chain simply ends.
+                // Do not clear the slot here -- a newer schedule may already
+                // own it.
+            };
+            nil;
+        });
+    };
+
+    ~ji_loop_grain_stop = { |index, log = true|
+        var i = index.asInteger.clip(1, 4);
+        var sched = ~ji_loop_grain_sched[i - 1];
+        if (sched.notNil) {
+            // Generation bump: the pending callback becomes a no-op.  Do not
+            // .stop the object returned by schedAbs (it may be the clock).
+            ~ji_loop_grain_gen[i - 1] = ~ji_loop_grain_gen[i - 1] + 1;
+            ~ji_loop_grain_sched[i - 1] = nil;
+            if (log) {
+                ("[LOOP %] grain beat % stopped").format(
+                    i, ~ji_loop_division_string.(~ji_loop_edit[i - 1][\division])
+                ).postln;
+            };
+        };
+    };
+
+    ~ji_loop_grain_start = { |index|
+        var i = index.asInteger.clip(1, 4);
+        var edit = ~ji_loop_edit[i - 1];
+        var d, position, target, generation;
+
+        if (~ji_loop_grain_sched[i - 1].notNil) { ~ji_loop_grain_stop.(i, false) };
+        if (edit[\mode] == \grain and: { edit[\sync] == \beat }
+            and: { ~ji_loop_states[i - 1] == \playing }
+            and: { ~ji_rhythm_running }
+            and: { ~ji_loop_players[i - 1].notNil }) {
+            d = ~ji_loop_division_subdivision.(edit[\division]);
+            //  Stage 8.6.1: the beat-mode burst decays in about half the
+            //  current division; recomputed here on every start/restart (so a
+            //  tempo or division change reaches the voice).
+            ~ji_loop_players[i - 1].set(\grainDecay, ~ji_loop_grain_decay.(i));
+            position = ~ji_tempo_clock.beats - ~ji_beat_offset;
+            target = ~ji_beat_offset + ((position / d).ceil * d);
+            if (target <= ~ji_tempo_clock.beats) {
+                target = ~ji_tempo_clock.beats + d;
+            };
+            // The voice was created with grainTrig = 0, so the first tick
+            // sends 1 and always fires.
+            ~ji_loop_grain_count[i - 1] = 0;
+            generation = ~ji_loop_grain_gen[i - 1] + 1;
+            ~ji_loop_grain_gen[i - 1] = generation;
+            ~ji_loop_grain_schedule.(i, target, generation);
+            ("[LOOP %] grain beat % started (burst decay % s)").format(
+                i,
+                ~ji_loop_division_string.(edit[\division]),
+                ~ji_fmtNum.(~ji_loop_grain_decay.(i), 3)
+            ).postln;
+        };
+    };
+
+    ~ji_loop_grain_restart = { |index|
+        var i = index.asInteger.clip(1, 4);
+        var edit = ~ji_loop_edit[i - 1];
+        if (~ji_loop_grain_sched[i - 1].notNil) { ~ji_loop_grain_stop.(i, false) };
+        if (edit[\mode] == \grain and: { edit[\sync] == \beat }
+            and: { ~ji_loop_states[i - 1] == \playing }) {
+            ~ji_loop_grain_start.(i);
+        };
+    };
+
+    ~ji_loop_grain_restart_all = {
+        (1..4).do { |i| ~ji_loop_grain_restart.(i) };
+    };
+
     // --- Beat quantization helpers ---------------------------------------
     //  The next integer beat after the transport-start origin.  If the
     //  transport has just started at beat 10.3, the next target is 11.
@@ -276,17 +542,14 @@ if (~ji_ui_rig_ready.not) {
     };
 
     //  Actions used by both free (immediate) and beat (scheduled) paths.
+    //  Stage 8.6: a non-off count-in delays the take on the tempo clock; the
+    //  buffer is untouched until the recorder actually starts.
     ~ji_record_loop_action = { |index|
-        var seconds = ~ji_loop_take_seconds.(index);
-        ~ji_record_loop.(index, seconds);
-        ~ji_ui_send_loop_state_later.(index);
-        ~ji_ui_send_loop_config.(index);
-        ("[RHYTHM] loop % record mode=% beats=% seconds=%").format(
-            index,
-            ~ji_loop_modes[index - 1].asString,
-            ~ji_fmtNum.(~ji_loop_beats[index - 1], 3),
-            ~ji_fmtNum.(seconds, 3)
-        ).postln;
+        if (~ji_loop_edit[index - 1][\countIn] == \off) {
+            ~ji_record_loop_now.(index);
+        } {
+            ~ji_count_in_start.(index);
+        };
     };
 
     ~ji_play_loop_action = { |index|
@@ -331,7 +594,7 @@ if (~ji_ui_rig_ready.not) {
 
     // --- Stage 8.1 rhythm handler ----------------------------------------
     ~ji_ui_rhythm_oscdef = OSCdef(\ji_ui_rhythm_tempo, { |msg|
-        var bpm, num, den, running, wasRunning;
+        var bpm, num, den, running, wasRunning, wasBpm;
         if (msg.size < 5) {
             "[RHYTHM] /ji/rhythm/tempo expects bpm, numerator, denominator, running".postln;
         } {
@@ -348,6 +611,7 @@ if (~ji_ui_rig_ready.not) {
                 ).postln;
             } {
                 wasRunning = ~ji_rhythm_running;
+                wasBpm = ~ji_rhythm_bpm;
                 ~ji_rhythm_bpm = bpm;
                 ~ji_rhythm_meter_num = num;
                 ~ji_rhythm_meter_den = den;
@@ -364,13 +628,34 @@ if (~ji_ui_rig_ready.not) {
                     // individually).
                     ~ji_cancel_all_loop_schedules.value;
                     (1..4).do { |index|
+                        // Stage 8.6: beat mode cancels a pending count-in; free
+                        // mode keeps counting (free loops are not gated).
+                        if (~ji_loop_states[index - 1] == \counting
+                            and: { ~ji_loop_modes[index - 1] == \beat }) {
+                            ~ji_cancel_count_in.(index, true, "transport stop");
+                        };
                         if (~ji_loop_modes[index - 1] == \beat) {
                             if (~ji_loop_states[index - 1] == \recording) {
-                                ~ji_stop_record.(index);
+                                // No auto-play from a transport stop.
+                                ~ji_stop_record.(index, false);
                             };
                             if (~ji_loop_states[index - 1] == \playing) {
                                 ~ji_stop_loop.(index);
                             };
+                            ~ji_ui_send_loop_state.(index);
+                        };
+                        // Stage 8.6: beat-synced grains are transport-gated even
+                        // when the loop itself is in free mode.
+                        if (~ji_loop_edit[index - 1][\sync] == \beat
+                            and: { ~ji_loop_edit[index - 1][\mode] == \grain }) {
+                            ~ji_loop_grain_stop.(index, false);
+                            if (~ji_loop_states[index - 1] == \playing) {
+                                ~ji_stop_loop.(index);
+                            };
+                            ("[LOOP %] grain beat % stopped (transport)").format(
+                                index,
+                                ~ji_loop_division_string.(~ji_loop_edit[index - 1][\division])
+                            ).postln;
                             ~ji_ui_send_loop_state.(index);
                         };
                     };
@@ -383,6 +668,16 @@ if (~ji_ui_rig_ready.not) {
                 ).postln;
                 // Beat-mode config seconds depend on the tempo.
                 ~ji_ui_send_all_loop_configs.value;
+                // Stage 8.6: the next grain target is recomputed at the new
+                // tempo (cancel and reschedule at the next boundary).
+                if (~ji_rhythm_running) { ~ji_loop_grain_restart_all.value };
+                // Stage 9.0: a FIXED-time FX follows the tempo.  Recreate only
+                // when the BPM actually changed; free-time FX are untouched.
+                if ((bpm - wasBpm).abs > 0.0001) {
+                    (1..4).do { |index|
+                        ~ji_loop_fx_retime !? { |retime| retime.(index) };
+                    };
+                };
             };
         };
     }, '/ji/rhythm/tempo');
@@ -396,12 +691,17 @@ if (~ji_ui_rig_ready.not) {
                 "[UI] ignore /ji/loop/record: index must be 1..4".postln;
             } {
                 mode = ~ji_loop_modes[index - 1];
-                if (mode == \beat) {
-                    ~ji_schedule_loop_action.(index, ~ji_record_loop_action, "record");
+                if (~ji_loop_states[index - 1] == \counting) {
+                    // A second Rec skips the count-in and records now.
+                    ("[LOOP %] count-in skipped (second Rec)").format(index).postln;
+                    ~ji_cancel_count_in.(index, true);
+                    ~ji_record_loop_now.(index);
                 } {
-                    ~ji_record_loop.(index, ~ji_loop_free_seconds.(index));
-                    ~ji_ui_send_loop_state_later.(index);
-                    ~ji_ui_send_loop_config.(index);
+                    if (mode == \beat) {
+                        ~ji_schedule_loop_action.(index, ~ji_record_loop_action, "record");
+                    } {
+                        ~ji_record_loop_action.(index);
+                    };
                 };
             };
         }, '/ji/loop/record'),
@@ -418,19 +718,34 @@ if (~ji_ui_rig_ready.not) {
                 } {
                     ~ji_loop_default_seconds.asFloat.clip(0.1, 60.0)
                 };
-                if (mode == \beat) {
-                    ~ji_schedule_loop_action.(index, ~ji_record_loop_action, "record");
+                if (~ji_loop_states[index - 1] == \counting) {
+                    //  Stage 9.0 A1: the free-mode path lacked the beat path's
+                    //  second-Rec branch.  Skip the count-in and record now in
+                    //  BOTH modes (beat mode behaves exactly like
+                    //  /ji/loop/record's second Rec).  The new free length is
+                    //  remembered; beat mode keeps its beat length.
+                    ("[LOOP %] count-in skipped (second Rec)").format(index).postln;
+                    ~ji_cancel_count_in.(index, true);
+                    //  Beat lengths come from ~ji_loop_beats, not seconds; only
+                    //  the free path remembers the newly parsed length.
+                    if (mode != \beat) {
+                        ~ji_loop_seconds[index - 1] = seconds;
+                        ~ji_loop_seconds_custom[index - 1] = true;
+                    };
+                    ~ji_record_loop_now.(index);
                 } {
-                    // Free mode: remember this loop's length so /ji/loop/config
-                    // reports what the UI is showing.
-                    ~ji_loop_seconds[index - 1] = seconds;
-                    ~ji_loop_seconds_custom[index - 1] = true;
-                    ~ji_record_loop.(index, seconds);
-                    ~ji_ui_send_loop_state_later.(index);
-                    ~ji_ui_send_loop_config.(index);
-                    ("[UI] loop % record length = % s").format(
-                        index, seconds
-                    ).postln;
+                    if (mode == \beat) {
+                        ~ji_schedule_loop_action.(index, ~ji_record_loop_action, "record");
+                    } {
+                        // Free mode: remember this loop's length so
+                        // /ji/loop/config reports what the UI is showing.
+                        ~ji_loop_seconds[index - 1] = seconds;
+                        ~ji_loop_seconds_custom[index - 1] = true;
+                        ("[UI] loop % record length = % s").format(
+                            index, seconds
+                        ).postln;
+                        ~ji_record_loop_action.(index);
+                    };
                 };
             };
         }, '/ji/loop/record_length'),
@@ -442,8 +757,12 @@ if (~ji_ui_rig_ready.not) {
                 "[UI] ignore /ji/loop/stop_record: index must be 1..4".postln;
             } {
                 ~ji_cancel_loop_schedule.(index);
-                ~ji_stop_record.(index);
-                ~ji_ui_send_loop_state.(index);
+                if (~ji_loop_states[index - 1] == \counting) {
+                    ~ji_cancel_count_in.(index, true, "stop rec");
+                } {
+                    ~ji_stop_record.(index);
+                    ~ji_ui_send_loop_state.(index);
+                };
             };
         }, '/ji/loop/stop_record'),
 
@@ -469,10 +788,15 @@ if (~ji_ui_rig_ready.not) {
             if (index.isNil) {
                 "[UI] ignore /ji/loop/stop: index must be 1..4".postln;
             } {
-                // Stop is immediate in 8.1, including a pending beat action.
+                // Stop is immediate, including a pending beat action or a
+                // pending count-in (Stage 8.6: no take, so no auto-play).
                 ~ji_cancel_loop_schedule.(index);
-                ~ji_stop_loop.(index);
-                ~ji_ui_send_loop_state.(index);
+                if (~ji_loop_states[index - 1] == \counting) {
+                    ~ji_cancel_count_in.(index, true, "stop");
+                } {
+                    ~ji_stop_loop.(index);
+                    ~ji_ui_send_loop_state.(index);
+                };
             };
         }, '/ji/loop/stop'),
 
@@ -483,8 +807,13 @@ if (~ji_ui_rig_ready.not) {
             // the live inputs and the rest of the rig keep running.
             ~ji_cancel_all_loop_schedules.value;
             (1..4).do { |index|
-                ~ji_stop_record.(index);
-                ~ji_stop_loop.(index);
+                if (~ji_loop_states[index - 1] == \counting) {
+                    ~ji_cancel_count_in.(index, true, "stop all");
+                } {
+                    // applyAuto false: a stop-all never starts a loop.
+                    ~ji_stop_record.(index, false);
+                    ~ji_stop_loop.(index);
+                };
             };
             (1..4).do { |index| ~ji_ui_send_loop_state.(index) };
         }, '/ji/loop/stop_all'),
@@ -495,8 +824,12 @@ if (~ji_ui_rig_ready.not) {
             if (index.isNil) {
                 "[UI] ignore /ji/loop/clear: index must be 1..4".postln;
             } {
-                // Clear is immediate and cancels a pending beat action.
+                // Clear is immediate and cancels a pending beat action and a
+                // pending count-in (Stage 8.6).
                 ~ji_cancel_loop_schedule.(index);
+                if (~ji_loop_states[index - 1] == \counting) {
+                    ~ji_cancel_count_in.(index, true, "clear");
+                };
                 buffer = ~ji_buf_loop[index - 1];
                 // Stop the recorder first: clearing a buffer a recorder is
                 // still writing to would be unsafe.
@@ -609,7 +942,129 @@ if (~ji_ui_rig_ready.not) {
                     "[UI] /ji/loop/set_length expects seconds 1..30".postln;
                 };
             };
-        }, '/ji/loop/set_length')
+        }, '/ji/loop/set_length'),
+
+        // --- Stage 8.6 loop editing -------------------------------------
+        OSCdef(\ji_ui_loop_dub, { |msg|
+            var index;
+            index = ~ji_ui_loop_index.(msg);
+            if (index.isNil) {
+                "[UI] ignore /ji/loop/dub: index must be 1..4".postln;
+            } {
+                ~ji_cancel_loop_schedule.(index);
+                if (~ji_loop_states[index - 1] == \counting) {
+                    ~ji_cancel_count_in.(index, true, "dub");
+                };
+                ~ji_dub_loop.(index);
+                ~ji_ui_send_loop_state_later.(index);
+            };
+        }, '/ji/loop/dub'),
+
+        OSCdef(\ji_ui_loop_edit_set, { |msg|
+            var index, param, value;
+            index = ~ji_ui_loop_index.(msg);
+            if (index.isNil) {
+                "[UI] ignore /ji/loop/edit_set: index must be 1..4".postln;
+            } {
+                if (msg.size < 4) {
+                    "[UI] ignore /ji/loop/edit_set: expects index, param, value".postln;
+                } {
+                    param = msg[2].asString;
+                    value = msg[3];
+                    //  Stage 9.0 diagnostic: show the EXACT harm edit that
+                    //  arrived (String vs Symbol vs number matters here).
+                    if (param.beginsWith("harm_")) {
+                        ("[UI] loop % harm edit % = % (%)").format(
+                            index, param, value, value.class.asString
+                        ).postln;
+                    };
+                    if (value.isNumber or: { value.isKindOf(String) }
+                        or: { value.isKindOf(Symbol) }) {
+                        ~ji_loop_set_edit.(index, param, value);
+                    } {
+                        ("[UI] ignore /ji/loop/edit_set: unknown param % value %").format(
+                            param, value
+                        ).postln;
+                    };
+                };
+            };
+        }, '/ji/loop/edit_set'),
+
+        //  Stage 9.0: one-shot Cascade trigger.  UI -> sclang only; no reply
+        //  (the existing /ji/loop/edit echo is the state, and a fire does not
+        //  change it).  Delay mode and Harm off ignore it.
+        OSCdef(\ji_ui_loop_fx_fire, { |msg|
+            var index;
+            index = ~ji_ui_loop_index.(msg);
+            if (index.isNil) {
+                "[UI] ignore /ji/loop/fx_fire: index must be 1..4".postln;
+            } {
+                if (~ji_loop_edit[index - 1][\harmMode] == \cascade
+                    and: { ~ji_loop_fx_synths[index - 1].notNil }) {
+                    ~ji_loop_fx_fire !? { |fire| fire.(index) };
+                } {
+                    ("[LOOP %] harm fire ignored (mode % / no FX)").format(
+                        index, ~ji_loop_edit[index - 1][\harmMode].asString
+                    ).postln;
+                };
+            };
+        }, '/ji/loop/fx_fire'),
+
+        OSCdef(\ji_ui_loop_mem_save, { |msg|
+            var slot, index;
+            slot = if (msg.size >= 2 and: { msg[1].isNumber }) {
+                msg[1].asInteger
+            } { -1 };
+            index = if (msg.size >= 3 and: { msg[2].isNumber }) {
+                msg[2].asInteger
+            } { 0 };
+            if (slot < 0 or: { slot > 3 }) {
+                "[UI] ignore /ji/loop/mem_save: slot must be 0..3".postln;
+            } {
+                if (index < 1 or: { index > 4 }) {
+                    "[UI] ignore /ji/loop/mem_save: index must be 1..4".postln;
+                } {
+                    ~ji_loop_mem_save.(slot, index);
+                    ~ji_ui_send_loop_state.(index);
+                };
+            };
+        }, '/ji/loop/mem_save'),
+
+        OSCdef(\ji_ui_loop_mem_recall, { |msg|
+            var slot, index;
+            slot = if (msg.size >= 2 and: { msg[1].isNumber }) {
+                msg[1].asInteger
+            } { -1 };
+            index = if (msg.size >= 3 and: { msg[2].isNumber }) {
+                msg[2].asInteger
+            } { 0 };
+            if (slot < 0 or: { slot > 3 }) {
+                "[UI] ignore /ji/loop/mem_recall: slot must be 0..3".postln;
+            } {
+                if (index < 1 or: { index > 4 }) {
+                    "[UI] ignore /ji/loop/mem_recall: index must be 1..4".postln;
+                } {
+                    // Recall leaves the loop stopped; the human presses Play.
+                    ~ji_cancel_loop_schedule.(index);
+                    if (~ji_loop_states[index - 1] == \counting) {
+                        ~ji_cancel_count_in.(index, true, "mem recall");
+                    };
+                    ~ji_loop_mem_recall.(slot, index);
+                };
+            };
+        }, '/ji/loop/mem_recall'),
+
+        OSCdef(\ji_ui_loop_mem_clear, { |msg|
+            var slot;
+            slot = if (msg.size >= 2 and: { msg[1].isNumber }) {
+                msg[1].asInteger
+            } { -1 };
+            if (slot < 0 or: { slot > 3 }) {
+                "[UI] ignore /ji/loop/mem_clear: slot must be 0..3".postln;
+            } {
+                ~ji_loop_mem_clear.(slot);
+            };
+        }, '/ji/loop/mem_clear')
     ];
 
     // --- Status query ----------------------------------------------------
@@ -620,6 +1075,8 @@ if (~ji_ui_rig_ready.not) {
         ~ji_ui_send_autotune_state.(1);
         (1..4).do { |index| ~ji_ui_send_loop_state.(index) };
         ~ji_ui_send_all_loop_configs.value;
+        ~ji_ui_send_all_loop_edits !? { |send| send.value };
+        ~ji_ui_send_all_loop_mem !? { |send| send.value };
         ~ji_ui_refresh_autotune.(0);
         ~ji_ui_refresh_autotune.(1);
     }, '/ji/status/query');
@@ -643,6 +1100,8 @@ if (~ji_ui_rig_ready.not) {
     ~ji_ui_addr.sendMsg('/ji/cpu', s.avgCPU ? 0.0);
     (1..4).do { |index| ~ji_ui_send_loop_state.(index) };
     ~ji_ui_send_all_loop_configs.value;
+    ~ji_ui_send_all_loop_edits !? { |send| send.value };
+    ~ji_ui_send_all_loop_mem !? { |send| send.value };
     ~ji_ui_refresh_autotune.(0);
     ~ji_ui_refresh_autotune.(1);
     ("[UI] control surface % installed -> %:%; autotune + loop + rhythm + status OSC ready").format(

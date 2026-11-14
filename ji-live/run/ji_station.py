@@ -119,6 +119,37 @@ def build_parser() -> argparse.ArgumentParser:
         help="lead config path (default: config/lead_config.json)",
     )
     parser.add_argument(
+        "--lead-in",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "enable the Stage 9.1 MIDI/QWERTY lead input (default: off; "
+            "ignored unless --lead is on)"
+        ),
+    )
+    parser.add_argument(
+        "--lead-in-port",
+        default=None,
+        help="MIDI input name/substring (overrides config/lead_input_config.json)",
+    )
+    parser.add_argument(
+        "--lead-in-config",
+        default=None,
+        help=(
+            "lead input config path (default: config/lead_input_config.json: "
+            "port, match, channel, quantize, count_in, bars, velocity_scale, "
+            "octave_shift)"
+        ),
+    )
+    parser.add_argument(
+        "--melody-dir",
+        default=None,
+        help=(
+            "Stage 9.1 melody library directory (default: melodies/ next to "
+            "the project; a relative path resolves from the project root)"
+        ),
+    )
+    parser.add_argument(
         "--drone-config",
         default=None,
         help=(
@@ -303,6 +334,14 @@ def build_bridge_argv(args: argparse.Namespace) -> list[str]:
         argv.extend(["--drone-config", str(args.drone_config)])
     if args.state_dir:
         argv.extend(["--state-dir", str(args.state_dir)])
+    if args.lead_in:
+        argv.append("--lead-in")
+    if args.lead_in_port:
+        argv.extend(["--lead-in-port", str(args.lead_in_port)])
+    if args.lead_in_config:
+        argv.extend(["--lead-in-config", str(args.lead_in_config)])
+    if args.melody_dir:
+        argv.extend(["--melody-dir", str(args.melody_dir)])
     argv.extend(shlex.split(str(args.bridge_args or "")))
     return argv
 
@@ -357,6 +396,11 @@ def build_plan(args: argparse.Namespace) -> LaunchPlan:
         plan.notes.append("bass off: Bus 4 is not opened")
     if not args.lead:
         plan.notes.append("lead off: Bus 5 is not opened (default)")
+    if args.lead_in and not args.lead:
+        plan.notes.append("--lead-in ignored: it needs --lead (Bus 5)")
+    elif args.lead_in:
+        source = args.lead_in_port or args.lead_in_config or "config/lead_input_config.json"
+        plan.notes.append(f"lead input: {source}")
     return plan
 
 
@@ -404,6 +448,9 @@ def run_checks(args: argparse.Namespace) -> int:
     if args.midi or args.drums or args.bass or args.lead:
         need("mido", "MIDI output needs mido")
         need("rtmidi", "MIDI output needs python-rtmidi")
+    if args.lead_in:
+        need("mido", "lead MIDI input needs mido")
+        need("rtmidi", "lead MIDI input needs python-rtmidi")
     if args.gui:
         need("PyQt6", "the GUI needs PyQt6")
 
@@ -481,6 +528,42 @@ def run_checks(args: argparse.Namespace) -> int:
     except (OSError, TypeError, ValueError) as exc:
         problems.append(f"lead config: {exc}")
 
+    input_name = ""
+    input_match = "contains"
+    try:
+        from control.lead_input import load_config as load_lead_input_config
+
+        lead_input = (
+            load_lead_input_config(args.lead_in_config)
+            if args.lead_in_config
+            else load_lead_input_config()
+        )
+        if args.lead_in_port:
+            lead_input = lead_input.with_change("port", args.lead_in_port)
+        input_name = lead_input.port
+        input_match = lead_input.match
+        print(
+            f"[CHECK] lead input config ok: port={lead_input.port!r} "
+            f"match={lead_input.match} channel={lead_input.channel} "
+            f"quantize={lead_input.quantize:g} count-in={lead_input.count_in} "
+            f"bars={lead_input.bars}"
+        )
+    except (OSError, TypeError, ValueError) as exc:
+        problems.append(f"lead input config: {exc}")
+
+    try:
+        from control.melody import MelodyLibrary, resolve_melody_dir
+
+        melody_directory = resolve_melody_dir(args.melody_dir)
+        melodies = MelodyLibrary(melody_directory)
+        melodies.ensure()
+        print(
+            f"[CHECK] melody dir ok: path={melody_directory} "
+            f"melodies={melodies.count()}"
+        )
+    except (OSError, TypeError, ValueError) as exc:
+        problems.append(f"melody dir: {exc}")
+
     try:
         from control.drone import load_config as load_drone_config
 
@@ -530,6 +613,23 @@ def run_checks(args: argparse.Namespace) -> int:
     except (OSError, TypeError, ValueError) as exc:
         problems.append(f"state dir: {exc}")
 
+    # Stage 8.6 has no new config file; print the loop-edit defaults once.
+    try:
+        from ui.osc_control import (
+            LOOP_AUTO_PLAY_DEFAULT,
+            LOOP_COUNT_IN_DEFAULT,
+            LOOP_MEM_SLOTS,
+            LOOP_RATES,
+        )
+
+        print(
+            f"[CHECK] loop edit: rates={len(LOOP_RATES)} "
+            f"slots={LOOP_MEM_SLOTS} count-in={LOOP_COUNT_IN_DEFAULT} "
+            f"auto-play={int(LOOP_AUTO_PLAY_DEFAULT)}"
+        )
+    except (ImportError, TypeError, ValueError) as exc:
+        problems.append(f"loop edit defaults: {exc}")
+
     if importlib.util.find_spec("mido") is not None:
         try:
             import mido  # noqa: PLC0415 - only --check imports mido
@@ -542,10 +642,28 @@ def run_checks(args: argparse.Namespace) -> int:
                         f"mido output {name!r} is not available; create the "
                         "IAC Driver bus or fix the config"
                     )
+            try:
+                inputs = list(mido.get_input_names())
+            except Exception as exc:  # input enumeration is best-effort
+                inputs = []
+                print(f"[CHECK] mido input names failed: {exc!r}")
+            print(f"[CHECK] mido input names: {inputs!r}")
+            if args.lead_in and input_name:
+                needle = input_name.casefold()
+                if input_match == "exact":
+                    found = any(name.casefold() == needle for name in inputs)
+                else:
+                    found = any(needle in name.casefold() for name in inputs)
+                if not found:
+                    problems.append(
+                        f"mido input {input_name!r} is not available; connect "
+                        "the controller or fix config/lead_input_config.json"
+                    )
         except Exception as exc:  # mido/rtmidi backends vary
             problems.append(f"mido output enumeration failed: {exc!r}")
     else:
         print("[CHECK] mido output names not checked (mido is not installed)")
+        print("[CHECK] mido input names not checked (mido is not installed)")
 
     print(
         f"[CHECK] target ports: listen={args.listen_host}:{args.listen_port} "

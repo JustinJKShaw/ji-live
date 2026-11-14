@@ -631,6 +631,7 @@ class SetArp:
         evolve_beats: int = DEFAULT_EVOLVE_BEATS,
         evolve_depth: float = DEFAULT_EVOLVE_DEPTH,
         bpm: float = DEFAULT_BPM,
+        breath: Any | None = None,
     ) -> None:
         self.output = output
         self._settings = ArpSettings.create(
@@ -668,6 +669,8 @@ class SetArp:
         self._evolve_at: float | None = None
         self._evolve_count = 0
         self._last_evolve_at: float | None = None
+        # Stage 8.7: a shared BreathClock, or None for exactly the old timing.
+        self._breath = breath
 
     # ------------------------------------------------------------------
     # State
@@ -991,6 +994,38 @@ class SetArp:
             self._transport_running = bool(value)
         return bool(value)
 
+    # ------------------------------------------------------------------
+    # Stage 8.7 breath
+    # ------------------------------------------------------------------
+
+    def set_breath(self, breath: Any | None) -> None:
+        """Attach/detach the shared breath clock (``None`` = exact old timing)."""
+
+        self._breath = breath
+
+    def _breath_offset(self, step: float) -> float:
+        """Clamped arp breath offset in seconds (0.0 when no breath)."""
+
+        breath = self._breath
+        if breath is None:
+            return 0.0
+        try:
+            value = float(breath.offset_seconds("arp"))
+        except Exception:  # a broken clock must never stop the arp
+            return 0.0
+        limit = 0.45 * float(step)
+        return max(-limit, min(limit, value))
+
+    def _velocity_with_breath(self, base: int) -> int:
+        breath = self._breath
+        if breath is None:
+            return int(base)
+        try:
+            delta = int(breath.velocity_delta("arp"))
+        except Exception:
+            return int(base)
+        return max(VELOCITY_MIN, min(VELOCITY_MAX, int(base) + delta))
+
     def sync_phase(self, delay: float = 0.0) -> None:
         """Snap the next step to a beat boundary ``delay`` seconds from now.
 
@@ -1113,7 +1148,7 @@ class SetArp:
                     settings = self._settings
                     step = settings.effective_step_seconds(self._bpm)
                     gate = settings.effective_gate_seconds(self._bpm)
-                    velocity = settings.velocity
+                    velocity = self._velocity_with_breath(settings.velocity)
                     verbose = self.verbose_steps
                     log_next = self._log_next_step
                     if pattern is None or not order:
@@ -1138,7 +1173,14 @@ class SetArp:
 
                 if note is None:
                     deadline += step
-                    wait = _clamp_wait(deadline, realign_at, evolve_at)
+                    # Stage 8.7: the breath offset joins the SLEEP TARGET only;
+                    # a beat snap or an evolution still wins (it is folded into
+                    # _clamp_wait, never applied after it).
+                    wait = _clamp_wait(
+                        deadline + self._breath_offset(step),
+                        realign_at,
+                        evolve_at,
+                    )
                     wait -= time.monotonic()
                     if wait > 0.0 and self._stop.wait(wait):
                         break
@@ -1175,7 +1217,11 @@ class SetArp:
                     # Fell behind (slow output/JIT); resume from now, do not
                     # burst through missed steps.
                     deadline = now
-                wait = _clamp_wait(deadline, realign_at, evolve_at) - now
+                wait = _clamp_wait(
+                    deadline + self._breath_offset(step),
+                    realign_at,
+                    evolve_at,
+                ) - now
                 if wait > 0.0 and self._stop.wait(wait):
                     break
         finally:

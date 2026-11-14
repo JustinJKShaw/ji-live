@@ -46,6 +46,7 @@ from control.lead import (
     VARIATIONS,
     LeadConfig,
     LeadEngine,
+    LeadNote,
     LeadRig,
     LeadSettings,
     apply_variation,
@@ -57,6 +58,7 @@ from control.lead import (
     validate_base_octave,
     validate_density,
     validate_gate_beats,
+    validate_gate_mode,
     validate_grid,
     validate_octave_range,
     validate_phrase_bars,
@@ -858,7 +860,7 @@ def test_independence_and_failures() -> None:
         assert plain.lead is None
         assert plain.lead_port_ok is False
         state = plain.lead_state()
-        assert len(state) == 16, state
+        assert len(state) == 17, state
         assert state[0] == 0 and state[1] == 0
         assert state[2] == "1/8" and state[9] == "identity"
         try:
@@ -959,6 +961,8 @@ def test_osc_handlers() -> None:
     server._handle_lead_swing("/ji/lead/set_swing", 0.5)
     server._handle_lead_groove_link("/ji/lead/set_groove_link", 0)
     server._handle_lead_seed("/ji/lead/set_seed", 12)
+    server._handle_lead_gate_mode("/ji/lead/set_gate_mode", "note")
+    server._handle_lead_gate_mode("/ji/lead/set_gate_mode", "off")
     server._handle_lead_vary("/ji/lead/vary")
     assert lead_received == [
         ("enabled", True),
@@ -974,6 +978,7 @@ def test_osc_handlers() -> None:
         ("swing", 0.5),
         ("groove_link", False),
         ("seed", 12),
+        ("gate_mode", "note"),
     ], lead_received
     assert varied == [1]
 
@@ -1020,9 +1025,12 @@ def test_osc_handlers() -> None:
     state = LeadSettings().state_args(False, False)
     assert state == [
         0, 0, "1/8", 2, 0.75, 0.5, 90, 1, 0, "identity", 0, 0, 0.0, 1, 1, 0,
+        "beat",
     ], state
     assert LeadSettings().state_args(True, True)[15] == 1
-    print("  thirteen setters + vary, arity/type rejection, 16-value state")
+    assert state[16] == "beat"
+    assert LeadSettings.create(gate_mode="note").state_args(False, False)[16] == "note"
+    print("  thirteen setters + vary, arity/type rejection, 17-value state")
 
 
 def test_bridge_quantization() -> None:
@@ -1070,7 +1078,7 @@ def test_bridge_quantization() -> None:
         states = [
             args for address, args in ui.sent if address == "/ji/lead/state"
         ]
-        assert len(states) == 1 and len(states[0]) == 16, states
+        assert len(states) == 1 and len(states[0]) == 17, states
         assert states[0][4] == 0.4
 
         # Running: pending, then applied at the flush.
@@ -1157,7 +1165,7 @@ def test_bridge_quantization() -> None:
         )
         assert bridge._lead_rig() is None
         state = bridge._lead_default_state
-        assert len(state) == 16 and state[0] == 0 and state[1] == 0
+        assert len(state) == 17 and state[0] == 0 and state[1] == 0
         assert len(bridge._drone_default_state) == 17
         assert bridge._drone_default_state[1] == "hold"
         bridge._on_lead_change("density", 0.5)  # logged, never raises
@@ -1167,6 +1175,64 @@ def test_bridge_quantization() -> None:
         if bridge is not None:
             bridge.quantizer.stop()
     print("  stopped immediate, running queued, coalesced, flushed, state sent")
+
+
+def test_gate_mode_and_played_motif() -> None:
+    print("\n=== Test 18: gate_mode, played motifs, source switch ===")
+    settings = LeadSettings()
+    assert settings.gate_mode == "beat"
+    assert validate_gate_mode("Note") == "note"
+    assert LeadSettings.create(gate_mode="note").gate_mode == "note"
+    assert LeadSettings().with_change("gate_mode", "note").gate_mode == "note"
+    assert LeadConfig.from_mapping({"gate_mode": "note"}).settings.gate_mode == "note"
+    for bad in ("off", "", 3):
+        try:
+            validate_gate_mode(bad)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"gate_mode accepted {bad!r}")
+
+    engine = _engine()
+    notes = (
+        LeadNote(step=0, length=2, degree=2, octave=0, ratio_hint=1.25, velocity=100),
+        LeadNote(step=3, length=1, degree=4, octave=0, ratio_hint=1.5, velocity=90),
+    )
+    motif = engine.load_motif(notes, grid="1/8", phrase_bars=2)
+    assert motif.source == "played" and motif.base_notes == notes
+    assert engine.settings.gate_mode == "note"
+    assert "source=played" in engine.describe_phrase()
+    engine.vary()
+    assert engine.motif.history and engine.motif.source == "played"
+    engine.revert()
+    assert engine.motif.notes == notes and engine.motif.history == ()
+    engine.clear_melody()
+    assert engine.motif.source == "generated"
+    assert engine.motif.base_notes == ()
+    print("  default/validation/17-value state, load/vary/revert/clear")
+
+    rig = LeadRig(_config(enabled=True), output=FakePort())
+    try:
+        assert rig.start()
+        rig.set_transport(True)
+        assert rig.playing
+        rig.set_source("live")
+        assert rig.source == "live" and not rig.playing
+        assert not rig.scheduler.is_running
+        # Re-entering from live starts on the requested bar line (not now).
+        rig.set_source("played", at_time=time.monotonic() + 0.2)
+        assert rig.scheduler.is_running
+        rig.set_source("record")
+        assert rig.source == "record" and not rig.scheduler.is_running
+        rig.set_source("generated")
+        assert rig.source == "generated"
+        rig.set_enabled(False)
+        assert not rig.scheduler.is_running
+        rig.set_enabled(True)
+        assert rig.scheduler.is_running
+    finally:
+        rig.stop()
+    print("  one source switch: live/record stop, played/generated resume")
 
 
 def run() -> None:
@@ -1188,6 +1254,7 @@ def run() -> None:
     test_no_mido_import()
     test_osc_handlers()
     test_bridge_quantization()
+    test_gate_mode_and_played_motif()
     print("\nALL LEAD TESTS PASSED")
 
 

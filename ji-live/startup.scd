@@ -7,8 +7,9 @@
 //      input : MiniFuse 2     (2 channels)
 //      output: BlackHole 16ch (16 channels = 8 stereo pairs)
 //
-//  allocates the cumulative ~ji_* control buses (slots 0-18), and loads every
-//  SynthDef in synthdefs/*.scd:
+//  allocates the cumulative ~ji_* control buses (slots 0-18), four private
+//  Stage 9 loop-FX audio buses (private audio indices after the hardware I/O; 18-21 on a 2-in/16-out boot), and
+//  loads every SynthDef in synthdefs/*.scd:
 //
 //      0-4    Stage 0   debug Tartini + CPU
 //      5-7    Stage 1   autotune tracker / target, channel 0
@@ -19,6 +20,8 @@
 //  Control buses stay 0-18.  Audio output buses 0-15 are now valid.  Stage 4
 //  live/loop audio deliberately stays on pair 0/1 (Ableton track 1); the rest
 //  of the 16-channel map is reserved (see config/ableton_routing.json).
+//  Stage 9.0 adds private mono loop FX audio buses (18-21 on this 2-in/16-out boot) -- never
+//  hardware outputs, never control buses.
 //
 //  Evaluate this whole file (Cmd+Return) before any script in tests/sc/
 //  (test_ableton_routing.scd, test_tartini.scd, test_autotune.scd,
@@ -151,6 +154,7 @@ if (s.serverRunning) {
 // --- 5. Boot --------------------------------------------------------------
 s.waitForBoot({
     var idx, stage4Buses, stage4Present;
+    var fxBuses, fxPresent, fxIdx;
 
     // 5a. Allocate the reserved control buses (Stage 0: 0-4, Stage 1: 5-7,
     //     Stage 4: 8-18).
@@ -222,7 +226,37 @@ s.waitForBoot({
         };
     };
 
-    "JI system buses allocated: freq1=% freq2=% hasfreq1=% hasfreq2=% cpu=% autotune_freq1=% autotune_hasfreq1=% autotune_target1=% autotune_freq2=% autotune_hasfreq2=% autotune_target2=% loop_freq=% loop_hasfreq=%".format(
+    // Stage 9.0: four PRIVATE mono AUDIO buses, one per loop FX send.  They
+    // are not hardware outputs and not control buses; the audio allocator
+    // starts after the hardware I/O, so this 2-in/16-out boot gets 18-21.
+    // Re-use the same rule as the control buses: never free/reallocate an
+    // existing bus (SynthDefs bake .index) and complete a partial block.
+    fxBuses = [
+        ~ji_loop_fx1, ~ji_loop_fx2, ~ji_loop_fx3, ~ji_loop_fx4
+    ];
+    fxPresent = fxBuses.select { |bus| bus.notNil }.size;
+    if (fxPresent == 0) {
+        ~ji_loop_fx1 = Bus.audio(s, 1);
+        ~ji_loop_fx2 = Bus.audio(s, 1);
+        ~ji_loop_fx3 = Bus.audio(s, 1);
+        ~ji_loop_fx4 = Bus.audio(s, 1);
+        "Stage 9 loop FX audio buses allocated.".postln;
+    } {
+        if (fxPresent != 4) {
+            "*** WARNING: only % of the 4 Stage 9 loop FX buses exist -- allocating the missing ones.".format(fxPresent).postln;
+            if (~ji_loop_fx1.isNil) { ~ji_loop_fx1 = Bus.audio(s, 1) };
+            if (~ji_loop_fx2.isNil) { ~ji_loop_fx2 = Bus.audio(s, 1) };
+            if (~ji_loop_fx3.isNil) { ~ji_loop_fx3 = Bus.audio(s, 1) };
+            if (~ji_loop_fx4.isNil) { ~ji_loop_fx4 = Bus.audio(s, 1) };
+        } {
+            "Stage 9 loop FX audio buses already allocated -- re-using them.".postln;
+        };
+    };
+    ~ji_loop_fx_buses = [
+        ~ji_loop_fx1, ~ji_loop_fx2, ~ji_loop_fx3, ~ji_loop_fx4
+    ];
+
+    "JI system buses allocated: freq1=% freq2=% hasfreq1=% hasfreq2=% cpu=% autotune_freq1=% autotune_hasfreq1=% autotune_target1=% autotune_freq2=% autotune_hasfreq2=% autotune_target2=% loop_freq=% loop_hasfreq=% loop_fx=%".format(
         ~ji_tartini_freq1.index, ~ji_tartini_freq2.index,
         ~ji_tartini_hasfreq1.index, ~ji_tartini_hasfreq2.index,
         ~ji_cpu.index,
@@ -233,7 +267,9 @@ s.waitForBoot({
         [~ji_loop_freq1.index, ~ji_loop_freq2.index,
          ~ji_loop_freq3.index, ~ji_loop_freq4.index],
         [~ji_loop_hasfreq1.index, ~ji_loop_hasfreq2.index,
-         ~ji_loop_hasfreq3.index, ~ji_loop_hasfreq4.index]
+         ~ji_loop_hasfreq3.index, ~ji_loop_hasfreq4.index],
+        [~ji_loop_fx1.index, ~ji_loop_fx2.index,
+         ~ji_loop_fx3.index, ~ji_loop_fx4.index]
     ).postln;
 
     // 5b. Sanity checks: the contract reserves 0-18, all distinct.
@@ -262,6 +298,25 @@ s.waitForBoot({
         "***       Everything still works, but the numbers differ from the".postln;
         "***       contract. For a clean allocation: restart the interpreter,".postln;
         "***       reboot the server, then evaluate this file again.".postln;
+    };
+
+    // Stage 9.0: the four FX buses are private AUDIO buses.  A missing bus is
+    // a startup error, never a silent -1; duplicate indices would make two
+    // loops share one send.
+    if (~ji_loop_fx_buses.any { |bus| bus.isNil or: { bus.index.isNil } }) {
+        "*** ERROR: a Stage 9 loop FX audio bus is missing -- the loop FX send".postln;
+        "***        cannot be installed. Reboot the server, restart sclang and".postln;
+        "***        evaluate startup.scd again.".postln;
+    } {
+        fxIdx = ~ji_loop_fx_buses.collect { |bus| bus.index };
+        if (fxIdx.asSet.size != 4) {
+            "*** ERROR: two Stage 9 loop FX audio buses share an index (%);".format(fxIdx).postln;
+            "***        loops would share one FX send.".postln;
+        };
+        if (fxIdx.any { |index| index < s.options.numOutputBusChannels }) {
+            "*** WARNING: an FX bus is inside the hardware output range (%);".format(fxIdx).postln;
+            "***          it must be a private audio bus after the outputs.".postln;
+        };
     };
 
     // 5c. Load every SynthDef in synthdefs/*.scd. This must run AFTER the
@@ -308,7 +363,10 @@ s.waitForBoot({
         s.options.blockSize
     )).postln;
     ("Server device setting: %".format(s.options.device)).postln;
-    "Startup complete (Stage 5: 2 in / 16 out, buses 0-18).".postln;
+    "Startup complete (Stage 5/9.0: 2 in / 16 out, control buses 0-18, FX audio buses %).".format(
+        [~ji_loop_fx1.index, ~ji_loop_fx2.index,
+         ~ji_loop_fx3.index, ~ji_loop_fx4.index]
+    ).postln;
     "Next: tests/sc/test_ableton_routing.scd (Stage 5), then tests/sc/test_live_rig.scd or tests/sc/test_dual_loop.scd.".postln;
 
 }, onFailure: {

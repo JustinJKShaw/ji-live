@@ -120,7 +120,7 @@ A regeneration logs, for example:
 [ARP] shared=3/2 (329.63 Hz)  A=[3/2, 1/1, 5/4]  B=[3/2, 5/3, 15/8]
 ```
 
-### 2.3 Live arp parameters (Stage 8.3b, awaiting human acceptance)
+### 2.3 Live arp parameters (Stage 8.3b, owner-approved 2026-11-02)
 
 The Stage 6 defaults above are unchanged, but the following are now editable
 while the rig runs — from the compact **Arp** GUI group, or by OSC
@@ -149,7 +149,7 @@ apply immediately. The Stage 7.1 Drone/Arp switches remain the only
 enable/disable controls. `/ji/arp/state` carries `enabled, port_ok, step, gate,
 velocity, three octaves, shared mode, order, seed`.
 
-### 2.4 Beat sync and self-evolution (Stage 8.3c, awaiting human acceptance)
+### 2.4 Beat sync and self-evolution (Stage 8.3c, owner-approved 2026-11-02)
 
 Two optional behaviors, both **off by default** so the free-running arp above is
 unchanged:
@@ -191,7 +191,12 @@ Bus 5 prints one `[LEAD] disabled: ...; drone/arp/drums/bass continue` line and
 leaves everything else running.
 
 Because Bus 5 is a separate port, it is a ready FX insert point: route it to an
-Ableton **Lead** track with any instrument and any chain. The lead is
+Ableton **Lead** track with any instrument and any chain.
+
+**Stage 9.1 input is Python-only.** The MIDI controller / QWERTY input is read
+by the Python bridge (lazy `mido` input); it adds no MPE channel, no bus and no
+sclang change, and plays the same Bus 5 output described here. Keep Ableton's
+Track input for that controller off so notes do not double. The lead is
 transport-gated (starts on a transport start at phrase step 0, stops with
 note-off + CC 123) and groove-linked (the drum groove's swing is pushed once per
 change).

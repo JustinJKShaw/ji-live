@@ -107,6 +107,17 @@ uv run --with python-osc --with mido --with python-rtmidi --with PyQt6 \
   python run/ji_station.py --lead
 ```
 
+To play/record that lead from a MIDI controller (or the QWERTY keys), add
+`--lead-in` as well:
+
+```bash
+uv run --with python-osc --with mido --with python-rtmidi --with PyQt6 \
+  python run/ji_station.py --lead --lead-in
+```
+
+The controller name comes from `config/lead_input_config.json` (`Launchkey` by
+default); override it with `--lead-in-port "Launchkey 49"`.
+
 The launcher prints the exact child command lines with a `[LAUNCH]` prefix,
 starts the bridge first, then the GUI. Missing IAC buses degrade one voice only
 (see §5).
@@ -144,6 +155,7 @@ rig runs:
 | **Lead** `Var every` | 0 = manual only; N = the next variation every N bars, on the bar grid |
 | **Lead** `Groove link` | on = follow the drum groove's swing; off = the lead's own `Swing` |
 | **Lead** `Seed` | the same seed reproduces the same phrase and variation sequence |
+| **Lead** `Note len` | off = the `Gate` knob caps every note (generated line); on = each note's own length sets the gate (recorded takes) |
 | **Drone modes** `Mode` | `hold` (Stage 6, default), `pulse` (repeats the anchor **pitch class** at seeded octave offsets), `sequence` (a repeating figure that climbs the current set from the anchor and comes back), `bend` (hold, then a slide) |
 | **Drone modes** pulse row | `Notes`, `Grid`, `Gate`, `Span` |
 | **Drone modes** sequence row | `Seq notes` (2–8), `Length` (1/4, 1/2, 1, 2 or 4 **bars** per held note), `Gate` (% of the note); each step is the next class up/down in the current set, so the figure moves harmonically over bars and still follows mutations |
@@ -154,6 +166,49 @@ class when that class survives, and only notes whose class disappeared move (to
 their fallback degree). `hold` sounds exactly as before. The top-row `Drone`
 switch is still the only drone mute. Details:
 [docs/README_stage8_3d.md](README_stage8_3d.md).
+
+### Lead input — play, record, save a melody (Stage 9.1, runtime, no command)
+
+Start with **both** flags: `--lead --lead-in`. The input is off by default;
+`--lead` alone is exactly the old generated-line rig, and `--lead-in` without
+`--lead` prints one line and is ignored. The controller is configured in
+`config/lead_input_config.json` (`port`, `match`, `channel`, `quantize`,
+`count_in`, `bars`, `velocity_scale`, `octave_shift`) or overridden with
+`--lead-in-port "<name>"` / `--lead-in-config <path>`. Melodies are saved in
+`melodies/` (override with `--melody-dir`); the folder is created on the first
+save.
+
+| Control | What it does |
+|---|---|
+| `Port` + `Refresh` | the controller the bridge opened (e.g. `Launchkey 49`); `Refresh` closes/re-opens it after editing the config |
+| `Keys` | QWERTY play: `a w s e d f t g y h u j`, `z`/`x` shift the octave. GUI-local; keys only sound while `Live` or `Rec` is on |
+| `Live` | monitor the input: the sequencer **stops** and the keys sound as the nearest class of the current set. Off resumes the phrase on the next bar line |
+| `Rec` | record from the next bar line (needs Play); a silent `Count-in` first (`off`/`1 beat`/`1 bar`/`2 bars`) |
+| `Stop` | cancel the count-in, or keep the partial take |
+| `Revert` | restore the recorded base (all variations undone) |
+| `Clear` | drop the melody and return to the generated line |
+| `Quant` | 0–100 %: how hard onsets/lengths snap to the (swung) grid |
+| `Count-in`, `Bars` | the silent count and the take length (1–8 bars) |
+| `Melody`, `Name`, `Save`, `Load`, `Del` | the named melody library |
+
+**Procedure.** Press Play, tick `Live`, play a few notes. Press `Rec`; the
+count-in is silent and the take opens on the next bar line and closes by itself
+after `Bars`. The take plays back quantised (and on the swung grid when the
+groove swings); `Vary` / `Var every` keep transforming it, `Revert` puts the
+recorded take back. Type a name and press `Save`; after a bridge restart press
+`Refresh` and `Load`. `Clear` returns to the generated line and clears `Live`.
+
+Pitch mapping is **pitch-faithful**: a key sounds the nearest frequency class
+of the current set in the register played (a key on a class is exact). There is
+no fixed scale-degree keyboard. The bridge is the authority on ports: the GUI
+never enumerates MIDI devices. If the controller is not found, edit the config
+(or pass `--lead-in-port`) and press `Refresh`.
+
+**Ableton routing:** CoreMIDI lets several applications open the same source.
+Turn **off** Ableton's Track input for this controller (Live → Preferences →
+MIDI Ports), or every note will sound twice (the snapped Bus 5 note plus
+Ableton's raw input). Nothing new is needed in Audio MIDI Setup and no new bus
+is created. Details: [docs/README_stage9_1.md](README_stage9_1.md).
 
 ### Home sets + smooth return (Stage 8.4, runtime, no command)
 
@@ -221,6 +276,146 @@ in `ji-live/states/<name>.json` (created on the first save); `--state-dir`
 overrides the folder. Format, name rules, atomic-save notes, diagnostics and the
 human checklist: [docs/README_stage8_5.md](README_stage8_5.md).
 
+### Loop editing — memory slots, dub, reverse, ratios, granular, morph (Stage 8.6.2, runtime, no command)
+
+Every **Loops** box gains a `Dub` button; the group gains one **Loop edit** row,
+one **Grain** row, one **Grain motion** row (8.6.1) and one **Morph** row
+(8.6.2) for the loop chosen in that row's `Loop` combo. No flag, no config key,
+no new bridge: loops stay sclang-owned. (9.0 later adds the private FX audio
+buses and the Harm row described below.)
+
+| Control | What it does |
+|---|---|
+| **Dub** | Overdub: records **over** the loop for exactly one pass (`preLevel 1`), keeping what is there; the loop keeps playing. On an empty loop it records a fresh take. `Stop Rec` ends a dub early. `Rec` still **replaces** |
+| `Rev` | Reverse playback. The read head keeps its position and the direction flips (no restart) |
+| `Rate` | Varispeed at a fixed length ratio: `2/1`, `3/2`, `5/3`, `5/4`, `4/3`, `1/1`, `3/4`, `4/5`, `2/3`, `3/5`, `1/2`. It also re-pitches the loop (2/1 = +12 st, 2/3 = −7.02 st) |
+| `Gain` | Per-loop output gain 0–1, default 0.70 (today's loudness) |
+| `Count-in` | `off` / `1 beat` / `1 bar` / `2 bars`: delays a **Rec** by that many beats on the tempo clock, starting at the next beat. A bar is the current meter's bar **rounded up** to a whole quarter beat (4/4 = 4, 3/4 = 3, 6/8 = 3, 5/8 = 3, 7/8 = 4). A second Rec during the count skips it and records immediately. Rec only, never a dub |
+| `Auto` | Auto-play: starts the loop as soon as a take finishes (early `Stop Rec` included). Beat mode needs a running transport |
+| `Mem` + **Save** / **Recall** / **Clr** | Session-only memory slots `A`–`D`: a copy of the loop's audio **and** its edit state. `Recall` leaves the loop stopped — press Play |
+| `Grain`, `Sync`, `Div`, `Rate`, `Size`, `Pos`, `Scatter`, `Pitch`, `Rev%` | Granular playback instead of normal playback. `Sync = free` runs on its own clock (transport stopped is fine); `Sync = beat` fires a small burst per `Div` and follows the transport. Defaults (8.6.1): Rate 20, Size 120 ms, Pos 50 %, Scatter 10 % — a continuous cloud |
+| `Motion`, `Speed`, `Depth` | The grain read position **travels** through the loop: `off` / `forward` / `backward` / `pingpong` / `drift`, at `Speed` loop-lengths per second (0.03 reaches the end of an 8 s loop in ~33 s) over a `Depth` of the buffer (100 % = half the loop each way). This is what makes the texture evolve |
+| `Size Jit`, `Pitch Jit` | Per-grain size variation (thickens the cloud) and per-grain pitch scatter (shimmer; heavy values make the autotune warble) |
+| `Snap` | Snap the grain ratio to the nearest ratio of the **current JI set** (× octaves). The status line then shows the effective ratio (e.g. `pitch ×3/2`), and a set mutation re-snaps a playing grain loop without a click |
+| `Smear` | Post-autotune diffusion (two short allpasses): blur/space on top of the tuned loop. 0 % is the dry accepted chain |
+| `Freeze` | Hold the motion where it is (the cloud keeps sounding); unfreezing continues from the same position |
+| `Morph` | **The main gesture:** 0 % is the original loop (normal playback, through the autotune), 100 % is the full grain cloud, in between the two are smeared together. Needs `Grain` on |
+| `Melt` | Tick it (or press Play with it ticked) and the loop starts as the original, then melts into the grains over ~4 s; untick to melt back. Moving `Morph` while melting re-targets the ramp |
+| `Filter` / `F.Rate` | Moving melt filter (post-autotune): a lowpass and a low cut on two slow LFOs fuse the dry and grain layers; `F.Rate` is the sweep speed (0.12 ≈ 8 s per breath). 0 % is bypass and it also works with Grain off |
+| `Breath` / `B.Rate` | The loop's **own** grain breath (8.7): density and grain size swell on a slow LFO inside the voice. `B.Rate` is the speed (0.03 is a long breath, 0.3 a pulse). 0 % is an exact bypass. Needs `Grain` on |
+| `Loop` (combo) | Which loop the edit and grain rows show and change |
+
+**The loop always stays in the JI autotune** (Tartini → nearest class →
+`PitchShift`, `mix = 1.0`). Varispeed and granular change what goes *into* that
+chain, never bypass it. So a repitched loop is re-analysed at its new pitch and
+the current set may pull it partly back toward a class; a grain cloud may sound
+tuned, detuned or both. That interaction is **intended** — "new material", not
+an exact transposition. `Rate = 1/1`, normal mode sounds exactly like the
+accepted loop.
+
+**The 8.6.1 granular redesign** (owner: "the goal is to get cool evolving
+effects … moving through the buffer") is why the grain row has `Motion`,
+`Speed`, `Depth`, `Size Jit`, `Pitch Jit`, `Snap`, `Smear` and `Freeze`: the
+cloud travels, jitters and snaps to the set instead of repeating one slice.
+**8.6.2** adds the `Morph` slider (original ↔ grains), `Melt` (start dry and
+progressively glitch) and the moving `Filter`. Grain off disables the grain,
+motion and morph rows (the Filter/F.Rate stay usable on the plain loop).
+Details: [docs/README_stage8_6.md](README_stage8_6.md) §14 and §15.
+
+**Edit changes are immediate** (reverse, rate, gain, mode and every grain
+parameter); Record/Play keep their free-immediate / beat-next-beat rule. The
+count-in and auto-play ship **off**, so the accepted Rec/Play behavior is
+unchanged. Memory slots are **session-only**: nothing is written to disk and
+re-evaluating the rig empties them. Design, the DSP graph, the OSC surface and
+the human checklist: [docs/README_stage8_6.md](README_stage8_6.md); the 8.6.1
+granular redesign (motion, cloud, JI snap, smear, the Div fix) is §14 there and
+its acceptance checklist is §14.12.
+
+### Harmonic-series delay FX + count-in repair (Stage 9.0, runtime, no command)
+
+One **Harm** row sits under the Morph row for the selected loop. It is a
+**post-`PitchShift`** FX on a private per-loop audio bus: the loop keeps the
+accepted autotune, and only the tuned signal is harmonized. `Harm = off` (the
+default) creates no FX synth and adds no wet.
+
+| Control | What it does |
+|---|---|
+| `Harm` | `off` / `Cascade` / `Delay`. `Cascade` captures one segment and plays it once with the harmonics entering in order; `Delay` is a continuous harmonized buffer delay (varispeed character, no trigger) |
+| `Mix` | Wet return 0–100 % (default 35 %). The dry loop is always upstream, so 0 % is the accepted loop |
+| `Time` | Free time in seconds (0.05–2.00, the 2 s FX buffer): Cascade segment length / Delay base window |
+| `TimeSync` | `free`, or a fixed musical time: `1/4` quarter, `1/4d` dotted, `1/4t` triplet, `1/8`, `1/16`, `1/32`, `1/2`, `1/1`, `1 bar`. Fixed values follow the bridge tempo; the seconds spin then shows the derived value read-only |
+| `Steps` | Harmonics 1–8 (default 4): 1 = fundamental only, 2 adds the octave, 3 the 12th, 4 the 16th … |
+| `Space` | Cascade entry spacing 0–1000 ms (default 80). 0 = all harmonics together. Inert in Delay |
+| `Fall` | High-harmonic roll-off in both modes: amplitude `1 / k^(0.5 + 1.5 × Fall)`; 0 % = gentle `1/√k`, 100 % = `1/k²` |
+| `Auto` | Cascade auto-fire (default on); first capture after one segment, then after each cascade. Inert in Delay |
+| **Fire** | One Cascade pass now. Enabled only in Cascade while the selected loop is playing. It sends `/ji/loop/fx_fire`, not an edit |
+
+A fixed-time FX retimes when the BPM changes; a free-time FX does not. For a
+plain fixed-time delay, use `Delay` + `Steps 1` + a `TimeSync` note value.
+Longer fixed values clamp to the 2 s buffer. Details, the DSP and the count-in
+fixes:
+[docs/README_stage9_0.md](README_stage9_0.md).
+
+### Breathing rhythm + bass hit row (Stage 8.7, runtime, no command)
+
+The **Rhythm** group gains one **Breath** row; the **Bass** group gains a
+**Hits** row. Nothing new to launch: the bridge owns the clock and the voices
+follow.
+
+| Control | What it does |
+|---|---|
+| `Breath` | Makes the played grid breathe: events arrive early/late and velocities swell in a slow, physical cycle. The BPM readout and every bar line stay exactly put. Off is exactly today's timing |
+| `Depth` | How far events move early/late: up to ±½ of a 16th note at 100 % (35 % default) |
+| `Period` | One full inhale + exhale in bars (1 = a fast pulse, 16 = a long swell) |
+| `Shape` | `sine`/`triangle` are even; `inhale` fills fast and releases slowly; `exhale` the opposite |
+| `Intensity` | The velocity/expression swell (0 % = timing only, 100 % = strong) |
+| `Phase` | Rotate the breath against the bar (0 % starts at the bottom of the inhale) |
+| `Arp local` | The arp's extra breath depth. With `Arp sync` off it also uses a half-cycle offset (it breathes against the groove); with sync on it is just deeper |
+| `Arp sync` | Off: the arp breathes half a cycle out of phase with the groove. On: the arp uses the master phase, so it inhales/exhales **with** the drums, bass and lead |
+| Bass `Hits` | One editable row of bass hits per bar (no pitch, no per-step velocity). Enabling seeds the row from the generated pattern if it is empty; while Hits is on, `Len` is not used |
+| Bass `Copy` / `Clear` | Seed the row from the generated pattern of bar 1 / turn every hit off (deliberate silence) |
+
+**What breathes:** drums, bass, arp and lead get timing **and** velocity; the
+drone gets velocity only. The arp is the only local voice; `Arp sync` makes it
+follow the master phase instead of its own half-cycle offset. Each **loop** also
+has its own grain breath (`Breath`/`B.Rate` in the Morph row), completely
+independent of the master breath and of the loop's timing. **The canonical
+tempo, the bar grid, the quantized `PHASE_*` queue and the sclang loop clock are
+never touched** — breath is a scheduling offset inside each voice. The breath
+setting is **not saved in a performance state** (it is a live feel control); the
+bass hit row **is** saved. Details:
+[docs/README_stage8_7.md](README_stage8_7.md).
+
+### Fretboard improvisation aid (Stage 8.8, runtime, no command)
+
+The **Fretboard** group (full width, between Lead and Status) shows the nearest
+12-TET notes to the live JI set and marks every occurrence of them on a full
+guitar neck. It is a **read-only** aid: no flag, no bus, no OSC address, no new
+config or state key. The set arrives on the existing `/ji/freqset/changed`, so
+it follows mutations, state loads and hello with no restart.
+
+| Control | What it does |
+|---|---|
+| `Strings` | 6, 7 or 8 strings. Adding one prepends a low fourth (7-string B adds B1; 8-string F# adds F#1); removing drops the lowest strings |
+| `Frets` | 0–24 frets. 24 is a full neck; 12 is a shorter diagram |
+| `Tuning` | Whole-neck presets: Standard E, Drop D, Drop C, DADGAD, Open G, Open D, Half-step down, 7-string B, 8-string F#. Editing one string below makes it `Custom` |
+| String combos | One per string, low → high, any MIDI note 0–127. The label shows the exact note (`E2`, `D2`, …) |
+| `Names` | Draws the note name inside the markers; off keeps the markers |
+| Set label | `12-TET set (A = 220.00 Hz): A B C# D E F# G#`, or `Fretboard: waiting for the set` |
+| Legend | `A 1/1 +0¢ · B 9/8 +4¢ · C# 5/4 -14¢ · …`. The cents are signed: **negative = the set's frequency is flat** of the 12-TET note. A pitch class reached by two ratios shows the closest first and the other in parentheses |
+| Board | Root in orange, other scale notes in blue, the anchor with a purple ring; hover a marked position for the JI fraction, cents and one-octave frequency |
+
+**Procedure.** With the bridge running, read the set label and legend; every
+note of that set is highlighted all over the neck. For Drop D, pick `Drop D`
+(open low `D2` is marked and the rest of the board redraws); for anything else,
+set each string combo by hand. `Strings` 7/8 shows the extra low string. Frets
+24 → 12 shortens the diagram.
+
+**The tuning is session-only and never sent.** It is not saved in a performance
+state or in `config/`, and restarting the GUI returns to Standard E. The board
+is an aid, not part of the rig. Details:
+[docs/README_stage8_8.md](README_stage8_8.md).
+
 ### Stepwise class glide (Stage 8.4.1, runtime, no command)
 
 The Mutation group's **Glide** knob is the **replacement melt** time, not a
@@ -277,10 +472,14 @@ canonical tempo/meter/transport when it installs.
 | `--home-config <path>` | package default | alternative `config/home_config.json` (slots, auto/every/seed/drift, return glide, history depth) |
 | `--state-dir <path>` | `states/` | Stage 8.5 performance-state folder. A relative path resolves from `ji-live/` (the project root) |
 | `--lead-config <path>` | package default | alternative `config/lead_config.json` |
+| `--lead-in` / `--no-lead-in` | **off** | Stage 9.1 MIDI/QWERTY input for the lead. Needs `--lead`; without it the input is ignored. A missing/failing controller disables only the input |
+| `--lead-in-port <name>` | config | controller name/substring, overriding `config/lead_input_config.json` |
+| `--lead-in-config <path>` | package default | alternative `config/lead_input_config.json` (port, match, channel, quantize, count-in, bars, velocity scale, octave shift) |
+| `--melody-dir <path>` | `melodies/` | Stage 9.1 melody library folder; created on the first save. A relative path resolves from `ji-live/` |
 | `--drone-config <path>` | package default | alternative `config/drone_config.json` (mode + pad parameters; the bus stays `--mpe-config`'s `drone_port`) |
 | `--bridge-args "<flags>"` | empty | extra bridge flags, quoted: `--bridge-args "--change-count 2 --temperature 0.2"` |
 | `--dry-run` | off | print exactly what would start, then exit 0 (imports no PyQt6/mido) |
-| `--check` | off | validate imports, config files, the state directory, and mido output names, then exit |
+| `--check` | off | validate imports, config files, the state/melody directories, and mido output + input names, then exit |
 
 `--check` is the fastest way to diagnose "it will not start":
 
@@ -297,6 +496,10 @@ uv run --with python-osc --with mido --with python-rtmidi --with PyQt6 \
 | `--drums` | off | build the drum output (works with or without `--midi`) |
 | `--bass` | off | build the bass output (works with or without `--midi`/`--drums`) |
 | `--lead` / `--no-lead` | off | build the lead output on Bus 5 (works with or without `--midi`/`--drums`/`--bass`; a bad config or a missing bus disables the lead only) |
+| `--lead-in` / `--no-lead-in` | off | build the Stage 9.1 MIDI/QWERTY input rig (only when `--lead` is on) |
+| `--lead-in-port <name>` | config | controller name/substring override |
+| `--lead-in-config <path>` | package default | alternative `config/lead_input_config.json` |
+| `--melody-dir <path>` | `melodies/` | melody library folder (relative paths resolve from the project root) |
 | `--interactive` | off | stdin command line (see `--interactive` above) |
 | `--glide-time <s>` | `0.15` | same as the launcher flag: the stepwise/replaced class melt time |
 | `--listen-host` / `--listen-port` | `127.0.0.1` / `9000` | OSC control listen socket |
@@ -389,6 +592,71 @@ without restarting the interpreter changes the control-bus numbering — re-run
 | The load changed the sound but not the transport | Correct: a state is a colour, not a play command. Press Play/Stop yourself |
 | Load does nothing while running | Expected up to one quarter beat. Look for `[QUANT] state load …` on the next beat. While stopped it is immediate |
 | A loop or the autotune changed after a recall | It should not; loops and autotune are excluded from a state. If it happens, it is a bug: record the `[STATE]` lines |
+| `Dub` does nothing / records a fresh take | A dub needs a loop buffer. On an `empty` loop it allocates and records a fresh take and says so (`[LOOP i] no buffer -- dub records a fresh take instead`). A dub during a `recording`/`dubbing` loop is refused; `Stop Rec` first |
+| `[LOOP 2] mem A is empty` on Recall | The slot was never saved (or was cleared, or the rig was re-evaluated). Save it first. Recall only enables for a filled slot |
+| Beat-synced grains are silent | `Sync = beat` is transport-gated: press Play. The grain row shows `beat grains need the transport (press Play)` while stopped. `Sync = free` runs with the transport stopped |
+| A reversed loop sounds "backwards" | Expected. `Rev` plays the buffer end → start; the autotune still retunes it note by note |
+| A varispeeded loop still sounds in tune | Expected: the loop still runs through the JI autotune, which pulls it toward the current set. The rate changes speed/pitch of the *input* to that chain; the set wins harmonically |
+| The count-in counts with the transport stopped (free mode) | Expected: free loops are not transport-gated, so the count runs on the tempo clock. In **beat** mode a transport stop cancels the count-in (`count-in cancelled (transport stop)`) |
+| `auto-play skipped: transport stopped (beat mode)` | Expected: `Auto` in beat mode needs a running transport. The take stays `recorded`; press Play. Free mode auto-plays with the transport stopped |
+| The loop label shows `counting` and never moves | Fixed in 9.0 (A1/A2): a stored `\counting` is never restored. If it still happens with 9.0, re-evaluate `ji_start.scd` — an old control surface is still loaded. `Stop Rec` during a count restores `empty`/`recorded` |
+| A second Rec during a free-mode count restarts the count | Fixed in 9.0 (A1). The log must say `[LOOP i] count-in skipped (second Rec)`; if not, the old `control_surface.scd` is loaded |
+| Rec queues (beat) or is pressed (free) but no take starts | Check the post window for `[LOOP i] record requested` and `[LOOP i] recorder running`. If neither appears, the control surface/rig is stale: Restart Interpreter, re-evaluate `ji_start.scd` (it must end with the 9.0 ready line), then restart the Python GUI. If `record requested` appears but not `recorder running`, `SynthDescLib.global[\ji_looper_recorder]` is nil — startup did not load every SynthDef; fix the post-window load error first |
+| `~ji_ui_control_surface_version` is not `9.0.0` | The old control surface is still installed. Re-evaluate `ji_start.scd`; re-evaluating only one file can leave a half-updated rig |
+| A Harm edit switches the mode back to `off` | Fixed in the 9.0.1 UI/rig pass: the GUI re-sends the visible mode before every Harm edit/Fire, repeated modes do not restart the FX, and a missing FX synth is recreated on the next parameter edit. Re-evaluate `ji_start.scd` and restart the Python GUI |
+| Diagnose Rec/Harm without the GUI | Evaluate `tests/sc/debug_stage9.scd` after `ji_start.scd`; it prints `[DEBUG]` lines for the direct mode edit, the 39-value echo, the core recorder and the FX node. It overwrites loop 4. |
+| Harm is on but there is no wet sound | Check `[LOOP i] harm … started (… in 18 -> out 2 …)` in the post window. `Cascade` needs Auto on or Fire; `Delay` is continuous after one `Time` window. The wet is summed into the loop's usual output (SC 2/3), not a separate channel. If the line is absent, check `~ji_loop_players[i-1]` and `~ji_loop_fx_synths[i-1]` |
+| A bar count-in in 5/8 or 7/8 starts early/late | Fixed in 9.0 (A4): bars are rounded **up** to whole quarter beats (5/8 → 3, 7/8 → 4). Re-evaluate `ji_start.scd` if the old rounding is still audible |
+| Harm does nothing | `Harm` must not be `off`; `Fire` only works in `Cascade` while that loop is playing. `Delay` needs no trigger. Check `[LOOP i] harm … started` in the post window |
+| No harmonized sound / a silent FX | The FX reads the loop's private send, so the loop must be playing. Check `s.plotTree` for a `ji_harmonic_delay` node after the player, and the `in … -> out …` line (the actual FX bus indices are printed by startup, e.g. 18–21 on a 2-in/16-out boot; output 2/3). A Fire before `Time` seconds of audio exist plays a partial segment |
+| Cascade keeps restarting / auto fires too often | `Auto` is on and fires every segment + cascade + 0.1 s; untick it and use `Fire`. A manual Fire during a cascade restarts the same frozen segment by design |
+| Fixed time does not match the tempo | `TimeSync` must be a note value (not `free`); the spin is then read-only. A BPM change retimes a playing fixed FX. Values longer than 2 s clamp to the buffer (`1 bar` at slow tempos) |
+| Harm settings survived a state load | They should not: loop FX are session-only and excluded from performance states. If they did, it is a bug — record the `[STATE]` lines |
+| Memory slots are empty after re-evaluating the rig | Expected: slots are session-only (`Buffer` copies, no files). Re-evaluate `ji_start.scd` only between sessions; re-save the slots you need |
+| Morph does nothing | `Grain` must be on (the Morph row is disabled otherwise). Morph 0 % is intentionally the original loop; raise it |
+| Melt runs too fast / too slow | The ramp is `~ji_loop_melt_seconds` (4 s default) in sclang: evaluate `~ji_loop_melt_seconds = 8.0;` after the rig |
+| The loop jumps instead of melting | `Melt` is off: with Melt off the Morph slider is direct. Tick Melt (and press Play) for the ramp |
+| The Filter seems to do nothing | It is bypassed at 0 %; raise it past ~20 % and watch `F.Rate`. It is subtle on a dry loop — most obvious on a morphed one |
+| The morphed loop sounds quieter in the middle | Expected: the dry/grain crossfade is equal-power, so the two layers sum differently than a linear fader. Put `Gain` where it sounds right |
+| Grains still sound static / like one slice repeating | `Motion` must not be `off` (or `Freeze` is on) and `Depth` must be > 0 `%`. `Pos` is the centre of the scan; a low `Scatter` with `Motion = off` deliberately repeats one slice |
+| The grain cloud is silent | `Pos 0 %` with `Motion = off` reads the start of the loop: if the take begins with silence the cloud is silent. Move `Pos`/`Scatter`/`Motion` |
+| The Pitch control "does nothing" | `Snap` is on and the nearest set ratio in that octave is the one you asked for: read the **effective** ratio in the status line (`pitch ×3/2`); `Snap` off passes the raw ratio |
+| The cloud warbles | Expected with heavy `Pitch Jit` (and a jittery cloud tracking badly); lower `Pitch Jit`. Grain mode never retunes faster than 0.15 s |
+| The Div combo jumps back to 1/16 | Fixed in 8.6.1 (sclang compared division Strings by identity, so GUI div/count-in edits were rejected). If it still happens, re-evaluate `ji_start.scd` — an old control surface is still loaded |
+| Beat-synced grains sound like one tick | Raise `Rate` (it sets the burst density; default 20/s) and/or `Burst`; the burst decays over about half the current division |
+| Clicks on a rate or reverse change | Rate/reverse are smoothed (0.02 s `Lag`) and a mode switch is crossfaded, so a click is a bug. Record the rate, the mode and the buffer duration; try `1/1` to confirm the baseline, then report |
+| Breath does nothing | Check `Breath` is ticked, `Depth` is above 0 and `Period` is not absurdly long (32 bars is a very slow swell). Stopped transport is fine for the arp but drums/bass/lead only run while the transport does |
+| Everything sounds late or early, then normal | Expected only inside the cycle: `Depth` and `Phase` move events up to ±½ of a 16th. Set `Depth 0` for exactly the old timing; the BPM readout and bar lines never move |
+| The arp still breathes when the groove doesn't | `Arp local` is above 0 (and/or `Breath` with depth is on): the arp has its own half-cycle breath. Set `Arp local 0` to stop it, or tick `Arp sync` to put it on the master phase |
+| Arp sync seems to do nothing | With `Arp local 0` and/or `Depth 0` there is little to hear. Raise the master `Depth` and `Intensity`; `Arp sync` changes the phase, and `Arp local` adds depth on top |
+| The bass plays the old pattern | `Hits` is off, so the generated pattern is playing. Tick `Hits` (it seeds from the generated pattern) or press `Copy` |
+| My bass hits vanished | `Clear` turns every cell off deliberately; a recalled state may carry an all-off row; press `Copy` to re-seed from the generated pattern. A meter/grid change re-shapes (never clears) the row |
+| The loop breath does nothing | `Grain` must be on (the loop `Breath`/`B.Rate` controls are disabled otherwise) and `Breath` must be above 0 |
+| The fretboard board is empty / says `waiting for the set` | The bridge is not running yet or has not broadcast `/ji/freqset/changed`; press `Mutate`, load a state, or wait for hello. A fresh GUI before the bridge starts shows the bare neck by design |
+| A note is marked that sounds wrong | It is the **nearest 12-TET note** to a set frequency, not the JI frequency itself. Read the legend's signed cents (`-14¢` = the JI note is 14 cents flat of the marked 12-TET note) |
+| The open G is missing in A major | Correct: A major is `A B C# D E F# G#`; G natural is not in it. G# is marked at fret 1 on the G string |
+| My guitar tuning resets | Session-only by design: the tuning is a local aid, not part of the performance state or `config/`, and a GUI restart returns to Standard E. Re-pick the preset or edit the strings again |
+| Lead input group missing / `Port: --` | Start with **both** `--lead --lead-in`; `--lead` alone is the generated-line rig and the input group stays inert. Restart the bridge after changing flags |
+| `[LEAD-IN] disabled: no input port configured` | `config/lead_input_config.json` has an empty `port`. Set the controller name/substring, or pass `--lead-in-port`, then press `Refresh` |
+| `[LEAD-IN] disabled: no input matched "…"` | The controller name does not match `mido.get_input_names()`. `python run/ji_station.py --check --lead-in` prints the input names; copy one (contains match is case-insensitive) |
+| `[LEAD-IN] disabled: 2 inputs matched "MIDI"` | The configured substring is ambiguous; use a longer, unique name (the line lists the matches) |
+| `[LEAD-IN] input lost: …` | The controller was unplugged/renamed. Reconnect it and press `Refresh`; the rest of the rig keeps running |
+| A played note sounds twice | Ableton is also listening to the controller. Turn off its Track input (Live → Preferences → MIDI Ports); CoreMIDI allows several apps to open one source |
+| Keys do nothing | `Keys` is off, `Live`/`Rec` is off, a text box has focus, a modifier is held, or the input port is not open. The status line says `… - live` only while monitoring |
+| `Rec` is greyed out | The transport is stopped or the input port is not open. Press Play; `Port:` must show the controller |
+| `[LEAD-IN] record needs the transport (press Play)` | The beat clock is frozen while stopped; recording always needs a running transport |
+| The count-in is silent | Correct: no note is captured or sounded before the take's bar line |
+| A take stops early / `recording aborted (transport stop)` | The transport stopped mid-take. The notes played so far are kept and loaded; press Play to hear/continue |
+| `Revert` is greyed out | There is no played line (`source` is `generated`). Record or load a melody first |
+| `Save` is greyed out | Type a melody name; a played take is required (record or load first) |
+| `[LEAD-IN] melody load … meter … differs` | The saved melody was made in another meter; it still plays, but its bars will not line up with the bridge bars. Re-save it in the current meter |
+| A melody is gone after a restart | Melodies live in `melodies/` (or `--melody-dir`). Check `[LEAD-IN] melody dir=… melodies=N` at bridge start and the `--melody-dir` path |
+| `Melody` combo is empty | No saved melodies, or the bridge has not replied yet. Press `Refresh`/`Load` after `/ji/lead/melody/list`; check `[LEAD-IN] melody dir=…` |
+| Editing a melody name plays notes | The QWERTY handler ignores keys while a `QLineEdit`/`QComboBox`/spin box has focus; if it still happens, click outside the box first (a stale GUI is the usual cause) |
+| `Live` never comes back after a record | A normal take returns to `played` (the checkbox clears); pressing `Live` again re-enters monitoring. A transport-stop abort keeps `live` |
+| Played notes are stuck after closing the GUI | Closing the GUI does not stop the bridge; but every exit path (Live off, source change, bridge stop) sends note-off + CC 123. If a note hangs, press `Live` off/on or restart the bridge |
+| A state recall loses the played line | States saved before 9.1 have no inline notes and load as a generated line. Re-save the state after recording; the new `lead.notes` keys are self-contained |
+| The Fretboard group is missing after an update | A stale GUI process is still running. Close it and restart `run/ji_station.py` (closing the window does **not** stop the bridge) |
 
 ---
 

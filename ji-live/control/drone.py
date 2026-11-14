@@ -92,6 +92,8 @@ class AnchorDrone:
             raise ValueError("velocity must be between 1 and 127")
         self.output = output
         self.velocity = velocity
+        # Stage 8.7: velocity-only breath (the hold never changes its timing).
+        self._breath: object | None = None
 
         self._lock = threading.Lock()
         self._target_frequency: float | None = None
@@ -122,6 +124,23 @@ class AnchorDrone:
     def bend(self) -> int | None:
         with self._lock:
             return None if self._pitch is None else self._pitch.bend
+
+    # -- Stage 8.7 breath (velocity only) ---------------------------------
+
+    def set_breath(self, breath: object | None) -> None:
+        """Attach/detach the shared breath clock (velocity only)."""
+
+        self._breath = breath
+
+    def _velocity_with_breath(self) -> int:
+        breath = self._breath
+        if breath is None:
+            return int(self.velocity)
+        try:
+            delta = int(breath.velocity_delta("drone"))
+        except Exception:
+            return int(self.velocity)
+        return max(1, min(127, int(self.velocity) + delta))
 
     # ------------------------------------------------------------------
     # Set updates
@@ -174,11 +193,13 @@ class AnchorDrone:
                 else:
                     self.output.note_off(self._pitch.note)
                     self.output.pitch_bend(pitch.bend)
-                    self.output.note_on(pitch.note, self.velocity)
+                    self.output.note_on(
+                        pitch.note, self._velocity_with_breath()
+                    )
                     action = "retrigger"
             else:
                 self.output.pitch_bend(pitch.bend)
-                self.output.note_on(pitch.note, self.velocity)
+                self.output.note_on(pitch.note, self._velocity_with_breath())
                 action = "start"
 
             self._target_frequency = frequency
@@ -858,6 +879,8 @@ class _ModeScheduler:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._held: int | None = None
+        # Stage 8.7: a shared BreathClock (velocity only for the drone).
+        self._breath: object | None = None
 
     @property
     def is_running(self) -> bool:
@@ -914,6 +937,23 @@ class _ModeScheduler:
         except Exception:
             pass
 
+    # -- Stage 8.7 breath (velocity only) ---------------------------------
+
+    def set_breath(self, breath: object | None) -> None:
+        """Attach/detach the shared breath clock (the drone has no timing one)."""
+
+        self._breath = breath
+
+    def _velocity_with_breath(self, base: int) -> int:
+        breath = self._breath
+        if breath is None:
+            return max(1, min(127, int(base)))
+        try:
+            delta = int(breath.velocity_delta("drone"))
+        except Exception:
+            return max(1, min(127, int(base)))
+        return max(1, min(127, int(base) + delta))
+
     def _run(self) -> None:  # pragma: no cover - exercised with a fake output
         raise NotImplementedError
 
@@ -951,7 +991,7 @@ class PulseScheduler(_ModeScheduler):
                     self.note_off(held)
                     try:
                         self.rig.output.pitch_bend(pitch.bend)
-                        self.note_on(pitch.note, settings.velocity)
+                        self.note_on(pitch.note, self._velocity_with_breath(settings.velocity))
                     except Exception as exc:
                         print(
                             f"[DRONE] pulse output error: {exc}",
@@ -1020,7 +1060,7 @@ class BendScheduler(_ModeScheduler):
                 self.note_off(held)
                 try:
                     self.rig.output.pitch_bend(pitch.bend)
-                    self.note_on(pitch.note, settings.velocity)
+                    self.note_on(pitch.note, self._velocity_with_breath(settings.velocity))
                 except Exception as exc:
                     print(f"[DRONE] bend output error: {exc}", file=sys.stderr)
                     break
@@ -1051,7 +1091,7 @@ class BendScheduler(_ModeScheduler):
                     else:
                         self.note_off(pitch.note)
                         self.rig.output.pitch_bend(fresh.bend)
-                        self.note_on(fresh.note, settings.velocity)
+                        self.note_on(fresh.note, self._velocity_with_breath(settings.velocity))
                     pitch = fresh
                 if stopped:
                     break
@@ -1154,7 +1194,7 @@ class SequenceScheduler(_ModeScheduler):
                     self.note_off(held)
                     try:
                         self.rig.output.pitch_bend(pitch.bend)
-                        self.note_on(pitch.note, settings.velocity)
+                        self.note_on(pitch.note, self._velocity_with_breath(settings.velocity))
                     except Exception as exc:
                         print(
                             f"[DRONE] sequence output error: {exc}",
@@ -1378,6 +1418,17 @@ class DroneRig:
         with self._lock:
             self._bpm = value
             return value
+
+    def set_breath(self, breath: object | None) -> None:
+        """Forward the shared Stage 8.7 breath clock (velocity only)."""
+
+        self.anchor.set_breath(breath)
+        for scheduler in (
+            self.pulse_scheduler,
+            self.bend_scheduler,
+            self.sequence_scheduler,
+        ):
+            scheduler.set_breath(breath)
 
     # -- set updates ----------------------------------------------------
 

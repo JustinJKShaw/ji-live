@@ -25,6 +25,7 @@ if str(ROOT) not in sys.path:
 import control.bass as bass
 import control.ji_bridge as bridge_module
 from control.bass import (
+    BASS_HITS_MAX,
     BassConfig,
     BassEngine,
     BassNote,
@@ -33,7 +34,10 @@ from control.bass import (
     BassRig,
     BassScheduler,
     BassSettings,
+    bar_steps,
+    build_hits_pattern,
     build_pattern,
+    effective_hits,
     frequency_to_pitch,
     resolve_length,
     swing_offset,
@@ -565,9 +569,150 @@ def test_bridge_quantization() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Runner
+# Stage 8.7 bass hit row
 # ---------------------------------------------------------------------------
 
+
+def test_hits() -> None:
+    print("\n=== Test: Stage 8.7 bass hit row ===")
+
+    # -- settings validation ---------------------------------------------
+    defaults = BassSettings()
+    assert defaults.hits_enabled is False and defaults.hits == ()
+    settings = BassSettings.create(
+        grid="1/16", hits_enabled=1, hits=[1, 0, 1]
+    )
+    assert settings.hits_enabled is True
+    assert settings.hits == (True, False, True)
+    assert BassSettings.create(hits=(0, 1, 2)).hits == (
+        False,
+        True,
+        True,
+    )
+    assert len(BassSettings.create(hits=[1] * 40).hits) == BASS_HITS_MAX
+    for bad in ("nope", "1010", object()):
+        try:
+            BassSettings.create(hits=bad)
+        except TypeError:
+            pass
+        else:
+            raise AssertionError(f"invalid hit row accepted: {bad!r}")
+    # create() is the state-recall path; with_change stays the beat-queued
+    # settings path and deliberately does not take the hit row.
+    try:
+        defaults.with_change("hits", (True,))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("with_change accepted the hit row")
+
+    # -- bar_steps for 4/4 and 3/4 at every subdivision ------------------
+    for grid, expected in (("1/4", 4), ("1/8", 8), ("1/16", 16)):
+        grid_settings = BassSettings.create(grid=grid)
+        assert bar_steps(grid_settings, 4, 4) == expected
+        assert bar_steps(grid_settings, 3, 4) == expected * 3 // 4
+        assert bar_steps(grid_settings, 6, 8) == expected * 3 // 4
+    assert bar_steps(BassSettings.create(grid="1/16"), 16, 4) == BASS_HITS_MAX
+
+    # -- effective_hits padding / empty row ------------------------------
+    padded = BassSettings.create(grid="1/16", hits=(True,))
+    row = effective_hits(padded, 4, 4)
+    assert len(row) == 16 and row[0] is True and not any(row[1:])
+    never_set = BassSettings.create(grid="1/16", hits=())
+    auto = effective_hits(never_set, 4, 4)
+    assert len(auto) == 16 and auto[0] is True and not any(auto[1:])
+    cleared = BassSettings.create(grid="1/16", hits=(False,) * 16)
+    assert not any(effective_hits(cleared, 4, 4))
+    long_row = BassSettings.create(grid="1/16", hits=(True,) * 32)
+    assert len(effective_hits(long_row, 4, 4)) == 16
+
+    # -- engine: set/clear/copy -----------------------------------------
+    engine = BassEngine(BassConfig.from_mapping({"grid": "1/16"}))
+    assert len(engine.effective_hits()) == 16
+    assert engine.effective_hits()[0] is True
+    assert engine.set_hit(4, True) is True
+    assert engine.effective_hits()[4] is True
+    engine.clear_hits()
+    assert not any(engine.effective_hits())
+    engine.set_hit(20, True)  # beyond the bar: stored, but not visible
+    payload = engine.hits_payload()
+    assert payload[0] == 0 and payload[1] == 16 and len(payload) == 18
+    assert engine.hits_payload()[2] == 0
+
+    # copy_hits seeds from the GENERATED pattern, not the (empty) row.
+    engine.clear_hits()
+    engine.copy_hits(0)
+    generated = build_pattern(engine.settings, 4, 4, 0)
+    assert engine.effective_hits() == tuple(generated.triggers[:16])
+    assert any(engine.effective_hits())
+
+    # Enabling with a still-empty row copies the generated pattern first.
+    fresh = BassEngine(
+        BassConfig.from_mapping({"density": 0.6, "grid": "1/16"})
+    )
+    assert fresh.settings.hits == ()
+    assert fresh.set_hits_enabled(True) is True
+    assert fresh.settings.hits != ()
+    assert fresh.settings.hits_enabled is True
+    assert fresh.set_hits_enabled(0) is False
+    assert fresh.settings.hits  # disabling keeps the row
+
+    # -- pattern override: exactly the row, one bar long ----------------
+    hits_engine = BassEngine(BassConfig.from_mapping({"grid": "1/16"}))
+    hits_engine.clear_hits()
+    hits_engine.set_hit(0, True)
+    hits_engine.set_hit(3, True)
+    hits_engine.set_hits_enabled(True)
+    pattern = hits_engine.pattern(0)
+    assert pattern.length_steps == 16
+    assert pattern.triggers_at(0) and pattern.triggers_at(3)
+    assert not pattern.triggers_at(1) and not pattern.triggers_at(15)
+    direct = build_hits_pattern(hits_engine.settings, 4, 4, 0)
+    assert direct.triggers == pattern.triggers
+    assert direct.length_steps == 16
+
+    # Len is ignored while Hits is on (the scheduler cycles the bar).
+    hits_engine.set_setting("length_steps", 7)
+    _settings, length = hits_engine.timing()
+    assert length == 16
+    assert hits_engine.pattern(0).length_steps == 16
+
+    # The pitch path is untouched: only the trigger cells differ.
+    hits_engine.on_set([1.0, 3.0 / 2.0], 1.0, 220.0)
+    assert hits_engine.note_at(0, 0) is not None
+    assert hits_engine.note_at(1, 0) is None
+    assert hits_engine.note_at(3, 0) is not None
+
+    # A preset change keeps the row (it is not part of a preset).
+    before = hits_engine.settings.hits
+    hits_engine.set_setting("preset", "chaos")
+    assert hits_engine.settings.hits == before
+
+    # A meter change re-shapes the row to the new bar.
+    hits_engine.set_meter(3, 4)
+    assert len(hits_engine.effective_hits()) == 12
+    assert hits_engine.hits_payload()[0] == 1
+    assert len(hits_engine.hits_payload()) == 14
+
+    # -- rig forwards ----------------------------------------------------
+    rig = BassRig(
+        BassConfig.from_mapping({"grid": "1/8"}), output=FakePort()
+    )
+    assert rig.hits_payload()[1] == 8
+    rig.set_hit(2, True)
+    assert rig.engine.effective_hits()[2] is True
+    rig.clear_hits()
+    assert not any(rig.engine.effective_hits())
+    rig.copy_hits()
+    assert any(rig.engine.effective_hits())
+    rig.set_hits_enabled(True)
+    assert rig.engine.settings.hits_enabled is True
+    print("  validation, bar_steps, padding, set/clear/copy, override, Len")
+
+
+# ---------------------------------------------------------------------------
+# Runner
+# ---------------------------------------------------------------------------
 
 def run() -> None:
     print("JI Stage 8.3a bass pure tests")
@@ -579,6 +724,7 @@ def run() -> None:
     test_sub()
     test_output_and_scheduler()
     test_missing_port_and_bass_only_rig()
+    test_hits()
     test_bridge_quantization()
     print("\nALL BASS TESTS PASSED")
 

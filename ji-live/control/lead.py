@@ -126,6 +126,15 @@ VARIATIONS: tuple[str, ...] = (
 )
 DEFAULT_VARIATION = "identity"
 
+GATE_MODES: tuple[str, ...] = ("beat", "note")
+DEFAULT_GATE_MODE = "beat"
+
+#: Who drives Bus 5 (Stage 9.1).  ``generated`` runs the seeded line, ``played``
+#: plays the recorded take, and ``live``/``record`` stop the sequencer and let
+#: the input rig monitor/capture.
+SOURCES: tuple[str, ...] = ("generated", "played", "live", "record")
+DEFAULT_SOURCE = "generated"
+
 VARIATION_BARS_MIN = 0
 VARIATION_BARS_MAX = 16
 DEFAULT_VARIATION_BARS = 0
@@ -183,6 +192,10 @@ _SETTING_ALIASES: dict[str, str] = {
     "groove_link": "groove_link",
     "link": "groove_link",
     "seed": "seed",
+    "gate_mode": "gate_mode",
+    "gate mode": "gate_mode",
+    "note_len": "gate_mode",
+    "note len": "gate_mode",
 }
 
 #: Setting names that regenerate the motif from the seed.
@@ -334,6 +347,24 @@ def validate_variation_bars(value: object) -> int:
     )
 
 
+def validate_gate_mode(value: object) -> str:
+    """Return ``"beat"`` (today's cap) or ``"note"`` (the note length wins)."""
+
+    text = str(value).strip().lower()
+    if text not in GATE_MODES:
+        raise ValueError("gate_mode must be one of " + ", ".join(GATE_MODES))
+    return text
+
+
+def validate_source(value: object) -> str:
+    """Return one of ``generated``, ``played``, ``live``, ``record``."""
+
+    text = str(value).strip().lower()
+    if text not in SOURCES:
+        raise ValueError("source must be one of " + ", ".join(SOURCES))
+    return text
+
+
 def validate_seed(value: object) -> int:
     """Return an integer seed clamped to ``0..2**31-1``."""
 
@@ -358,7 +389,8 @@ def normalize_setting_name(name: object) -> str:
         raise ValueError(
             f"unknown lead setting {name!r}; expected enabled, grid, "
             "phrase_bars, density, gate_beats, velocity, octave_range, "
-            "base_octave, variation, variation_bars, swing, groove_link, seed"
+            "base_octave, variation, variation_bars, swing, groove_link, seed, "
+            "gate_mode"
         )
     return canonical
 
@@ -437,6 +469,7 @@ class LeadSettings:
     swing: float = DEFAULT_SWING
     groove_link: bool = DEFAULT_GROOVE_LINK
     seed: int = DEFAULT_SEED
+    gate_mode: str = DEFAULT_GATE_MODE
 
     @classmethod
     def create(cls, **values: Any) -> "LeadSettings":
@@ -471,6 +504,9 @@ class LeadSettings:
                 values.get("groove_link", defaults.groove_link), "groove_link"
             ),
             seed=validate_seed(values.get("seed", defaults.seed)),
+            gate_mode=validate_gate_mode(
+                values.get("gate_mode", defaults.gate_mode)
+            ),
         )
 
     def state_args(
@@ -479,7 +515,7 @@ class LeadSettings:
         playing: bool,
         variation_index: int = 0,
     ) -> list[Any]:
-        """``/ji/lead/state`` payload (sixteen values, documented order)."""
+        """``/ji/lead/state`` payload (seventeen values, documented order)."""
 
         return [
             int(self.enabled),
@@ -498,6 +534,7 @@ class LeadSettings:
             int(self.groove_link),
             int(self.seed),
             int(bool(playing)),
+            self.gate_mode,
         ]
 
     def with_change(self, name: object, value: object) -> "LeadSettings":
@@ -528,6 +565,8 @@ class LeadSettings:
             return replace(self, swing=clamp_unit(value, "swing"))
         if key == "groove_link":
             return replace(self, groove_link=validate_bool(value, "groove_link"))
+        if key == "gate_mode":
+            return replace(self, gate_mode=validate_gate_mode(value))
         return replace(self, seed=validate_seed(value))
 
 
@@ -570,6 +609,7 @@ class LeadConfig:
                 "swing",
                 "groove_link",
                 "seed",
+                "gate_mode",
             )
             if key in data
         }
@@ -645,7 +685,18 @@ class LeadNote:
 
 @dataclass(frozen=True, slots=True)
 class LeadMotif:
-    """A generated phrase: notes plus the parameters that shaped it."""
+    """A phrase: notes plus the parameters that shaped it.
+
+    Stage 9.1 appends four defaulted fields so a *played* take can live in the
+    same structure as the generated line without changing any existing
+    construction site:
+
+    * ``source`` -- ``"generated"`` or ``"played"``;
+    * ``base_notes`` -- the take exactly as recorded (the Revert target);
+    * ``history`` -- ``(variation name, index used)`` pairs in application
+      order, so replaying a saved variation index reproduces the RNG exactly;
+    * ``melody_name`` -- provenance for the status line (``""`` when unnamed).
+    """
 
     notes: tuple[LeadNote, ...]
     phrase_bars: int
@@ -661,6 +712,10 @@ class LeadMotif:
     variation_index: int = 0
     meter_num: int = 4
     meter_den: int = 4
+    source: str = "generated"
+    base_notes: tuple[LeadNote, ...] = ()
+    history: tuple[tuple[str, int], ...] = ()
+    melody_name: str = ""
 
     @property
     def steps(self) -> tuple[int, ...]:
@@ -896,6 +951,25 @@ def _normalize(notes: Sequence[LeadNote], phrase_steps: int) -> tuple[LeadNote, 
         )
         span = max(1, min(note.length, next_step - note.step))
         result.append(replace(note, length=span))
+    return tuple(result)
+
+
+def _resize_notes(
+    notes: Sequence[LeadNote], old_total: int, new_total: int
+) -> tuple[LeadNote, ...]:
+    """Crop a take to a shorter phrase, or tile it to fill a longer one."""
+
+    total = max(1, int(new_total))
+    if total <= int(old_total) or int(old_total) <= 0:
+        return tuple(note for note in notes if note.step < total)
+    result: list[LeadNote] = []
+    start = 0
+    while start < total:
+        for note in notes:
+            step = note.step + start
+            if step < total:
+                result.append(replace(note, step=step))
+        start += int(old_total)
     return tuple(result)
 
 
@@ -1201,15 +1275,18 @@ class LeadEngine:
             )
 
     def describe_phrase(self) -> str:
-        """``seed=1 variation=identity #0 steps=16 notes=12``."""
+        """``seed=1 variation=identity #0 steps=16 notes=12 source=played "x"``."""
 
         with self._lock:
             motif = self._motif
-            return (
+            line = (
                 f"seed={motif.seed} variation={motif.variation} "
                 f"#{motif.variation_index} steps={motif.phrase_steps} "
-                f"notes={motif.note_count}"
+                f"notes={motif.note_count} source={motif.source}"
             )
+            if motif.melody_name:
+                line += f' "{motif.melody_name}"'
+            return line
 
     # -- set snapshot ---------------------------------------------------
 
@@ -1339,7 +1416,10 @@ class LeadEngine:
             if key in _GENERATION_KEYS:
                 if key == "seed":
                     self._variation_index = 0
-                self._motif = self._generate_locked()
+                if self._motif.source == "played":
+                    self._apply_played_shape_locked(key, before, after)
+                else:
+                    self._motif = self._generate_locked()
             elif key == "variation":
                 self._motif = self._apply_variation_locked(after.variation)
             self._version += 1
@@ -1353,18 +1433,360 @@ class LeadEngine:
             before = self._settings
             if settings == before:
                 return before
-            regenerate = any(
-                getattr(settings, key) != getattr(before, key)
+            changed = [
+                key
                 for key in _GENERATION_KEYS
-            )
+                if getattr(settings, key) != getattr(before, key)
+            ]
             self._settings = settings
             if settings.seed != before.seed:
                 self._variation_index = 0
-            if regenerate:
-                self._motif = self._generate_locked()
+            if changed:
+                if self._motif.source == "played":
+                    # Never regenerate a played line implicitly: apply the
+                    # documented shape policy one key at a time.  The 8.5 recall
+                    # loads the motif explicitly right after this call.
+                    for key in changed:
+                        self._apply_played_shape_locked(key, before, settings)
+                else:
+                    self._motif = self._generate_locked()
             self._version += 1
             self._projection = None
             return settings
+
+    # -- Stage 9.1: played motifs ---------------------------------------
+
+    def load_motif(
+        self,
+        notes: Sequence[LeadNote],
+        *,
+        grid: object = DEFAULT_GRID,
+        phrase_bars: object = DEFAULT_PHRASE_BARS,
+        meter_num: object = 4,
+        meter_den: object = 4,
+        name: str = "",
+        base_notes: Sequence[LeadNote] | None = None,
+        history: Sequence[tuple[str, int]] = (),
+        variation: object = DEFAULT_VARIATION,
+        variation_index: object = 0,
+    ) -> LeadMotif:
+        """Install a played phrase (never calls :func:`generate_motif`).
+
+        The settings' ``grid``/``phrase_bars`` are updated atomically in the
+        same lock and ``gate_mode`` becomes ``note`` so a held take is not cut
+        by the default 0.5-beat gate.  ``base_notes`` defaults to ``notes``.
+        """
+
+        grid_name = validate_grid(grid)
+        bars = validate_phrase_bars(phrase_bars)
+        numerator = rhythm.clamp_meter_numerator(meter_num)
+        denominator = rhythm.validate_meter_denominator(meter_den)
+        bar_steps = steps_per_bar(numerator, denominator, grid_name)
+        total = max(1, bars * bar_steps)
+
+        cleaned = self._validate_notes(notes, total)
+        base = (
+            tuple(cleaned)
+            if base_notes is None
+            else self._validate_notes(base_notes, total)
+        )
+        entries = self._validate_history(history)
+        shape = validate_variation(variation)
+        index = max(0, _as_int(variation_index, "variation_index"))
+
+        with self._lock:
+            self._settings = replace(
+                self._settings,
+                grid=grid_name,
+                phrase_bars=bars,
+                gate_mode="note",
+            )
+            self._variation_index = index
+            self._meter_num = numerator
+            self._meter_den = denominator
+            self._motif = self._build_played_motif_locked(
+                base,
+                line_notes=cleaned,
+                grid=grid_name,
+                phrase_bars=bars,
+                meter_num=numerator,
+                meter_den=denominator,
+                history=entries,
+                variation=shape,
+                variation_index=index,
+                melody_name=str(name or ""),
+                replay=bool(entries),
+            )
+            self._born = True
+            self._version += 1
+            self._projection = None
+            return self._motif
+
+    def clear_melody(self) -> LeadMotif:
+        """Return to a fresh generated motif (``gate_mode`` untouched)."""
+
+        with self._lock:
+            self._variation_index = 0
+            self._motif = self._generate_locked()
+            self._version += 1
+            self._projection = None
+            return self._motif
+
+    def set_melody_name(self, name: object) -> LeadMotif:
+        """Attach provenance to the current take (after a melody save)."""
+
+        with self._lock:
+            self._motif = replace(self._motif, melody_name=str(name or ""))
+            self._version += 1
+            return self._motif
+
+    def revert(self) -> LeadMotif:
+        """Restore the recorded base, clear the history, keep the settings."""
+
+        with self._lock:
+            motif = self._motif
+            if motif.source != "played":
+                return motif
+            base = motif.base_notes or motif.notes
+            self._variation_index = 0
+            self._motif = self._build_played_motif_locked(
+                base,
+                grid=motif.grid,
+                phrase_bars=motif.phrase_bars,
+                meter_num=motif.meter_num,
+                meter_den=motif.meter_den,
+                history=(),
+                variation="identity",
+                variation_index=0,
+                melody_name=motif.melody_name,
+                replay=False,
+            )
+            self._version += 1
+            self._projection = None
+            print(
+                f"[LEAD] reverted to the recorded base "
+                f"({len(self._motif.notes)} notes)"
+            )
+            return self._motif
+
+    @staticmethod
+    def _validate_notes(
+        notes: Sequence[LeadNote], phrase_steps: int
+    ) -> tuple[LeadNote, ...]:
+        """Validate and normalise note values (shared by melody/state parsing)."""
+
+        if isinstance(notes, (str, bytes)):
+            raise TypeError("notes must be a sequence of LeadNote")
+        cleaned: list[LeadNote] = []
+        for position, note in enumerate(notes):
+            if not isinstance(note, LeadNote):
+                raise TypeError(f"note {position} must be a LeadNote")
+            step = _as_int(note.step, f"note {position} step")
+            length = _as_int(note.length, f"note {position} length")
+            degree = _as_int(note.degree, f"note {position} degree")
+            octave = _as_int(note.octave, f"note {position} octave")
+            velocity = _as_int(note.velocity, f"note {position} velocity")
+            hint = _finite(note.ratio_hint, f"note {position} ratio_hint")
+            if step < 0:
+                raise ValueError(f"note {position} step must be >= 0")
+            if length < 1:
+                raise ValueError(f"note {position} length must be >= 1")
+            if degree < 0:
+                raise ValueError(f"note {position} degree must be >= 0")
+            if not -8 <= octave <= 8:
+                raise ValueError(f"note {position} octave must be -8..8")
+            if hint <= 0.0:
+                raise ValueError(f"note {position} ratio_hint must be > 0")
+            if not VELOCITY_MIN <= velocity <= VELOCITY_MAX:
+                raise ValueError(
+                    f"note {position} velocity must be "
+                    f"{VELOCITY_MIN}..{VELOCITY_MAX}"
+                )
+            cleaned.append(
+                LeadNote(
+                    step=step,
+                    length=length,
+                    degree=degree,
+                    octave=octave,
+                    ratio_hint=hint,
+                    velocity=velocity,
+                )
+            )
+        return _normalize(cleaned, max(1, int(phrase_steps)))
+
+    @staticmethod
+    def _validate_history(
+        history: Sequence[tuple[str, int]],
+    ) -> tuple[tuple[str, int], ...]:
+        if history is None:
+            return ()
+        if isinstance(history, (str, bytes)):
+            raise TypeError("history must be a sequence of (name, index) pairs")
+        entries: list[tuple[str, int]] = []
+        for position, entry in enumerate(history):
+            if isinstance(entry, (str, bytes)) or len(entry) != 2:
+                raise ValueError(
+                    f"history {position} must be a [name, index] pair"
+                )
+            name = validate_variation(entry[0])
+            index = _as_int(entry[1], f"history {position} index")
+            if index < 0:
+                raise ValueError(f"history {position} index must be >= 0")
+            entries.append((name, index))
+        return tuple(entries)
+
+    def _build_played_motif_locked(
+        self,
+        base_notes: Sequence[LeadNote],
+        *,
+        line_notes: Sequence[LeadNote] | None = None,
+        grid: str,
+        phrase_bars: int,
+        meter_num: int,
+        meter_den: int,
+        history: Sequence[tuple[str, int]] = (),
+        variation: str = DEFAULT_VARIATION,
+        variation_index: int = 0,
+        melody_name: str = "",
+        source: str = "played",
+        replay: bool = True,
+    ) -> LeadMotif:
+        bar_steps = steps_per_bar(meter_num, meter_den, grid)
+        total = max(1, phrase_bars * bar_steps)
+        base = _normalize(base_notes, total)
+        line = base if line_notes is None else _normalize(line_notes, total)
+        motif = LeadMotif(
+            notes=line,
+            phrase_bars=phrase_bars,
+            grid=grid,
+            steps_per_bar=bar_steps,
+            phrase_steps=total,
+            density=self._settings.density,
+            octave_range=self._settings.octave_range,
+            gate_beats=self._settings.gate_beats,
+            velocity_base=self._settings.velocity,
+            seed=self._settings.seed,
+            variation=variation,
+            variation_index=variation_index,
+            meter_num=meter_num,
+            meter_den=meter_den,
+            source=source,
+            base_notes=base,
+            history=(),
+            melody_name=melody_name,
+        )
+        entries = tuple(history)
+        if replay and entries:
+            motif = replace(motif, notes=base)
+            for name, used_index in entries:
+                motif = self._apply_variation_to(motif, name, used_index)
+        return replace(
+            motif,
+            variation=variation,
+            variation_index=variation_index,
+            history=entries if replay else (),
+        )
+
+    def _apply_variation_to(
+        self, motif: LeadMotif, name: str, index: int
+    ) -> LeadMotif:
+        result = apply_variation(
+            name,
+            motif,
+            seed=self._settings.seed,
+            index=index,
+            ratios=self._ratios,
+        )
+        return replace(
+            result,
+            source=motif.source,
+            base_notes=motif.base_notes,
+            melody_name=motif.melody_name,
+            history=motif.history,
+        )
+
+    def _apply_played_shape_locked(
+        self, key: str, before: LeadSettings, after: LeadSettings
+    ) -> None:
+        """The §7.3 policy table for a played motif (never regenerates)."""
+
+        motif = self._motif
+        grid = after.grid
+        bars = after.phrase_bars
+        history = motif.history
+        variation = motif.variation
+        index = self._variation_index
+        name = motif.melody_name
+        base_total = motif.phrase_steps
+
+        if key == "density":
+            self._motif = replace(motif, density=after.density, seed=after.seed)
+            print("[LEAD] density has no effect on a played line")
+            return
+        if key == "seed":
+            self._variation_index = 0
+            self._motif = replace(
+                motif, seed=after.seed, history=(), variation_index=0
+            )
+            return
+        if key == "octave_range":
+            if after.octave_range > 0:
+                base = tuple(
+                    replace(
+                        note,
+                        octave=max(
+                            -after.octave_range,
+                            min(after.octave_range, note.octave),
+                        ),
+                    )
+                    for note in motif.base_notes
+                )
+                self._motif = self._build_played_motif_locked(
+                    base,
+                    grid=grid,
+                    phrase_bars=bars,
+                    meter_num=motif.meter_num,
+                    meter_den=motif.meter_den,
+                    history=history,
+                    variation=variation,
+                    variation_index=index,
+                    melody_name=name,
+                )
+                return
+            self._motif = replace(motif, octave_range=after.octave_range)
+            return
+
+        if key == "grid":
+            old_quarters = grid_quarters(before.grid)
+            new_quarters = grid_quarters(after.grid)
+            scale = old_quarters / new_quarters
+            base = tuple(
+                replace(
+                    note,
+                    step=int(round(note.step * scale)),
+                    length=max(1, int(round(note.length * scale))),
+                )
+                for note in motif.base_notes
+            )
+        elif key == "phrase_bars":
+            new_total = max(
+                1,
+                bars * steps_per_bar(motif.meter_num, motif.meter_den, grid),
+            )
+            base = _resize_notes(motif.base_notes, base_total, new_total)
+        else:  # pragma: no cover - defensive: unknown generation key
+            base = motif.base_notes
+        self._motif = self._build_played_motif_locked(
+            base,
+            grid=grid,
+            phrase_bars=bars,
+            meter_num=motif.meter_num,
+            meter_den=motif.meter_den,
+            history=history,
+            variation=variation,
+            variation_index=index,
+            melody_name=name,
+        )
 
     def set_variation_index(self, index: object, *, force: bool = False) -> LeadMotif:
         """Restore a saved variation index and rebuild the motif (Stage 8.5).
@@ -1382,10 +1804,62 @@ class LeadEngine:
             if value == self._variation_index and not force:
                 return self._motif
             self._variation_index = value
-            self._motif = self._generate_locked()
+            if self._motif.source == "played":
+                self._motif = self._replay_played_locked(value)
+            else:
+                self._motif = self._generate_locked()
             self._version += 1
             self._projection = None
             return self._motif
+
+    def _replay_played_locked(self, target: int) -> LeadMotif:
+        """Rebuild a played line from its base, replaying the history exactly.
+
+        ``history`` stores ``(name, index_used)`` so the RNG of every applied
+        variation is reproduced whatever triggered it.  A target past the
+        stored history keeps applying the selected variation, one index at a
+        time, until the counter reaches it (compounding is intended).
+        """
+
+        motif = self._motif
+        # Every entry whose applied index is <= the target belongs to the
+        # restored state (a combo change applies at the current index without
+        # advancing it, so filtering by the stored index -- not by slice length
+        # -- is what makes the replay exact whatever triggered it).
+        entries = (
+            ()
+            if target <= 0
+            else tuple(
+                entry for entry in motif.history if int(entry[1]) <= target
+            )
+        )
+        rebuilt = self._build_played_motif_locked(
+            motif.base_notes or motif.notes,
+            grid=motif.grid,
+            phrase_bars=motif.phrase_bars,
+            meter_num=motif.meter_num,
+            meter_den=motif.meter_den,
+            history=entries,
+            variation=motif.variation,
+            variation_index=target,
+            melody_name=motif.melody_name,
+        )
+        applied = list(entries)
+        used = max((int(entry[1]) for entry in entries), default=0)
+        while used < target:
+            used += 1
+            name = self._settings.variation
+            rebuilt = self._apply_variation_to(rebuilt, name, used)
+            applied.append((name, used))
+        return replace(
+            rebuilt,
+            variation=(rebuilt.variation if applied else "identity"),
+            variation_index=target,
+            source="played",
+            base_notes=tuple(rebuilt.base_notes),
+            melody_name=motif.melody_name,
+            history=tuple(applied),
+        )
 
     def set_enabled(self, enabled: object) -> bool:
         with self._lock:
@@ -1410,7 +1884,29 @@ class LeadEngine:
             if (numerator, denominator) != (self._meter_num, self._meter_den):
                 self._meter_num = numerator
                 self._meter_den = denominator
-                self._motif = self._generate_locked()
+                if self._motif.source == "played":
+                    motif = self._motif
+                    new_total = max(
+                        1,
+                        int(motif.phrase_bars)
+                        * steps_per_bar(numerator, denominator, motif.grid),
+                    )
+                    base = _resize_notes(
+                        motif.base_notes, motif.phrase_steps, new_total
+                    )
+                    self._motif = self._build_played_motif_locked(
+                        base,
+                        grid=motif.grid,
+                        phrase_bars=motif.phrase_bars,
+                        meter_num=numerator,
+                        meter_den=denominator,
+                        history=motif.history,
+                        variation=motif.variation,
+                        variation_index=self._variation_index,
+                        melody_name=motif.melody_name,
+                    )
+                else:
+                    self._motif = self._generate_locked()
                 self._version += 1
                 self._projection = None
             return self._motif.phrase_steps
@@ -1443,13 +1939,26 @@ class LeadEngine:
         return self._motif
 
     def _apply_variation_locked(self, name: str) -> LeadMotif:
-        return apply_variation(
+        before = self._motif
+        result = apply_variation(
             name,
-            self._motif,
+            before,
             seed=self._settings.seed,
             index=self._variation_index,
             ratios=self._ratios,
         )
+        if before.source == "played":
+            # ``random`` returns a freshly generated motif; re-attach the take
+            # so Revert and the status line survive every variation.
+            entry = (validate_variation(name), int(self._variation_index))
+            result = replace(
+                result,
+                source="played",
+                base_notes=before.base_notes or before.notes,
+                melody_name=before.melody_name,
+                history=before.history + (entry,),
+            )
+        return result
 
     def _generate_locked(self) -> LeadMotif:
         settings = self._settings
@@ -1514,12 +2023,15 @@ class LeadScheduler:
         bpm: object = rhythm.BPM_DEFAULT,
         now: Callable[[], float] = time.monotonic,
         on_note: Callable[[LeadProjected, int], None] | None = None,
+        breath: object | None = None,
     ) -> None:
         if not callable(now):
             raise TypeError("now must be callable")
         self.output = output
         self.engine = engine
         self._now = now
+        # Stage 8.7: a shared BreathClock, or None for exactly the old timing.
+        self._breath = breath
         self._bpm = rhythm.clamp_bpm(bpm)
         self._on_note = on_note
         self._lock = threading.RLock()
@@ -1530,6 +2042,8 @@ class LeadScheduler:
         self._gate_timer: threading.Timer | None = None
         self._gate_token = 0
         self._held: int | None = None
+        #: Stage 9.1: optional first deadline (a bar line when re-entering).
+        self._first_deadline: float | None = None
 
     # -- state ----------------------------------------------------------
 
@@ -1559,10 +2073,45 @@ class LeadScheduler:
             self._bpm = value
             return value
 
+    # -- Stage 8.7 breath -----------------------------------------------
+
+    def set_breath(self, breath: object | None) -> None:
+        """Attach/detach the shared breath clock (``None`` = exact old timing)."""
+
+        self._breath = breath
+
+    def _breath_offset(self, step_seconds: float) -> float:
+        """Clamped lead breath offset in seconds (0.0 when no breath)."""
+
+        breath = self._breath
+        if breath is None:
+            return 0.0
+        try:
+            value = float(breath.offset_seconds("lead", self._now()))
+        except Exception:  # a broken clock must never stop the lead
+            return 0.0
+        limit = 0.45 * float(step_seconds)
+        return max(-limit, min(limit, value))
+
+    def _velocity_with_breath(self, base: int) -> int:
+        breath = self._breath
+        if breath is None:
+            return int(base)
+        try:
+            delta = int(breath.velocity_delta("lead"))
+        except Exception:
+            return int(base)
+        return max(1, min(127, int(base) + delta))
+
     # -- lifecycle -------------------------------------------------------
 
-    def start(self) -> None:
-        """Start at the phrase origin (step 0).  Idempotent while running."""
+    def start(self, at_time: float | None = None) -> None:
+        """Start at the phrase origin (step 0).  Idempotent while running.
+
+        ``at_time`` (Stage 9.1) makes the first deadline an absolute monotonic
+        timestamp instead of "now", so leaving ``live`` can resume exactly on
+        the next bar line.  ``None`` is the original behaviour.
+        """
 
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
@@ -1572,6 +2121,7 @@ class LeadScheduler:
             self._stop.clear()
             self._step_index = 0
             self._total_steps = 0
+            self._first_deadline = None if at_time is None else float(at_time)
             thread = threading.Thread(
                 target=self._run, name="ji-lead", daemon=True
             )
@@ -1600,7 +2150,10 @@ class LeadScheduler:
     # -- thread body -----------------------------------------------------
 
     def _run(self) -> None:  # pragma: no cover - exercised with a fake output
-        deadline = self._now()
+        with self._lock:
+            first = self._first_deadline
+            self._first_deadline = None
+        deadline = self._now() if first is None else first
         total = 0
         last_bar = -1
         try:
@@ -1612,12 +2165,15 @@ class LeadScheduler:
                 step_seconds = beat_seconds * step_quarters
                 phrase_steps = max(1, motif.phrase_steps)
                 step = total % phrase_steps
+                # Swing and Stage 8.7 breath are added to the SLEEP TARGET only;
+                # ``deadline`` below still advances by exactly one step.
                 offset = swing_offset(
                     step,
                     self.engine.effective_swing(),
                     step_seconds,
                     steps_per_beat(settings.grid),
                 )
+                offset += self._breath_offset(step_seconds)
                 target = deadline + offset
                 now = self._now()
                 if target > now:
@@ -1652,9 +2208,6 @@ class LeadScheduler:
                 if deadline < now:
                     # Fell behind: resume from now; never burst through steps.
                     deadline = now
-                wait = deadline - now
-                if wait > 0.0 and self._stop.wait(wait):
-                    break
         except Exception as exc:  # a broken output must not crash quietly
             print(f"[LEAD] scheduler error: {exc}", file=sys.stderr)
         finally:
@@ -1681,13 +2234,18 @@ class LeadScheduler:
         self._send_off(held)
 
         self.output.pitch_bend(pitch.bend)
-        self.output.note_on(pitch.note, int(note.velocity))
+        self.output.note_on(
+            pitch.note, self._velocity_with_breath(int(note.velocity))
+        )
         with self._lock:
             self._held = int(pitch.note)
 
-        gate_beats = min(
-            float(settings.gate_beats), note.length * step_quarters
-        )
+        if settings.gate_mode == "note":
+            gate_beats = note.length * step_quarters
+        else:
+            gate_beats = min(
+                float(settings.gate_beats), note.length * step_quarters
+            )
         self._schedule_gate(max(_MIN_GATE_SECONDS, gate_beats * beat_seconds))
 
         callback = self._on_note
@@ -1787,6 +2345,8 @@ class LeadRig:
         self._port_ok = output is not None
         self._started = False
         self._transport_running = False
+        #: Stage 9.1: who drives Bus 5 (generated | played | live | record).
+        self._source = DEFAULT_SOURCE
         self._last_note_sent: tuple[float, int] | None = None
 
     # -- lifecycle ------------------------------------------------------
@@ -1818,8 +2378,7 @@ class LeadRig:
             f"{self.engine.description()}"
         )
         print(f"[LEAD] phrase {self.engine.describe_phrase()}")
-        if self._transport_running and self.engine.enabled:
-            self.scheduler.start()
+        self._sync_scheduler()
         return True
 
     def stop(self) -> None:
@@ -1851,11 +2410,78 @@ class LeadRig:
             self._port_ok
             and self._transport_running
             and self.engine.enabled
+            and self._source in ("generated", "played")
             and self.scheduler.is_running
         )
 
+    @property
+    def source(self) -> str:
+        return self._source
+
+    @property
+    def melody_name(self) -> str:
+        return self.engine.motif.melody_name
+
     def state_args(self) -> list[Any]:
         return self.engine.state_args(self._port_ok, self.playing)
+
+    # -- Stage 9.1: the one source switch --------------------------------
+
+    def set_source(
+        self, name: object, *, at_time: float | None = None
+    ) -> str:
+        """Switch who drives Bus 5 and start/stop the scheduler accordingly.
+
+        ``generated``/``played`` run the sequencer (gated by the transport);
+        ``live``/``record`` stop it immediately -- never mute it, so no stale
+        gates or interleaved bends can survive.
+        """
+
+        source = validate_source(name)
+        if source == self._source:
+            if source in ("generated", "played"):
+                self._sync_scheduler(at_time=at_time)
+            return self._source
+        self._source = source
+        if source in ("live", "record"):
+            if self.scheduler.is_running:
+                step = self.scheduler.step_index
+                self.scheduler.stop()
+                print(
+                    f"[LEAD-IN] live on (sequencer paused at step {step})"
+                )
+            else:
+                print("[LEAD-IN] live on (sequencer paused)")
+        else:
+            self._sync_scheduler(at_time=at_time)
+        print(f"[LEAD] source={source}")
+        return self._source
+
+    def _sync_scheduler(self, at_time: float | None = None) -> None:
+        """One shared start/stop rule for transport, enable, source and recall."""
+
+        should_run = bool(
+            self._port_ok
+            and self._transport_running
+            and self.engine.enabled
+            and self._source in ("generated", "played")
+        )
+        if should_run:
+            if not self.scheduler.is_running:
+                self.scheduler.start(at_time=at_time)
+        elif self.scheduler.is_running:
+            self.scheduler.stop()
+
+    # -- Stage 9.1: played phrases --------------------------------------
+
+    def load_motif(self, notes: Sequence[LeadNote], **kwargs: Any) -> LeadMotif:
+        return self.engine.load_motif(notes, **kwargs)
+
+    def clear_melody(self) -> LeadMotif:
+        return self.engine.clear_melody()
+
+    def revert(self) -> LeadMotif:
+        return self.engine.revert()
 
     # -- transport / tempo / meter --------------------------------------
 
@@ -1863,17 +2489,17 @@ class LeadRig:
         """Transport-gated exactly like the drums/bass (the arp is not)."""
 
         self._transport_running = bool(running)
-        if self._transport_running:
-            if self._port_ok and self.engine.enabled:
-                self.scheduler.start()
-        else:
-            if self.scheduler.is_running:
-                self.scheduler.stop()
+        self._sync_scheduler()
 
     def set_bpm(self, bpm: object) -> float:
         value = self.scheduler.set_bpm(bpm)
         self.engine.set_bpm(value)
         return value
+
+    def set_breath(self, breath: object | None) -> None:
+        """Forward the shared Stage 8.7 breath clock to the scheduler."""
+
+        self.scheduler.set_breath(breath)
 
     def set_meter(self, meter_num: object, meter_den: object) -> int:
         before = self.engine.phrase_steps
@@ -1895,11 +2521,7 @@ class LeadRig:
         key = normalize_setting_name(name)
         if key == "enabled":
             enabled = self.engine.set_enabled(value)
-            if self._port_ok:
-                if enabled and self._transport_running:
-                    self.scheduler.start()
-                elif not enabled and self.scheduler.is_running:
-                    self.scheduler.stop()
+            self._sync_scheduler()
             print(f"[LEAD] {'enabled' if enabled else 'disabled'}")
             return self.engine.settings
         before = self.engine.settings
@@ -1925,12 +2547,8 @@ class LeadRig:
             raise TypeError("settings must be a LeadSettings")
         before = self.engine.settings
         applied = self.engine.set_settings(settings)
+        self._sync_scheduler()
         if applied.enabled != before.enabled:
-            if self._port_ok:
-                if applied.enabled and self._transport_running:
-                    self.scheduler.start()
-                elif not applied.enabled and self.scheduler.is_running:
-                    self.scheduler.stop()
             print(f"[LEAD] {'enabled' if applied.enabled else 'disabled'}")
         return applied
 
@@ -1992,6 +2610,7 @@ __all__ = [
     "DEFAULT_DENSITY",
     "DEFAULT_ENABLED",
     "DEFAULT_GATE_BEATS",
+    "DEFAULT_GATE_MODE",
     "DEFAULT_GRID",
     "DEFAULT_GROOVE_LINK",
     "DEFAULT_MEMBER_CHANNEL",
@@ -1999,6 +2618,7 @@ __all__ = [
     "DEFAULT_PHRASE_BARS",
     "DEFAULT_PORT",
     "DEFAULT_SEED",
+    "DEFAULT_SOURCE",
     "DEFAULT_VARIATION",
     "DEFAULT_VARIATION_BARS",
     "DEFAULT_VELOCITY",
@@ -2006,6 +2626,7 @@ __all__ = [
     "DENSITY_MIN",
     "GATE_BEATS_MAX",
     "GATE_BEATS_MIN",
+    "GATE_MODES",
     "GRIDS",
     "GRID_QUARTERS",
     "LeadConfig",
@@ -2022,6 +2643,7 @@ __all__ = [
     "PHRASE_BARS_MAX",
     "PHRASE_BARS_MIN",
     "SEED_MAX",
+    "SOURCES",
     "VARIATIONS",
     "VARIATION_BARS_MAX",
     "VARIATION_BARS_MIN",
@@ -2039,10 +2661,12 @@ __all__ = [
     "validate_channel",
     "validate_density",
     "validate_gate_beats",
+    "validate_gate_mode",
     "validate_grid",
     "validate_octave_range",
     "validate_phrase_bars",
     "validate_seed",
+    "validate_source",
     "validate_variation",
     "validate_variation_bars",
     "validate_velocity",

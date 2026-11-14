@@ -707,6 +707,146 @@ class GrooveSection:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class LeadPlaySection:
+    """Stage 9.1 inline played line: notes, Revert target, history, provenance.
+
+    The four keys live beside the ``LeadSettings`` fields in the ``lead``
+    section.  They are optional; an old state without them loads unchanged as a
+    generated line.
+    """
+
+    notes: tuple[lead_module.LeadNote, ...] = ()
+    base_notes: tuple[lead_module.LeadNote, ...] = ()
+    history: tuple[tuple[str, int], ...] = ()
+    melody: str = ""
+    source: str = "generated"
+
+    @classmethod
+    def create(
+        cls,
+        notes: Iterable[Any] = (),
+        base_notes: Iterable[Any] | None = None,
+        history: Iterable[Any] = (),
+        melody: Any = "",
+        source: Any = "generated",
+    ) -> "LeadPlaySection":
+        try:
+            resolved_notes = lead_module.LeadEngine._validate_notes(
+                list(notes), _STATE_NOTE_STEPS
+            )
+            resolved_base = (
+                resolved_notes
+                if base_notes is None
+                else lead_module.LeadEngine._validate_notes(
+                    list(base_notes), _STATE_NOTE_STEPS
+                )
+            )
+            resolved_history = lead_module.LeadEngine._validate_history(
+                list(history)
+            )
+        except (TypeError, ValueError) as exc:
+            raise StateError(f"lead.notes: {exc}") from None
+        name = _as_text(melody, "lead.melody")
+        kind = str(source).strip().lower()
+        if kind not in ("generated", "played"):
+            raise StateError("lead.source must be 'generated' or 'played'")
+        if not resolved_notes:
+            kind = "generated"
+        return cls(
+            notes=resolved_notes,
+            base_notes=resolved_base or resolved_notes,
+            history=resolved_history,
+            melody=name,
+            source=kind,
+        )
+
+    @classmethod
+    def from_mapping(cls, data: Mapping[str, Any] | None) -> "LeadPlaySection":
+        section = {} if data is None else _as_mapping(data, "lead")
+        notes_raw = section.get("notes", ())
+        base_raw = section.get("base_notes")
+        history_raw = section.get("history", ())
+        if notes_raw is None:
+            notes_raw = ()
+        if history_raw is None:
+            history_raw = ()
+        if isinstance(notes_raw, (str, bytes)) or not isinstance(
+            notes_raw, (list, tuple)
+        ):
+            raise StateError("lead.notes must be a list")
+        if base_raw is not None and (
+            isinstance(base_raw, (str, bytes))
+            or not isinstance(base_raw, (list, tuple))
+        ):
+            raise StateError("lead.base_notes must be a list")
+        if isinstance(history_raw, (str, bytes)) or not isinstance(
+            history_raw, (list, tuple)
+        ):
+            raise StateError("lead.history must be a list of [name, index] pairs")
+        notes = tuple(
+            _lead_note_from(item, f"lead.notes[{index}]")
+            for index, item in enumerate(notes_raw)
+        )
+        base = (
+            None
+            if base_raw is None
+            else tuple(
+                _lead_note_from(item, f"lead.base_notes[{index}]")
+                for index, item in enumerate(base_raw)
+            )
+        )
+        default_source = "played" if notes else "generated"
+        return cls.create(
+            notes=notes,
+            base_notes=base,
+            history=tuple(history_raw),
+            melody=section.get("melody", ""),
+            source=section.get("source", default_source),
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "notes": [_lead_note_mapping(note) for note in self.notes],
+            "base_notes": [_lead_note_mapping(note) for note in self.base_notes],
+            "history": [[name, int(index)] for name, index in self.history],
+            "melody": self.melody,
+            "source": self.source,
+        }
+
+
+#: Permissive normalisation bound; :class:`PerformanceState` enforces the real
+#: phrase length once the meter/grid/bars are known.
+_STATE_NOTE_STEPS = 1_000_000
+
+
+def _lead_note_mapping(note: lead_module.LeadNote) -> dict[str, Any]:
+    return {
+        "step": int(note.step),
+        "length": int(note.length),
+        "degree": int(note.degree),
+        "octave": int(note.octave),
+        "ratio_hint": float(note.ratio_hint),
+        "velocity": int(note.velocity),
+    }
+
+
+def _lead_note_from(value: Any, label: str) -> lead_module.LeadNote:
+    data = _as_mapping(value, label)
+    try:
+        note = lead_module.LeadNote(
+            step=_as_int(data.get("step"), f"{label}.step"),
+            length=_as_int(data.get("length"), f"{label}.length"),
+            degree=_as_int(data.get("degree"), f"{label}.degree"),
+            octave=_as_int(data.get("octave"), f"{label}.octave"),
+            ratio_hint=_as_float(data.get("ratio_hint"), f"{label}.ratio_hint"),
+            velocity=_as_int(data.get("velocity"), f"{label}.velocity"),
+        )
+    except StateError:
+        raise
+    return note
+
+
 def _settings_from(section: Mapping[str, Any], model: Any, label: str) -> Any:
     """Validate a section through the model's own ``create(**values)``."""
 
@@ -763,6 +903,7 @@ class PerformanceState:
     arp: arp_module.ArpSettings = arp_module.ArpSettings()
     lead: lead_module.LeadSettings = lead_module.LeadSettings()
     lead_variation_index: int = 0
+    lead_play: LeadPlaySection = LeadPlaySection()
     drone: drone_module.DroneSettings = drone_module.DroneSettings()
 
     def __post_init__(self) -> None:
@@ -798,6 +939,24 @@ class PerformanceState:
         _as_int_in(
             self.lead_variation_index, "lead.variation_index", 0, 1_000_000
         )
+        if not isinstance(self.lead_play, LeadPlaySection):
+            raise StateError("lead_play must be a LeadPlaySection")
+        total = (
+            lead_module.steps_per_bar(
+                self.rhythm.meter_num, self.rhythm.meter_den, self.lead.grid
+            )
+            * int(self.lead.phrase_bars)
+        )
+        for label, notes in (
+            ("lead.notes", self.lead_play.notes),
+            ("lead.base_notes", self.lead_play.base_notes),
+        ):
+            for index, note in enumerate(notes):
+                if not 0 <= note.step < total:
+                    raise StateError(
+                        f"{label}[{index}].step {note.step} is outside "
+                        f"0..{total - 1}"
+                    )
         _as_float(self.fundamental, "freqset.fundamental")
         if self.fundamental <= 0.0:
             raise StateError("freqset.fundamental must be strictly positive")
@@ -822,6 +981,7 @@ class PerformanceState:
         arp: arp_module.ArpSettings | None = None,
         lead: lead_module.LeadSettings | None = None,
         lead_variation_index: Any = 0,
+        lead_play: LeadPlaySection | Mapping[str, Any] | None = None,
         drone: drone_module.DroneSettings | None = None,
     ) -> "PerformanceState":
         """Build a state from live models (the bridge's capture path)."""
@@ -881,6 +1041,15 @@ class PerformanceState:
             lead=lead_module.LeadSettings() if lead is None else lead,
             lead_variation_index=_as_int_in(
                 lead_variation_index, "lead.variation_index", 0, 1_000_000
+            ),
+            lead_play=(
+                LeadPlaySection.create()
+                if lead_play is None
+                else (
+                    lead_play
+                    if isinstance(lead_play, LeadPlaySection)
+                    else LeadPlaySection.from_mapping(lead_play)
+                )
             ),
             drone=drone_module.DroneSettings() if drone is None else drone,
         )
@@ -969,6 +1138,7 @@ class PerformanceState:
             0,
             1_000_000,
         )
+        lead_play = LeadPlaySection.from_mapping(lead_section)
         drone = _settings_from(
             _section(document, "drone"), drone_module.DroneSettings, "drone"
         )
@@ -987,6 +1157,7 @@ class PerformanceState:
             arp=arp,
             lead=lead,
             lead_variation_index=lead_variation,
+            lead_play=lead_play,
             drone=drone,
         )
 
@@ -1016,6 +1187,7 @@ class PerformanceState:
             "lead": {
                 **_settings_dict(self.lead),
                 "variation_index": int(self.lead_variation_index),
+                **self.lead_play.as_dict(),
             },
             "drone": _settings_dict(self.drone),
         }
@@ -1212,6 +1384,7 @@ __all__ = [
     "DrumsSection",
     "GrooveSection",
     "HomeSection",
+    "LeadPlaySection",
     "MAX_SET_SIZE",
     "MutationSettings",
     "NAME_MAX",
