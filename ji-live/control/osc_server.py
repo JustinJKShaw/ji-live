@@ -178,6 +178,8 @@ LEAD_SET_SEED_ADDRESS = "/ji/lead/set_seed"
 LEAD_SET_GATE_MODE_ADDRESS = "/ji/lead/set_gate_mode"
 LEAD_VARY_ADDRESS = "/ji/lead/vary"
 # Stage 9.1 lead input (MIDI/QWERTY play-in, recording, melodies).
+#: Stage 9.2: compatibility only -- toggles the input MONITOR, never a source
+#: (the input always overrides the loop, so there is no Live mode any more).
 LEAD_INPUT_SET_ENABLED_ADDRESS = "/ji/lead/input/set_enabled"
 LEAD_INPUT_SET_QUANTIZE_ADDRESS = "/ji/lead/input/set_quantize"
 LEAD_INPUT_SET_COUNT_IN_ADDRESS = "/ji/lead/input/set_count_in"
@@ -1957,6 +1959,7 @@ class MutationOSCServer:
     # -- Stage 9.1 lead input and melody library --------------------------
 
     def _handle_lead_input_enabled(self, _address: str, *args: Any) -> None:
+        # Stage 9.2: the old Live toggle -> input monitor on/off (no new address).
         if len(args) != 1:
             _warn(f"{self.LEAD_INPUT_SET_ENABLED_ADDRESS} expects 0/1")
             return

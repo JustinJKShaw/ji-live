@@ -1216,12 +1216,18 @@ def test_gate_mode_and_played_motif() -> None:
         assert rig.start()
         rig.set_transport(True)
         assert rig.playing
+        # Stage 9.2: ``live`` is a deprecated alias -- it never stops the loop
+        # and never gates the input.  A generated line maps to ``generated``.
         rig.set_source("live")
-        assert rig.source == "live" and not rig.playing
-        assert not rig.scheduler.is_running
-        # Re-entering from live starts on the requested bar line (not now).
+        assert rig.source == "generated" and rig.playing
+        assert rig.scheduler.is_running
+        # Re-entering starts on the requested bar line (not now).
         rig.set_source("played", at_time=time.monotonic() + 0.2)
         assert rig.scheduler.is_running
+        # ``live`` maps to ``played`` once a take is loaded.
+        rig.load_motif(notes, grid="1/8", phrase_bars=2)
+        rig.set_source("live")
+        assert rig.source == "played"
         rig.set_source("record")
         assert rig.source == "record" and not rig.scheduler.is_running
         rig.set_source("generated")
@@ -1232,7 +1238,68 @@ def test_gate_mode_and_played_motif() -> None:
         assert rig.scheduler.is_running
     finally:
         rig.stop()
-    print("  one source switch: live/record stop, played/generated resume")
+    print("  source=live is a deprecated alias; record stops, others resume")
+
+
+def test_override_and_expression() -> None:
+    print("\n=== Test 19: Stage 9.2 override API and expression cleanup ===")
+    # The generated stream is unchanged: no CC 1, one bend before each note-on
+    # and no expression player while no note has points.
+    fake = FakePort()
+    rig = LeadRig(
+        _config(enabled=True, density=1.0, gate_beats=0.25),
+        output=fake,
+        bpm=240.0,
+    )
+    rig.on_set(INITIAL_RATIOS, 1.0, FUNDAMENTAL)
+    rig.set_transport(True)
+    try:
+        assert _wait_for(lambda: len(fake.with_type("note_on")) >= 4, timeout=3.0)
+    finally:
+        rig.set_transport(False)
+    assert not [m for m in fake.messages if m.type == "control_change" and m.control == 1]
+    kinds = fake.types()
+    for position, kind in enumerate(kinds):
+        if kind == "note_on":
+            assert kinds[position - 1] == "pitchwheel", kinds[position - 3:position]
+    assert rig.scheduler._expression is None
+    rig.stop()
+
+    # Override moves the loop note out of the way; a still-open gate re-attacks
+    # on release; stop() clears the flag and the curve.
+    note = LeadNote(
+        step=0,
+        length=16,
+        degree=0,
+        octave=0,
+        ratio_hint=1.0,
+        velocity=100,
+        bend_points=((0.0, -100.0), (4.0, 100.0)),
+    )
+    fake = FakePort()
+    rig = LeadRig(_config(enabled=True), output=fake, bpm=240.0)
+    rig.on_set(INITIAL_RATIOS, 1.0, FUNDAMENTAL)
+    rig.load_motif((note,), grid="1/8", phrase_bars=2, meter_num=4, meter_den=4)
+    rig.set_transport(True)
+    try:
+        assert _wait_for(lambda: len(fake.with_type("note_on")) >= 1, timeout=3.0)
+        rig.override_from_input()
+        assert rig.scheduler.overridden
+        held = fake.messages[-1]
+        assert held.type == "note_off", fake.messages[-3:]
+        # The curve would have sent +100 cents at 4 beats; it is cancelled.
+        before = len(fake.messages)
+        time.sleep(0.2)
+        assert len(fake.messages) == before, fake.messages[before:]
+        rig.release_input_override()
+        assert not rig.scheduler.overridden
+        assert fake.messages[-1].type == "note_on"
+    finally:
+        rig.set_transport(False)
+    rig.stop()
+    assert not rig.scheduler.overridden
+    assert rig.scheduler._expression is None
+    print("  no CC 1 on the generated line, override note-off, resume, cleanup")
 
 
 def run() -> None:
@@ -1255,6 +1322,7 @@ def run() -> None:
     test_osc_handlers()
     test_bridge_quantization()
     test_gate_mode_and_played_motif()
+    test_override_and_expression()
     print("\nALL LEAD TESTS PASSED")
 
 

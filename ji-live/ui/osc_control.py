@@ -3365,7 +3365,13 @@ class StateStatus:
 
 @dataclass(frozen=True)
 class LeadInputStatus:
-    """``/ji/lead/input/state`` snapshot (14 fields, Stage 9.1 order)."""
+    """``/ji/lead/input/state`` snapshot (14 or 16 fields; 9.1 order frozen).
+
+    ``live`` is no longer a source: it means the input monitor is active (the
+    port is open and the compatibility flag is on), so it is normally true and
+    the GUI has no control for it.  Values 15/16 are the Stage 9.2 controller
+    bend (cents, signed) and mod wheel (0..127); a 14-value payload gives 0/0.
+    """
 
     live: bool
     port_ok: bool
@@ -3381,6 +3387,8 @@ class LeadInputStatus:
     last_in_note: int
     last_out_note: int
     last_cents: float
+    last_bend_cents: float = 0.0
+    last_mod: int = 0
 
     @property
     def available(self) -> bool:
@@ -3391,7 +3399,7 @@ class LeadInputStatus:
         return self.recording and self.count_beats > 0.0
 
     def input_line(self) -> str:
-        """``Launchkey 49 - idle - 13 notes`` (port - phase - notes)."""
+        """``Launchkey 49 - idle - 13 notes - bend +12 ¢ - mod 64``."""
 
         if not self.port_ok:
             return "no input port"
@@ -3399,11 +3407,15 @@ class LeadInputStatus:
             phase = f"count {int(round(self.count_beats))}"
         elif self.recording:
             phase = "rec"
-        elif self.live:
-            phase = "live"
         else:
             phase = "idle"
-        return f"{self.port_name} - {phase} - {self.note_count} notes"
+        line = f"{self.port_name} - {phase} - {self.note_count} notes"
+        bend = float(self.last_bend_cents)
+        if abs(bend) >= 0.5:
+            line += f" - bend {bend:+.0f} ¢"
+        if int(self.last_mod):
+            line += f" - mod {int(self.last_mod)}"
+        return line
 
     def melody_line(self) -> str:
         """``intro line (13 notes) - played`` or ``none (generated line)``."""
@@ -3991,13 +4003,14 @@ def parse_lead_state(args: Sequence[Any]) -> LeadStatus:
 
 
 def parse_lead_input_state(args: Sequence[Any]) -> LeadInputStatus:
-    """Parse the 14-value ``/ji/lead/input/state`` payload."""
+    """Parse the 14- or 16-value ``/ji/lead/input/state`` payload (Stage 9.2)."""
 
-    if len(args) != 14:
+    if len(args) not in (14, 16):
         raise ValueError(
-            "lead input state needs 14 values: live, port_ok, port_name, "
+            "lead input state needs 14 or 16 values: live, port_ok, port_name, "
             "quantize, count_in, bars, recording, count_beats, note_count, "
             "source, melody_name, last_in_note, last_out_note, last_cents"
+            "[, last_bend_cents, last_mod]"
         )
     count_beats = _as_finite_float(args[7], "lead input count_beats")
     if count_beats < 0.0:
@@ -4020,6 +4033,14 @@ def parse_lead_input_state(args: Sequence[Any]) -> LeadInputStatus:
         last_in_note=clamp_int(args[11], -1, 127),
         last_out_note=clamp_int(args[12], -1, 127),
         last_cents=_as_finite_float(args[13], "lead input last_cents"),
+        last_bend_cents=(
+            _as_finite_float(args[14], "lead input last_bend_cents")
+            if len(args) == 16
+            else 0.0
+        ),
+        last_mod=(
+            clamp_int(args[15], 0, 127) if len(args) == 16 else 0
+        ),
     )
 
 

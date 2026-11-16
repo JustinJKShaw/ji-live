@@ -1,6 +1,9 @@
 # Stage 9.1 — Lead MIDI input, recording, quantisation and saved melodies
 
-Status: **built 2026-11-14 — awaiting the owner's human acceptance.**
+Status: **owner-confirmed functional 2026-11-14.** The owner ran the input on
+the real controller and reported it working; the QWERTY `key_midi` import bug
+found in that pass was fixed and a pure regression check was added. The
+checklist in §12 remains the record of what was verified by the owner.
 Stage 9.1 makes the lead playable: a MIDI controller or the QWERTY keyboard
 plays notes that sound in the **current JI pitch-class set**, the played line is
 recorded and quantised to the beat/groove, saved as a named melody, and then
@@ -9,6 +12,15 @@ kept transforming through the existing lead Variation system.
 This increment is a **lead/performance** addition, not a granular/glitch FX
 one (Stage 9's original theme); it is listed as such in the design doc's §8.9
 and §8.10 tables.
+
+**Follow-up: Stage 9.2 (2026-11-14)** supersedes the `Live` mode and the silent
+count-in described below. 9.2 removes the Live/playing split (the input always
+overrides the loop), makes the count-in audible, and adds pitch-bend/mod-wheel
+expression that is recorded with the take. The 9.1 data model, mapping,
+quantiser, recorder, melody/state formats and `Revert` are unchanged and remain
+the baseline; read the 9.2-specific behaviour in
+[docs/README_stage9_2.md](README_stage9_2.md). Where this document says `Live`,
+`source=live` or "silent count-in", the 9.2 behaviour applies.
 
 The owner's decisions (2026-11-14) are settled and implemented without extra
 options:
@@ -625,9 +637,11 @@ Full non-Qt regression list: see the prompt / `README.md`.
     GUI behave exactly as before. Toggling `Live` never leaves a stuck note.
 12. **Window**: the Lead input group fits at the default size; Status is
     reachable; the scroll area handles a small screen.
-13. Record the result. **9.1 is not complete until the owner confirms the
-    controller feels right, the quantised take is musical, and the variations
-    keep working on a played line.**
+13. Record the result. **9.1 was owner-confirmed functional on 2026-11-14**
+    after the owner ran the input on the real controller. Keep this checklist
+    for future regression runs; the `Live` toggle described in items 2–3 is
+    removed by Stage 9.2 (input always overrides), so re-check those two items
+    against the 9.2 sheet when that stage lands.
 
 ---
 

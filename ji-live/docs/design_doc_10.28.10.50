@@ -2149,6 +2149,72 @@ states, lazy mido). Config `config/lead_input_config.json`; flags `--lead-in`,
 Ableton, audio or sclang was available to the agent; the stage awaits human
 acceptance. See `docs/README_stage9_1.md`.
 
+### 6.25 Lead override, audible count-in and expression (Stage 9.2)
+
+**Why.** The owner asked (2026-11-14) to keep playing through the count-in, to
+drop the Live/playing toggle in favour of a played key overriding the loop, and
+(to test feasibility) to capture moving pitch bend and mod wheel on the lead and
+record that movement with the take. 9.2 is a **lead/performance** increment, not
+the Stage 9 FX theme, and adds no sclang/bus/audio change: `MPEOutput` already
+exposed 14-bit bend and `control_change` on Bus 5's member channel.
+
+**Override (C1).** `LeadScheduler` gains `override()`, `release_override()` and
+`overridden`. `override()` (input thread, before its own note-on, under the
+scheduler lock) sets `_overridden`, cancels the gate and any expression player,
+note-offs `_held`, and leaves the thread running and its step advancing; `_play`
+returns immediately while overridden, so no note/gate/bend/CC can leak. On the
+last key-up (pedal up) the input sends its note-off and calls
+`release_override()`: if `now - _step_started_at < _step_gate_seconds` for the
+last played step, the note attacks again from now (fresh bend, CC 1 reset,
+note-on, fresh gate, curve at offset 0) with the lock still held; otherwise the
+next scheduled step enters. `_played_total`/`_resumed_for` make "release →
+attack" exactly once. `stop()`/`clear_override()` (source change, Lead off,
+recall, record) clear it; `record` still stops the sequencer. The `Live` GUI
+toggle is removed; `source` is `generated | played | record` and `live` is a
+deprecated alias mapped to `played`/`generated`. `LeadInputRig` sounds when the
+port is open, the monitor flag is on and the lead is enabled -- never on
+`source`; `/ji/lead/input/set_enabled` is compatibility only (monitor on/off).
+`/ji/lead/input/state` keeps its first 14 values (`live` = monitor active) and
+appends `last_bend_cents`, `last_mod` (16; a 14-value payload still parses).
+
+**Count-in (C2).** Keys sound during the count-in (the 9.1 silence guard is
+gone); the take still opens on its bar line, and a key still held at
+`_begin_recording` is seeded at `start_beat` with its velocity and current
+wheel values. The 9.1 `_release_held()` at record start is removed because
+`record` already stops the scheduler. The count-in is a monitoring pre-roll, not
+a pickup bar.
+
+**Expression (C3/C4).** `LeadNote` appends optional `bend_points` and
+`mod_points`, tuples of `(offset_beats, value)` measured from the raw note-on
+(not quantised, not swung). The shared note validator requires finite, `>= 0`,
+ascending offsets (duplicates last-wins), clamps cents to ±4800, requires mod
+0..127, coalesces equal values and caps 256 points per curve. Melody and state
+JSON always write the two keys (empty lists allowed), default to `()` and keep
+`version: 1`. The class is fixed at note-on (`N`); the wheel is
+`cents = wheel/8192 * controller_range * 100`, `f_bent = f*2^(cents/1200)`, and
+the emitted bend is `round(12*log2(f_bent/mtof(N)) / mpe_range * 8192)` clamped
+to ±8192 (`mpe_output.bend_for_frequency`; never a fresh nearest note, which
+could cross a semitone). CC 1 is forwarded literally, throttled to ~5 ms with a
+single trailing timer. `LeadRecorder.note_on(..., bend_cents=, mod=)` seeds an
+offset-0 point and `expression(beat, ...)` appends points to the open note;
+`finish()` returns them on the `LeadNote`. `LeadScheduler._play` sends CC 1 only
+when the note has mod points or this is an override-resume attack (the generated
+stream is byte-identical when no note has points) and starts one bounded daemon
+`_ExpressionPlayer` (merged bend/mod curve, relative to `N`, cancelled by the
+gate, the next note, override/release, stop, source change and Lead-off). A
+variation that moves or repeats a note keeps its curves; a freshly generated
+note (random/ornament/rhythm) starts empty. `config/lead_input_config.json`
+gains `bend_range_semitones` (0..48, default 2; 0 disables bend), and `--check`
+prints it.
+
+**Tests / limits.** `tests/test_lead_expression.py` (bend maths incl. a
+semitone crossing, port translation, input rig order, recorder capture,
+validation/serialisation, scheduler playback/cancellation, override
+suppression/resume/no-double-attack, audible count-in and the seed) plus
+additive `test_lead_input`/`test_lead`/`test_state`/`test_ui`/`test_startup`
+checks. No MIDI hardware, IAC, Ableton, audio or sclang was available to the
+agent; the Qt harness could not run here. See `docs/README_stage9_2.md`.
+
 ---
 
 ## 7. Data Formats & Interfaces
@@ -2274,7 +2340,7 @@ acceptance. See `docs/README_stage9_1.md`.
 | `/ji/lead/set_gate_mode` | string (`beat`\|`note`) | UI → Bridge | 9.1 🟡 |
 | `/ji/lead/vary` | none (advance one variation) | UI → Bridge | 8.3d 🟡 |
 | `/ji/lead/state` | 17 values: enabled, port_ok, grid, phrase_bars, density, gate_beats, velocity, octave_range, base_octave, variation, variation_index, variation_bars, swing, groove_link, seed, playing, gate_mode (`beat`\|`note`) | Bridge → UI | 8.3d / 9.1 🟡 |
-| `/ji/lead/input/set_enabled` | int 0/1 (Live) | UI → Bridge | 9.1 🟡 |
+| `/ji/lead/input/set_enabled` | int 0/1 (input **monitor**; compatibility only from 9.2, never a source) | UI → Bridge | 9.1/9.2 🟡 |
 | `/ji/lead/input/set_quantize` | float 0..1 | UI → Bridge | 9.1 🟡 |
 | `/ji/lead/input/set_count_in` | string (`off`\|`1 beat`\|`1 bar`\|`2 bars`) | UI → Bridge | 9.1 🟡 |
 | `/ji/lead/input/set_bars` | int 1..8 | UI → Bridge | 9.1 🟡 |
@@ -2285,7 +2351,7 @@ acceptance. See `docs/README_stage9_1.md`.
 | `/ji/lead/input/revert` | none (PHASE_LEAD while running) | UI → Bridge | 9.1 🟡 |
 | `/ji/lead/input/clear` | none (PHASE_LEAD while running) | UI → Bridge | 9.1 🟡 |
 | `/ji/lead/input/refresh` | none | UI → Bridge | 9.1 🟡 |
-| `/ji/lead/input/state` | 14 values: live, port_ok, port_name, quantize, count_in, bars, recording, count_beats, note_count, source, melody_name, last_in_note, last_out_note, last_cents | Bridge → UI | 9.1 🟡 |
+| `/ji/lead/input/state` | 14 or 16 values: live (9.2: monitor active), port_ok, port_name, quantize, count_in, bars, recording, count_beats, note_count, source, melody_name, last_in_note, last_out_note, last_cents[, last_bend_cents, last_mod] | Bridge → UI | 9.1/9.2 🟡 |
 | `/ji/lead/melody/save` | string name | UI → Bridge | 9.1 🟡 |
 | `/ji/lead/melody/load` | string name (PHASE_LEAD while running) | UI → Bridge | 9.1 🟡 |
 | `/ji/lead/melody/delete` | string name (immediate) | UI → Bridge | 9.1 🟡 |
@@ -2542,14 +2608,16 @@ input (no bus, no sclang):
 {
   "port": "Launchkey", "match": "contains", "channel": 0,
   "quantize": 1.0, "count_in": "1 bar", "bars": 2,
-  "velocity_scale": 1.0, "octave_shift": 0
+  "velocity_scale": 1.0, "octave_shift": 0, "bend_range_semitones": 2.0
 }
 ```
 
 `match` is `contains|exact`; `channel` 0 (omni) or 1–16; `bars` 1–8;
-`velocity_scale` 0.5–2.0; `octave_shift` −2..2. `--lead-in-port` overrides
-`port`. A bad value disables only the input. Melodies live in `melodies/`
-(`--melody-dir`), created on the first save.
+`velocity_scale` 0.5–2.0; `octave_shift` −2..2; `bend_range_semitones` 0.0–48.0
+(9.2; 0 disables bend) and is the **controller's** range, separate from Bus 5's
+48-semitone MPE range. `--lead-in-port` overrides `port`. A bad value disables
+only the input. Melodies live in `melodies/` (`--melody-dir`), created on the
+first save.
 
 Both are additive: a missing/bad lead config disables only the lead; a missing
 drone config (or a bad one) gives the Stage 6 `hold` drone with
@@ -2885,7 +2953,8 @@ subphases between increments.
 | 8.7 | **Breathing rhythm engine + bass hit row:** a master breath makes the played grid breathe (timing + velocity) while the canonical tempo/grid stay exact; local arp breath and a loop-FX grain breath; adjustable depth/period/shape/intensity/phase/arp-local; one editable, optional bass hit row per bar with copy/clear | 🟡 Built 2026-11-03 — awaiting human acceptance (`docs/README_stage8_7.md`) |
 | 8.8 | **Fretboard improvisation aid:** nearest 12-TET notes to the live JI set with signed cents plus a fully tunable guitar fretboard scale diagram (nine presets incl. Drop D, 6–8 strings, 0–24 frets). Read-only UI; no OSC/state/audio change; tuning is session-only. Prompt: `docs/prompts/PROMPT_stage8_8_fretboard.md` | 🟡 Built 2026-11-05 — awaiting human acceptance (`docs/README_stage8_8.md`) |
 | 8.9 | Optional: MIDI-triggered mutation mapping and SC-side VST hosting | ⬜ Optional |
-| 9.1 | **Lead input, recording, quantisation and saved melodies:** MIDI-controller + QWERTY play-in mapped to the nearest class of the current set, bar-aligned recording with a silent count-in, swing-aware quantisation storing unswung steps, `melodies/<name>.json` and inline notes in performance states, a played motif inside `LeadEngine` (destructive variations + `Revert`), `gate_mode`, and one compact Lead input GUI group. No sclang/audio change. Prompt: `docs/prompts/PROMPT_stage9_1_lead_input.md` | 🟡 Built 2026-11-14 — awaiting human acceptance (`docs/README_stage9_1.md`) |
+| 9.1 | **Lead input, recording, quantisation and saved melodies:** MIDI-controller + QWERTY play-in mapped to the nearest class of the current set, bar-aligned recording with a silent count-in, swing-aware quantisation storing unswung steps, `melodies/<name>.json` and inline notes in performance states, a played motif inside `LeadEngine` (destructive variations + `Revert`), `gate_mode`, and one compact Lead input GUI group. No sclang/audio change. Prompt: `docs/prompts/PROMPT_stage9_1_lead_input.md` | ✅ Owner-confirmed functional 2026-11-14 (`docs/README_stage9_1.md`) |
+| 9.2 | **Lead override, audible count-in, pitch-bend / mod-wheel expression:** a played key always takes the lead (the loop's sounding note is released, its attack resumes on key-up or at the next step; no Live toggle), the count-in sounds and a held key crosses the bar line into the take, pitch bend/CC 1 are output relative to the class chosen at note-down and recorded as per-note curves (`bend_points`/`mod_points`) that the scheduler replays, including from melodies and states. Python-only; no sclang/audio change. Prompt: `docs/prompts/PROMPT_stage9_2_lead_override_expression.md` | 🟡 Built 2026-11-14 — awaiting human acceptance (`docs/README_stage9_2.md`) |
 | 9.0 | **Loop FX bus + harmonic-series delay:** one private post-`PitchShift` FX send per loop, a separate `\ji_harmonic_delay` SynthDef with **Cascade** (captured segment, ascending 1×/2×/3×… with Fire/auto) and **Delay** (continuous harmonized buffer delay) modes, a fixed musical `TimeSync` (1/4, dotted, triplet, 1 bar), plus the count-in repair (free-mode second-Rec skip, state/generation bugs, ceil bar lengths). Prompt: `docs/prompts/PROMPT_stage9_0_harmonic_delay.md` | 🟡 Built 2026-11-09 — awaiting human acceptance (`docs/README_stage9_0.md`) |
 
 **8.1 — Rhythm foundation + drum engine v1 (owner-confirmed 2026-10-31):**
@@ -3250,6 +3319,11 @@ existing lead Variation system with `Revert`. It adds no sclang/audio change
 (the input is Python-only and reuses Bus 5). See §6.24 and
 `docs/README_stage9_1.md`.
 
+**9.2 (built 2026-11-14, awaiting acceptance):** another lead/performance
+increment: input override (no Live toggle), an audible count-in, and pitch-bend /
+mod-wheel expression captured and replayed with the take. Python-only on the
+existing Bus 5. See §6.25 and `docs/README_stage9_2.md`.
+
 **Remaining deliverables:** `synthdefs/ji_granular_fx.scd`, `test_granular.scd`,
 GUI controls, `README_stage9.md` (or later 9.x READMEs).
 
@@ -3313,8 +3387,9 @@ unchanged when no visual subscriber is present.
 | 8.8 | 🟡 Built 2026-11-05 — awaiting human acceptance | **12-TET fretboard improvisation aid (read-only):** `ui/fretboard.py` maps every JI ratio to its nearest 12-TET note (half-up MIDI rounding, signed cents), dedupes into at most 12 pitch-class degrees ordered from the root, and builds `strings × (frets+1)` cells from a fully editable `GuitarTuning` (nine presets incl. Drop D/DADGAD/Open G/D, 7- and 8-string defaults, `with_string`/`with_count`). `ui/ji_ui.py` adds one full-width **Fretboard** group between Lead and Status with a custom-painted `FretboardWidget` (root/scale/anchor colours, inlays, fret numbers, note names, hover tooltips). It follows the existing `/ji/freqset/changed`; the tuning is a local session-only setting (reset to Standard E), adds **no** OSC address/state key/config key, and no handler calls the controller. `/ji/freqset/changed` shape unchanged, 1280×1172, `tests/test_fretboard.py` + Qt additions. |
 | 8.4.1 | ✅ Owner-confirmed 2026-11-02 | Stepwise/replaced **class glide**: the Glide knob is the replacement melt time, not a global retune. `control/glide.py` (`GlidePlan`, `build_glide_plan`, `GlideScheduler`), `JIBridge.send_snapshot` transient fan-out, `ArpEngine.on_set(rebuild=…)` + trigger-time `resolve_note`, additive transient logging suppression in drone/bass, Glide tooltip/status. Pure add/remove snaps at 0.005 s; a new mutation/Return/Go/Back/Jump cancels a melt. `tests/test_glide.py`. |
 | 9.0 | 🟡 Built 2026-11-09 — awaiting human acceptance | **Loop FX bus + harmonic-series delay:** four private mono post-`PitchShift` audio buses (reported; 18–21 on the owner's boot) and a separate `\ji_harmonic_delay` per active loop (created after the player), with **Cascade** (frozen captured segment, harmonics entering 1×/2×/3×… in order, Fire/Auto) and **Delay** (continuous harmonized buffer delay, varispeed drift) modes, exact integer rates, the `1/k^(0.5+1.5·falloff)` law, 2 s scratch buffers and a **fixed musical `TimeSync`** (`1/4`, dotted, triplet, `1 bar`; owner follow-up). `/ji/loop/edit` 31 -> 39 values, 37 edit params, `/ji/loop/fx_fire`, one Harm GUI row (1280×1198), plus the count-in A1–A4 repairs. See §6.23 and `docs/README_stage9_0.md`. |
-| 9.1 | 🟡 Built 2026-11-14 — awaiting human acceptance | **Lead input, recording, quantisation, saved melodies:** nearest-class mapping, bar-aligned recording with silent count-in, swung-grid quantisation storing unswung steps, `melodies/` library, inline notes in performance states, played motif + Revert in `LeadEngine`, `gate_mode`, `Lead input` GUI group, QWERTY keys. Python-only input; no sclang/audio change. See §6.24 and `docs/README_stage9_1.md`. |
-| 9 | 🟡 In progress | 9.0 harmonic-series delay built/awaiting acceptance; 9.1 lead input built/awaiting acceptance; granular & glitch FX remain. |
+| 9.1 | ✅ Owner-confirmed functional 2026-11-14 | **Lead input, recording, quantisation, saved melodies:** nearest-class mapping, bar-aligned recording with silent count-in, swung-grid quantisation storing unswung steps, `melodies/` library, inline notes in performance states, played motif + Revert in `LeadEngine`, `gate_mode`, `Lead input` GUI group, QWERTY keys. Python-only input; no sclang/audio change. See §6.24 and `docs/README_stage9_1.md`. Superseded in part by 9.2 (no Live toggle; audible count-in). |
+| 9.2 | 🟡 Built 2026-11-14 — awaiting human acceptance | **Lead override, audible count-in, expression:** a played key always takes the lead (loop note released, attack resumed on release/next step), the count-in sounds and a held key crosses the bar line into the take, pitch bend/CC 1 output relative to the note's class and recorded as per-note curves replayed by the scheduler (melodies/states included). `Live` removed; `source=live` is a deprecated alias. Python-only on Bus 5; no sclang/audio change. See §6.25 and `docs/README_stage9_2.md`. |
+| 9 | 🟡 In progress | 9.0 harmonic-series delay built/awaiting acceptance; 9.1 lead input owner-confirmed functional (2026-11-14); 9.2 lead override/expression built/awaiting acceptance (2026-11-14); granular & glitch FX remain. |
 | 10 | ⬜ Planned | GUI UX & aesthetics after the feature set stabilizes. |
 | 11 | ⬜ Deferred | Visual-half groundwork: OSC event broadcast for an external visual process. |
 
@@ -3752,8 +3827,14 @@ and more than 16 SC output channels.
 
 **Stage 9.1 explicitly excludes:** `.mid` file import/export, polyphonic/MPE
 multi-channel input, mapping modes other than `nearest`, auto-duck, sub-step
-microtiming, pitch-bend/aftertouch expression, two merged controllers, and any
-sclang/audio change.
+microtiming, two merged controllers, and any sclang/audio change.
+
+**Stage 9.2 explicitly excludes:** recording count-in-only notes as a pickup bar
+(the count-in is monitoring only), aftertouch and channel pressure, sustain
+pedal *level* (CC 64 stays a switch), a `mod_cc` remap option (CC 1 is literal),
+polyphonic input, sub-step note **onsets** (expression offsets are sub-step),
+auto-duck of other voices, and any sclang/audio change. Pitch bend and CC 1 are
+now **in scope** (the 9.1 exclusion is superseded for those two).
 
 **Deferred but planned:** polyphonic MPE voices and extra MIDI voices (Stage 8),
 MIDI pattern recall (pattern-level, not whole-session; Stage 8.5 saved the
@@ -4054,3 +4135,7 @@ If you are a human or AI opening this for the first time: read §1 (Executive Su
 | 9.0.0-prompt | 2026-11-09 | **Stage 9.0 loop FX bus + harmonic-series delay prompt added.** `docs/prompts/PROMPT_stage9_0_harmonic_delay.md` specifies a per-loop private FX send bus after the loop voice JI `PitchShift`, a separate `\ji_harmonic_delay` SynthDef with two selectable modes (**Cascade**: capture a segment and replay it at 1×/2×/3×… with staggered entries and Fire/auto; **Delay**: a continuous harmonized buffer delay), a `Harm` row of loop-edit controls, a 38-value `/ji/loop/edit` payload, and `/ji/loop/fx_fire`. It also contains a concrete count-in audit: the free-mode second-Rec skip is missing from `/ji/loop/record_length`, `~ji_count_in_start` can store `\counting` as the restore state, intermediate ticks are not generation-checked, and bar lengths are rounded with `round` instead of a documented ceil. The prompt requires both fixes, tests, docs, the FX bus map, and a human checklist. **No code or behaviour changed in this entry; the optional 8.9 row stays reserved.**
 | 9.0.0 | 2026-11-09 | **Stage 9.0 loop FX bus + harmonic-series delay implemented — awaiting human acceptance.** Added `synthdefs/ji_harmonic_delay.scd` (one 2 s mono scratch buffer per loop; **Cascade**: freeze a captured segment on a Fire/auto trigger, latch the write head, up to eight players reading the same frames at `k×`, player `k` entering `(k-1)*spacing` s later for `time/k` s; **Delay**: continuous write with taps at `k×` starting `time` behind the initial head and wrapping, drifting as a varispeed harmonizer; `a_k = 1/k^(0.5+1.5*falloff)`, `mix`/gate smoothed, read rate never lagged, `time`/`steps`/`spacing` clamped, `BufRd loop=1`, gate ASR `doneAction 2`). `synthdefs/ji_loop_voice.scd` gained `fxBus` and a second post-PitchShift/post-smear/post-melt/post-gain/post-env `Out.ar(fxBus)`; `startup.scd` allocates four private mono audio buses (reported; 18–21 on the owner's boot) with the same re-use rule and fails loudly if missing/duplicated. `tests/sc/test_live_rig.scd` gained the four 2 s FX buffers, the `harm_*` edit defaults, the 39-value `/ji/loop/edit`, the fixed-time tables and `~ji_loop_fx_time`, `~ji_loop_fx_start|stop|restart|set|fire|retime` (after-player node order, wet only, frees with the loop), the `\fxBus` arg and the `loop_fx=` print. `ui/control_surface.scd` gained the harm edit validation (`indexOfEqual` modes/syncs), the FX lifecycle/retime hook, `/ji/loop/fx_fire`, version 9.0.0, and the count-in repairs A1 (free-mode second-Rec skip in `record_length`), A2 (cancel with restore=true before sampling `previous`; never restore `\counting`), A3 (generation-check every intermediate tick) and A4 (ceil bar lengths). `ui/osc_control.py` gained `LOOP_HARM_*` constants, `harm_time_beats`/`harm_time_seconds`, eight `LoopEdit` fields (including the owner-requested `harm_time_sync`), 37 editable params, the strict 39-value parser, `build_loop_fx_fire` and `OSCController.loop_fx_fire` (SC client). `ui/ji_ui.py` gained the Harm row (Harm/Mix/Time + TimeSync/Steps/Space/Fall/Auto/Fire), the fixed-time read-only seconds display, the enable rules, the status line and 1280×1198 (Qt bound 1230). Added `docs/README_stage9_0.md`; updated `docs/START_HERE.md`, `docs/GUI_PARAMETERS.md`, `docs/README_live_rig.md`, the root README and this document. No bridge, `/ji/freqset/update`, state-file, config or performance-state change; loops stay session-only. Agent verification: all pure Python harnesses pass (including `test_ui --pure` with the new 39-value shapes and count-in ceil cases); `test_ui --qt` skips because the Qt wheel needs `libEGL.so.1`, which this container lacks; sclang/scsynth/audio/MIDI/live GUI were not testable. 9.0 awaits the human checklist. |
 | 9.1.0 | 2026-11-14 | **Stage 9.1 lead input, recording, quantisation and saved melodies implemented — awaiting human acceptance.** Added `control/lead_input.py` (nearest-class `map_note`/`MappedNote`, QWERTY `KEY_SEMITONES`/`key_midi`, lazy `MidiInputPort`, pure `LeadRecorder`/`quantize_step`, `LeadInputRig` with the bar-aligned record state machine and a ~5 ms supervisor), `control/melody.py` (`Melody`/`MelodyLibrary`/`MelodyError`, atomic `melodies/<name>.json` v1), and `config/lead_input_config.json`. `control/lead.py` gained `LeadSettings.gate_mode` (17th `/ji/lead/state` value), four defaulted `LeadMotif` provenance fields, `load_motif`/`clear_melody`/`revert`/`set_melody_name`, the source-aware 9.1 policy table, history-aware `set_variation_index`, `LeadRig.set_source` with one `_sync_scheduler`, and `LeadScheduler.start(at_time=…)`. `control/state.py` gained `LeadPlaySection` inline notes (old states unchanged, version 1). `control/osc_server.py`, `control/ji_bridge.py`, `ui/osc_control.py`, `ui/ji_ui.py` and `run/ji_station.py` gained the additive input/melody surface, the Lead input group + QWERTY + `Note len`, and `--lead-in`/`--lead-in-port`/`--lead-in-config`/`--melody-dir` (+ `--check` input/melody validation). Added `tests/test_lead_input.py` and additive test_lead/test_state/test_ui/test_startup coverage; docs `README_stage9_1.md`, `START_HERE.md`, `GUI_PARAMETERS.md`, `README_live_rig.md`, `README_mpe.md`, `README_stage8_3d.md`, `README.md`. No sclang, SynthDef, audio-bus or `/ji/freqset/update` change. Agent verification: all pure Python harnesses pass; PyQt6 cannot run here (missing system GLib), so `test_ui.py --qt` was not executed; no MIDI hardware/IAC/Ableton/audio/sclang was available. 9.1 awaits the owner's checklist. |
+| 9.1.1 | 2026-11-14 | **Stage 9.1 owner-confirmed functional.** The owner ran the controller live and confirmed the lead input works. One QWERTY bug was found in that pass and fixed: `ui/ji_ui.py` used `key_midi` without importing it (the intended import block never landed), which raised `NameError` in `keyPressEvent` and aborted the GUI; the import now resolves the project root for both launcher and direct execution. The Status group's `"Monospace"` font alias was replaced with the platform fixed-width system font (`QFontDatabase.systemFont`), and a duplicate `closeEvent` that silently discarded the key-release path was merged. A pure regression check in `tests/test_ui.py --pure` asserts the Qt window source imports `key_midi`; `pyflakes` is clean. No behaviour change to the bridge/MIDI/state paths. || 9.1.1 | 2026-11-14 | **Stage 9.1 owner-confirmed functional.** The owner ran the controller live and confirmed the lead input works. One QWERTY bug was found in that pass and fixed: `ui/ji_ui.py` used `key_midi` without importing it (the intended import block never landed), which raised `NameError` in `keyPressEvent` and aborted the GUI; the import now resolves the project root for both launcher and direct execution. The Status group's `"Monospace"` font alias was replaced with the platform fixed-width system font (`QFontDatabase.systemFont`), and a duplicate `closeEvent` that silently discarded the key-release path was merged. A pure regression check in `tests/test_ui.py --pure` asserts the Qt window source imports `key_midi`; `pyflakes` is clean. No behaviour change to the bridge/MIDI/state paths. |
+| 9.2.0 | 2026-11-14 | **Stage 9.2 lead override, audible count-in and pitch-bend/mod-wheel expression implemented — awaiting human acceptance.** `control/lead.py` gained `LeadNote.bend_points`/`mod_points`, `normalize_bend_points`/`normalize_mod_points` (shared validation: finite, `>= 0`, ascending offsets, duplicate offset last-wins, clamp ±4800 ¢, mod 0..127, coalesce, cap 256), the matching `LeadProjected` fields, `bend_for_frequency` (note-number-relative 14-bit bend, clamped) in `control/mpe_output.py`, `LeadScheduler.override()`/`release_override()`/`overridden`/`clear_override()`/`cancel_expression()` with `_step_started_at`/`_step_gate_seconds`/`_played_total`/`_resumed_for` bookkeeping, one bounded `_ExpressionPlayer` daemon (merged curve, cancelled by gate/next note/override/stop/source change/Lead-off; CC 1 only when a note has mod points or on a resume attack, so the generated stream is unchanged), and `LeadRig.override_from_input()`/`release_input_override()`/`clear_input_override()` plus the `source=live` deprecation alias. `control/lead_input.py` gained audible count-in (the 9.1 silence guard and `_release_held()` at record start removed), the held-key seed at `_begin_recording`, `pitchwheel`/CC 1 translation with the channel filter, `bend()`/`mod()` (wheel stored when no note, bend relative to `N`, CC 1 throttled to ~5 ms with one trailing timer), recorder `bend_cents`/`mod` capture and `expression()`, `bend_range_semitones` config (0..48, default 2) and 16-value `state_args()`; `LeadInputRig.set_monitor()` for the compatibility `set_enabled`. `control/ji_bridge.py` makes `set_enabled` a monitor-only toggle (one line, never a source), sends the 16-value state, and `control/osc_server.py` documents the compatibility address (no new address). `control/melody.py`/`control/state.py` write and parse the two optional note keys (empty lists written, `version` stays 1). `ui/osc_control.py` parses 14 or 16 values, `LeadInputStatus` gains `last_bend_cents`/`last_mod`, and the status line shows `bend +12 ¢ - mod 64`; `ui/ji_ui.py` removes the `Live` checkbox and its handler and updates the tooltips. `config/lead_input_config.json` gains `bend_range_semitones`; `run/ji_station.py --check` prints `bend=2 st` (no new flags). Added `tests/test_lead_expression.py` (bend maths incl. a semitone crossing, port, input-rig order/throttle, recorder capture/cap, validation/serialisation, scheduler playback and cancellation, override suppression/resume/no-double-attack, audible count-in/seed) and additive `test_lead_input` (count-in, override call order, 16 values, bend config, monitor), `test_lead` (override API, expression cleanup, unchanged generated stream), `test_state` (inline curves, old states, a bad point aborts) and `test_ui` (14/16 parser, no Live widget, bend/mod status, Qt group). Docs: `README_stage9_2.md` (new), `START_HERE.md`, `GUI_PARAMETERS.md`, `README_stage9_1.md`, `README_mpe.md`, `README_live_rig.md`, the root `README.md` and this document. No sclang file, SynthDef, audio bus, `/ji/freqset/update` contract, MIDI voice or state/melody version changed. Agent verification: every required pure Python harness passes; `test_ui.py --qt` could not run (PyQt6 imports but the Qt platform library `libglib-2.0.so.0` is missing); no MIDI hardware/IAC/Ableton/audio/sclang was available. 9.2 awaits the owner's checklist. |
+| 9.2.1 | 2026-11-14 | **Stage 9.2 follow-up: live pitch-bend triage — awaiting the owner's observation.** The owner reported the override, count-in and playback working but **no audible pitch bend from the controller**. The agent cannot reproduce or hear it (no MIDI hardware), so this build instruments the path instead of guessing: `LeadInputRig` prints one-shot `[LEAD-IN] wheel: pitch bend … -> … ¢`, `wheel: no note held …`, `wheel: sent pitch bend … while note … sounds` (reset per key-down) and `wheel: CC 1 (mod) … received` lines; it pushes a coalesced ~10 Hz `input/state` while a wheel moves so the GUI `bend +NN ¢ - mod N` is live (no other per-event UI traffic); and `run/midi_probe.py` (new, read-only, mido imported only in `main`) lists inputs and prints every pitchwheel/CC/note with the channel, so "the controller does not send bend", "the configured channel filters it" and "the Lead track/instrument does not apply bend" can be separated. `tests/test_lead_expression.py` asserts the one-shot lines and the status coalescing; `tests/test_startup.py` covers the probe helpers without mido. No behavioural change to the override, recording, playback or bend maths; `docs/README_stage9_2.md` records the owner report as open and `docs/START_HERE.md` gains the four-step triage. |
+| 9.2.2 | 2026-11-15 | **Stage 9.2 follow-up: the "subtle bend" is a receiver-range mismatch.** A full wheel sends `round(200 ¢ / 4800 ¢ * 8192) = 341` of the 14-bit bend. At the configured 48 st lead range that is ±2 st (a whole tone); at the 2 st MIDI default it is only ±8.3 ¢, which is what "very subtle" describes — and the same 2/48 factor compresses the JI note-on bends 24× (the lead then plays ~12-TET). This is exactly the controller/instrument range match Ableton requires for MPE ([tuning systems](https://www.ableton.com/en/live-manual/12/using-tuning-systems/), [MPE FAQ](https://help.ableton.com/hc/es/articles/360019144999-Preguntas-frecuentes-sobre-MPE-en-Live)). `run/ji_station.py --check` now prints `[CHECK] lead bend: lead_range=48 st … input wheel=2 st (full wheel -> 2 st at a 48 st instrument, 8.3 ¢ if the instrument is 2 st)`; the one-shot wheel log states the configured range and both interpretations; `docs/START_HERE.md`, `docs/GUI_PARAMETERS.md` and `docs/README_stage9_2.md` §2.2/§2.4 carry the output table and the two fixes (instrument to 48 st, or `config/lead_config.json` `bend_range_semitones` to the actual range). No code path, bend maths or default changed; `tests/test_lead_expression.py` pins 341/2 st/8.3 ¢ and `tests/test_startup.py` the check line. |

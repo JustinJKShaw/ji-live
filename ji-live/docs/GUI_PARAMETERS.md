@@ -337,27 +337,32 @@ transport stops a beat-synced grain loop even when the loop's own mode is
 | `Seed` | 0–2³¹−1 (1) ⟳ | Reproducible motif and variation sequence. |
 | Status / `Last:` | read-only | `on \| 1/8 · 2 bars · 0.75 \| identity #0 \| seed 1`, plus the last note. |
 
-## Lead input (Stage 9.1)
+## Lead input (Stage 9.1/9.2)
 
 | Control | Range (default) | What it does |
 |---|---|---|
 | `Port:` | read-only | The MIDI input the bridge opened. The GUI never enumerates devices; edit `config/lead_input_config.json`/`--lead-in-port` and press `Refresh`. |
 | **Refresh** | button | Asks the bridge to close and re-open the port (one `[LEAD-IN]` line). |
-| `Keys` | 0/1 (off) | QWERTY play: `a w s e d f t g y h u j`; `z`/`x` shift the octave. GUI-local; keys only sound while `Live` or `Rec` is on. Ignored while a text box/combo/spin has focus or a modifier is held. |
-| `Live` | 0/1 (off) | Monitor the input. On stops the sequencer; off returns it on the next bar line (`played` when a take is loaded, else `generated`). |
-| **Rec** | button | Record from the next bar line; enabled only while the transport runs and the input port is open. |
+| `Keys` | 0/1 (off) | QWERTY play: `a w s e d f t g y h u j`; `z`/`x` shift the octave. GUI-local; the input always monitors and a played key overrides the loop. Ignored while a text box/combo/spin has focus or a modifier is held. |
+| **Rec** | button | Record from the next bar line; enabled only while the transport runs and the input port is open. The count-in is audible. |
 | **Stop** | button | Cancel a count-in, or keep the partial take; enabled only while counting/recording. |
-| **Revert** | button ⟳ | Restore the recorded base (all variations undone); enabled only for a played line. |
-| **Clear** | button ⟳ | Drop the played line and return to the generated one; also clears `Live`. |
+| **Revert** | button ⟳ | Restore the recorded base and its bend/mod curves (all variations undone); enabled only for a played line. |
+| **Clear** | button ⟳ | Drop the played line and return to the generated one. |
 | `Quant` | 0–100 % (100 %) | Quantise strength: 1 = exact grid, 0 = as played (the stored step is still the rounded integer). |
-| `Count-in` | `off`, `1 beat`, `1 bar`, `2 bars` (`1 bar`) | Silent count before the window. A bar is `ceil(bar_quarters)` whole quarter beats (same rule as the loop count-in). |
+| `Count-in` | `off`, `1 beat`, `1 bar`, `2 bars` (`1 bar`) | Audible count before the window: keys sound through it, and a note held across the bar line is in the take from step 0. A bar is `ceil(bar_quarters)` whole quarter beats (same rule as the loop count-in). |
 | `Bars` | 1–8 (2) | Take length. |
 | `Melody` | list | Saved melodies from `/ji/lead/melody/list` (one per `melodies/<name>.json`). |
 | `Name` | 1–40 chars | Save name; pre-filled from the selected melody. |
-| **Save** | button | Save the current played take; disabled on an empty name. |
-| **Load** | button ⟳ | Load the selected melody (grid/phrase/notes); enabled only for a saved name. |
+| **Save** | button | Save the current played take (with its bend/mod curves); disabled on an empty name. |
+| **Load** | button ⟳ | Load the selected melody (grid/phrase/notes/curves); enabled only for a saved name. |
 | **Del** | button | Delete the selected melody file; enabled only for a saved name. |
-| Status line | read-only | `Input: Launchkey 49 - idle - 13 notes` and `Melody: intro line (13 notes) - played` (or `Melody: none (generated line)`). |
+| Pitch bend | controller wheel | Added on top of the class chosen at key-down (MPE bend on Bus 5, no re-attack, no class snap). The controller span is `bend_range_semitones` in `config/lead_input_config.json` (default 2, 0–48): a full wheel sends ±341 of the 14-bit bend, which is ±2 st at a 48 st Lead instrument and only ±8.3 ¢ at a 2 st one. The Lead instrument's MPE pitch-bend range must be **48 st** (`config/lead_config.json`); a mismatch scales the whole lead the same way. |
+| Mod wheel | controller CC 1 | Forwarded literally on the lead member channel (~5 ms coalesced); map it in Ableton if the instrument expects another CC. |
+| Status line | read-only | `Input: Launchkey 49 - idle - 13 notes - bend +12 ¢ - mod 64` (bend/mod omitted when both are zero) and `Melody: intro line (13 notes) - played` (or `Melody: none (generated line)`). |
+
+There is no `Live` checkbox (removed in 9.2): the input always overrides the
+loop, and releasing the last key re-attacks the loop's current note when its
+gate is still open.
 
 ## Fretboard (Stage 8.8, read-only improvisation aid)
 

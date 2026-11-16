@@ -162,6 +162,36 @@ def frequency_to_note_bend(
     return pitch.note, pitch.bend14
 
 
+def bend_for_frequency(
+    note_number: int,
+    target_hz: float,
+    bend_range_semitones: float = DEFAULT_BEND_RANGE_SEMITONES,
+) -> int:
+    """Centered 14-bit bend that sounds ``target_hz`` from ``note_number``.
+
+    Stage 9.2: the class is chosen at note-on and the wheel only moves the pitch
+    from there, so expression must be expressed **relative to the note number
+    that is already sounding** -- never by choosing a fresh nearest note (a
+    large bend could cross a semitone and jump an octave)::
+
+        semis  = 12 * log2(target_hz / midi_note_frequency(note_number))
+        bend14 = round(semis / bend_range_semitones * 8192)
+        bend   = clamp(bend14, -8192, 8191)
+
+    ``play``/``frequency_to_pitch`` remain the only place that picks a note
+    number; this helper only produces the wheel value.
+    """
+
+    note = _midi_value(note_number, "note")
+    target = _positive_float(target_hz, "target_hz")
+    bend_range = _positive_float(
+        bend_range_semitones, "bend_range_semitones"
+    )
+    semitones = 12.0 * math.log2(target / midi_note_frequency(note))
+    bend = int(round(semitones / bend_range * BEND_CENTER_14))
+    return max(BEND_MIN_CENTERED, min(BEND_MAX_CENTERED, bend))
+
+
 # Short alias used by the design-doc snippets and by manual calibration code.
 freq_to_mpe = frequency_to_note_bend
 

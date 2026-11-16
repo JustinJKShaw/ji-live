@@ -508,6 +508,7 @@ def run_checks(args: argparse.Namespace) -> int:
     except (OSError, TypeError, ValueError) as exc:
         problems.append(f"bass config: {exc}")
 
+    lead_bend_range: float | None = None
     try:
         from control.lead import load_config as load_lead_config
 
@@ -523,6 +524,7 @@ def run_checks(args: argparse.Namespace) -> int:
             f"grid={lead.settings.grid} bars={lead.settings.phrase_bars} "
             f"seed={lead.settings.seed}"
         )
+        lead_bend_range = float(lead.bend_range_semitones)
         if args.lead:
             ports.append(lead.port)
     except (OSError, TypeError, ValueError) as exc:
@@ -546,10 +548,22 @@ def run_checks(args: argparse.Namespace) -> int:
             f"[CHECK] lead input config ok: port={lead_input.port!r} "
             f"match={lead_input.match} channel={lead_input.channel} "
             f"quantize={lead_input.quantize:g} count-in={lead_input.count_in} "
-            f"bars={lead_input.bars}"
+            f"bars={lead_input.bars} "
+            f"bend={lead_input.bend_range_semitones:g} st"
         )
     except (OSError, TypeError, ValueError) as exc:
         problems.append(f"lead input config: {exc}")
+
+    if lead_bend_range is not None and input_name:
+        wheel = float(lead_input.bend_range_semitones)
+        at_two = wheel / lead_bend_range * 2.0
+        print(
+            f"[CHECK] lead bend: lead_range={lead_bend_range:g} st must equal "
+            f"the Lead instrument's MPE pitch-bend range; input wheel="
+            f"{wheel:g} st (full wheel -> {wheel:g} st at a "
+            f"{lead_bend_range:g} st instrument, {at_two * 100.0:.1f} ¢ if "
+            f"the instrument is 2 st)"
+        )
 
     try:
         from control.melody import MelodyLibrary, resolve_melody_dir

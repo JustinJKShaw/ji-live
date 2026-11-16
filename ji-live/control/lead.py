@@ -1,5 +1,12 @@
 """Stage 8.3d monophonic JI lead/melody voice.
 
+Stage 9.2 adds the performance layer on top of the 9.1 played take: input
+override (a played key takes the lead, the loop's sounding note is released and
+the loop's attack resumes on key-up), and per-note pitch-bend/mod-wheel curves
+(``LeadNote.bend_points`` / ``mod_points``) that the scheduler replays.  Both
+are Python-only: no new bus, SynthDef, sclang change or file-format version.
+
+
 The lead is a *melodic* voice with its own IAC bus (``IAC Driver Bus 5``) so it
 is a ready FX insert point in Ableton.  It reuses the Stage 6 MPE contract
 (:class:`control.mpe_output.MPEOutput`: member channel 2, 48-semitone bend
@@ -62,11 +69,11 @@ from typing import Any, Callable
 try:  # Support both ``python -m control.lead`` and direct execution.
     from . import rhythm
     from .bass import swing_offset
-    from .mpe_output import frequency_to_pitch
+    from .mpe_output import bend_for_frequency, frequency_to_pitch
 except ImportError:  # pragma: no cover - exercised only by direct execution
     import rhythm  # type: ignore[no-redef]
     from bass import swing_offset  # type: ignore[no-redef]
-    from mpe_output import frequency_to_pitch  # type: ignore[no-redef]
+    from mpe_output import bend_for_frequency, frequency_to_pitch  # type: ignore[no-redef]
 
 # ---------------------------------------------------------------------------
 # Constants / defaults
@@ -149,6 +156,13 @@ DEFAULT_GROOVE_LINK = True
 ACCENT_BOOST = 15
 #: No more than this many consecutive empty grid steps are allowed.
 MAX_EMPTY_RUN = 3
+
+#: Stage 9.2 expression curves: at most this many points per curve, and the
+#: widest bend a point may ask for (48 semitones, the MPE range).
+POINTS_MAX = 256
+BEND_CENTS_LIMIT = 48.0 * 100.0
+#: A duplicate curve offset counts as the same point within this tolerance.
+_POINT_EPSILON = 1e-9
 #: Stepwise bias: seven of these eight moves are +/-1 (about 70% +-1 dst).
 _MOVE_DELTAS: tuple[int, ...] = (-2, -1, -1, -1, 1, 1, 1, 2)
 #: Chance of an extra octave move when ``octave_range > 0``.
@@ -378,6 +392,88 @@ def validate_channel(value: object, label: str = "member_channel") -> int:
     if not 2 <= number <= 16:
         raise ValueError(f"{label} must be 2..16 (1 is the MPE master channel)")
     return number
+
+
+# ---------------------------------------------------------------------------
+# Stage 9.2 expression points (shared by engine, melody and state)
+# ---------------------------------------------------------------------------
+
+
+def _point_pairs(points: object, label: str) -> list[tuple[float, object]]:
+    """Validate the *shape* of a curve: finite non-negative sorted offsets."""
+
+    if points is None:
+        return []
+    if isinstance(points, (str, bytes)) or not isinstance(points, Sequence):
+        raise TypeError(f"{label} must be a sequence of (offset, value) pairs")
+    items: list[tuple[float, object]] = []
+    for position, point in enumerate(points):
+        if (
+            isinstance(point, (str, bytes))
+            or not isinstance(point, Sequence)
+            or len(point) != 2
+        ):
+            raise ValueError(
+                f"{label}[{position}] must be a (offset, value) pair"
+            )
+        offset = _finite(point[0], f"{label}[{position}] offset")
+        if offset < 0.0:
+            raise ValueError(f"{label}[{position}] offset must be >= 0")
+        if items and offset < items[-1][0] - _POINT_EPSILON:
+            raise ValueError(f"{label} offsets must be sorted ascending")
+        items.append((offset, point[1]))
+    return items
+
+
+def _coalesce(
+    items: Sequence[tuple[float, object]]
+) -> list[tuple[float, object]]:
+    """Duplicate offsets last-wins, then drop identical consecutive values."""
+
+    deduped: list[tuple[float, object]] = []
+    for offset, value in items:
+        if deduped and abs(deduped[-1][0] - offset) <= _POINT_EPSILON:
+            deduped[-1] = (offset, value)
+        else:
+            deduped.append((offset, value))
+    result: list[tuple[float, object]] = []
+    for offset, value in deduped:
+        if result and result[-1][1] == value:
+            continue
+        result.append((offset, value))
+    return result[:POINTS_MAX]
+
+
+def normalize_bend_points(
+    points: object, label: str = "bend_points"
+) -> tuple[tuple[float, float], ...]:
+    """Validate/normalise a bend curve ``(offset_beats, cents)``.
+
+    Offsets are finite and ``>= 0`` in ascending order (duplicates last-wins);
+    cents are finite and clamped to ``+/-4800``; identical consecutive values are
+    coalesced and at most :data:`POINTS_MAX` points are kept.
+    """
+
+    items: list[tuple[float, object]] = []
+    for position, (offset, value) in enumerate(_point_pairs(points, label)):
+        cents = _finite(value, f"{label}[{position}] cents")
+        cents = max(-BEND_CENTS_LIMIT, min(BEND_CENTS_LIMIT, cents))
+        items.append((offset, cents))
+    return tuple(_coalesce(items))  # type: ignore[return-value]
+
+
+def normalize_mod_points(
+    points: object, label: str = "mod_points"
+) -> tuple[tuple[float, int], ...]:
+    """Validate/normalise a mod curve ``(offset_beats, 0..127)``."""
+
+    items: list[tuple[float, object]] = []
+    for position, (offset, value) in enumerate(_point_pairs(points, label)):
+        amount = _as_int(value, f"{label}[{position}] mod")
+        if not 0 <= amount <= 127:
+            raise ValueError(f"{label}[{position}] mod must be 0..127")
+        items.append((offset, amount))
+    return tuple(_coalesce(items))  # type: ignore[return-value]
 
 
 def normalize_setting_name(name: object) -> str:
@@ -669,6 +765,9 @@ class LeadNote:
         octave: octave offset around the lead base octave.
         ratio_hint: the ratio the note was born on.
         velocity: note-on velocity at birth (downbeats are accented).
+        bend_points: Stage 9.2 ``(offset_beats, cents)`` bend curve, measured
+            from the *raw* note-on (not quantised, not swung).
+        mod_points: Stage 9.2 ``(offset_beats, 0..127)`` mod-wheel curve.
     """
 
     step: int
@@ -677,6 +776,8 @@ class LeadNote:
     octave: int
     ratio_hint: float
     velocity: int
+    bend_points: tuple[tuple[float, float], ...] = ()
+    mod_points: tuple[tuple[float, int], ...] = ()
 
     @property
     def end(self) -> int:
@@ -750,6 +851,8 @@ class LeadProjected:
     frequency: float
     velocity: int
     is_downbeat: bool
+    bend_points: tuple[tuple[float, float], ...] = ()
+    mod_points: tuple[tuple[float, int], ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -1369,6 +1472,8 @@ class LeadEngine:
                     * base,
                     velocity=max(VELOCITY_MIN, min(VELOCITY_MAX, velocity)),
                     is_downbeat=(note.step % max(1, motif.steps_per_bar)) == 0,
+                    bend_points=tuple(note.bend_points),
+                    mod_points=tuple(note.mod_points),
                 )
             )
         return tuple(projected)
@@ -1587,6 +1692,12 @@ class LeadEngine:
             octave = _as_int(note.octave, f"note {position} octave")
             velocity = _as_int(note.velocity, f"note {position} velocity")
             hint = _finite(note.ratio_hint, f"note {position} ratio_hint")
+            bend_points = normalize_bend_points(
+                note.bend_points, f"note {position} bend_points"
+            )
+            mod_points = normalize_mod_points(
+                note.mod_points, f"note {position} mod_points"
+            )
             if step < 0:
                 raise ValueError(f"note {position} step must be >= 0")
             if length < 1:
@@ -1610,6 +1721,8 @@ class LeadEngine:
                     octave=octave,
                     ratio_hint=hint,
                     velocity=velocity,
+                    bend_points=bend_points,
+                    mod_points=mod_points,
                 )
             )
         return _normalize(cleaned, max(1, int(phrase_steps)))
@@ -2005,6 +2118,97 @@ class LeadEngine:
 # ---------------------------------------------------------------------------
 
 
+class _ExpressionPlayer:
+    """One bounded, cancellable playback of one note's bend/mod curves.
+
+    A single daemon thread (never one timer per point): it waits on an event up
+    to each point's real-time offset and sends the message under the scheduler
+    lock, so it can never interleave a bend with the next note-on.  ``cancel()``
+    is idempotent and safe from any thread.
+    """
+
+    def __init__(
+        self,
+        output: Any,
+        lock: threading.RLock,
+        note: LeadProjected,
+        note_number: int,
+        bend_range_semitones: float,
+        beat_seconds: float,
+        *,
+        initial_bend: int | None = None,
+        initial_mod: int | None = None,
+        now: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._output = output
+        self._lock = lock
+        self._note = note
+        self._note_number = int(note_number)
+        self._bend_range = float(bend_range_semitones)
+        self._beat_seconds = float(beat_seconds)
+        self._initial_bend = initial_bend
+        self._initial_mod = initial_mod
+        self._now = now
+        self._event = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        thread = threading.Thread(
+            target=self._run, name="ji-lead-expression", daemon=True
+        )
+        self._thread = thread
+        thread.start()
+
+    def cancel(self) -> None:
+        self._event.set()
+
+    def _events(self) -> list[tuple[float, int, float]]:
+        """Merged curve sorted by offset; bend (0) before mod (1) on a tie."""
+
+        events: list[tuple[float, int, float]] = [
+            (float(offset), 0, float(cents))
+            for offset, cents in self._note.bend_points
+        ]
+        events.extend(
+            (float(offset), 1, float(value))
+            for offset, value in self._note.mod_points
+        )
+        events.sort(key=lambda item: (item[0], item[1]))
+        return events
+
+    def _run(self) -> None:
+        started = self._now()
+        last_bend = self._initial_bend
+        last_mod = self._initial_mod
+        for offset, kind, value in self._events():
+            delay = started + max(0.0, offset) * self._beat_seconds - self._now()
+            if delay > 0.0 and self._event.wait(delay):
+                return
+            if self._event.is_set():
+                return
+            with self._lock:
+                if self._event.is_set():
+                    return
+                try:
+                    if kind == 0:
+                        target = self._note.frequency * (2.0 ** (value / 1200.0))
+                        bend = bend_for_frequency(
+                            self._note_number, target, self._bend_range
+                        )
+                        if bend == last_bend:
+                            continue
+                        last_bend = bend
+                        self._output.pitch_bend(bend)
+                    else:
+                        mod = int(round(value))
+                        if mod == last_mod:
+                            continue
+                        last_mod = mod
+                        self._output.control_change(1, mod)
+                except Exception:  # a broken output must not leak a thread
+                    return
+
+
 class LeadScheduler:
     """Daemon-thread, transport-gated, drift-corrected lead sequencer.
 
@@ -2013,6 +2217,10 @@ class LeadScheduler:
     timer and note-offs the held note first, so a late gate can never cut the
     next note.  Step 0 is the phrase origin: starting the scheduler is what
     makes the phrase restart on a transport start.
+
+    Stage 9.2 adds :meth:`override` / :meth:`release_override`: while the input
+    owns the lead the thread still advances but plays nothing, and releasing the
+    key re-attacks the loop's last note when its gate is still open.
     """
 
     def __init__(
@@ -2044,6 +2252,17 @@ class LeadScheduler:
         self._held: int | None = None
         #: Stage 9.1: optional first deadline (a bar line when re-entering).
         self._first_deadline: float | None = None
+        #: Stage 9.2: input override + the last played step's resume bookkeeping.
+        self._overridden = False
+        self._played_total = 0
+        self._last_note: LeadProjected | None = None
+        self._last_settings: LeadSettings | None = None
+        self._last_beat_seconds = 0.0
+        self._last_step_quarters = 1.0
+        self._step_started_at: float | None = None
+        self._step_gate_seconds = 0.0
+        self._resumed_for: int | None = None
+        self._expression: _ExpressionPlayer | None = None
 
     # -- state ----------------------------------------------------------
 
@@ -2066,6 +2285,13 @@ class LeadScheduler:
     def is_running(self) -> bool:
         thread = self._thread
         return thread is not None and thread.is_alive()
+
+    @property
+    def overridden(self) -> bool:
+        """True while the input owns Bus 5 and the sequencer plays nothing."""
+
+        with self._lock:
+            return self._overridden
 
     def set_bpm(self, bpm: object) -> float:
         value = rhythm.clamp_bpm(bpm)
@@ -2139,13 +2365,124 @@ class LeadScheduler:
             if self._thread is thread:
                 self._thread = None
             self._cancel_gate_locked()
+            expression = self._cancel_expression_locked()
             held = self._held
             self._held = None
+            self._overridden = False
+            self._last_note = None
+            self._step_started_at = None
+            self._step_gate_seconds = 0.0
+            self._resumed_for = None
+        if expression is not None:
+            expression.cancel()
         self._send_off(held)
         try:
             self.output.all_notes_off()
         except Exception:
             pass
+
+    # -- Stage 9.2: input override --------------------------------------
+
+    def override(self) -> None:
+        """Hand Bus 5 to the input: release the loop note, play nothing.
+
+        Called by the input rig *before* it sounds its own note.  The clock and
+        the step index keep advancing, so the loop stays in time; the thread
+        simply skips every ``_play`` while overridden.
+        """
+
+        with self._lock:
+            if self._overridden:
+                return
+            self._overridden = True
+            self._cancel_gate_locked()
+            expression = self._cancel_expression_locked()
+            held = self._held
+            self._held = None
+            step = self._step_index
+        if expression is not None:
+            expression.cancel()
+        self._send_off(held)
+        print(f"[LEAD-IN] override on at step {step}")
+
+    def release_override(self) -> None:
+        """Give Bus 5 back to the loop, re-attacking its note when still due.
+
+        The input rig sends its note-off before calling this.  If the last
+        played step's nominal gate is still open, the note attacks again from
+        now (the owner's "release triggers the attack"); otherwise the next
+        scheduled step enters normally.
+        """
+
+        with self._lock:
+            if not self._overridden:
+                return
+            self._overridden = False
+            expression = self._cancel_expression_locked()
+            note = self._last_note
+            settings = self._last_settings
+            started = self._step_started_at
+            gate_seconds = self._step_gate_seconds
+            token = self._played_total
+            running = self.is_running and not self._stop.is_set()
+            step = self._step_index
+            eligible = bool(
+                running
+                and note is not None
+                and settings is not None
+                and started is not None
+                and (self._now() - started) < gate_seconds
+                and self._resumed_for != token
+            )
+            if eligible:
+                # ``_play`` is reentrant on this RLock: the resume attack and
+                # its fresh gate happen with the lock still held, so the input
+                # can never slip a bend between them.
+                try:
+                    self._play(
+                        note,
+                        settings,
+                        self._last_beat_seconds,
+                        self._last_step_quarters,
+                        resumed=True,
+                    )
+                except Exception as exc:  # a broken output never kills the rig
+                    eligible = False
+                    print(f"[LEAD-IN] resume attack failed: {exc!r}")
+            next_step = (step + 1) % max(
+                1, self.engine.motif.phrase_steps
+            )
+        if expression is not None:
+            expression.cancel()
+        if not running:
+            print("[LEAD-IN] override cleared (scheduler stopped)")
+        elif eligible:
+            print(f"[LEAD-IN] override off; loop note attacked at step {step}")
+        else:
+            print(f"[LEAD-IN] override off; next loop note at step {next_step}")
+
+    def cancel_expression(self) -> None:
+        """Cancel the active expression curve (source change / lead off)."""
+
+        with self._lock:
+            expression = self._cancel_expression_locked()
+        if expression is not None:
+            expression.cancel()
+
+    def clear_override(self) -> None:
+        """Drop the override without resuming (source change / lead off / stop).
+
+        Unlike :meth:`release_override` this never re-attacks the old line's
+        note: the caller is changing what Bus 5 plays.
+        """
+
+        with self._lock:
+            if not self._overridden:
+                return
+            self._overridden = False
+            self._resumed_for = None
+            expression = self._cancel_expression_locked()
+        print("[LEAD-IN] override cleared")
 
     # -- thread body -----------------------------------------------------
 
@@ -2197,6 +2534,8 @@ class LeadScheduler:
 
                 note = self.engine.note_at(step)
                 if note is not None:
+                    # ``_play`` itself refuses while overridden, so the check
+                    # cannot race with the input thread's ``override()``.
                     self._play(note, settings, beat_seconds, step_quarters)
 
                 with self._lock:
@@ -2213,8 +2552,11 @@ class LeadScheduler:
         finally:
             with self._lock:
                 self._cancel_gate_locked()
+                expression = self._cancel_expression_locked()
                 held = self._held
                 self._held = None
+            if expression is not None:
+                expression.cancel()
             self._send_off(held)
 
     def _play(
@@ -2223,30 +2565,82 @@ class LeadScheduler:
         settings: LeadSettings,
         beat_seconds: float,
         step_quarters: float,
+        *,
+        resumed: bool = False,
     ) -> None:
         config = self.engine.config
         pitch = frequency_to_pitch(note.frequency, config.bend_range_semitones)
 
+        # The whole attack runs under the lock: ``override()`` and this method
+        # can never interleave a loop note-on with the input's takeover.
         with self._lock:
+            if self._overridden:
+                return  # the input owns Bus 5: no note, gate, bend or CC
             self._cancel_gate_locked()
+            expression = self._cancel_expression_locked()
             held = self._held
             self._held = None
-        self._send_off(held)
+            self._played_total += 1
+            token = self._played_total
+            self._last_note = note
+            self._last_settings = settings
+            self._last_beat_seconds = float(beat_seconds)
+            self._last_step_quarters = float(step_quarters)
 
-        self.output.pitch_bend(pitch.bend)
-        self.output.note_on(
-            pitch.note, self._velocity_with_breath(int(note.velocity))
-        )
-        with self._lock:
-            self._held = int(pitch.note)
+            if settings.gate_mode == "note":
+                gate_beats = note.length * step_quarters
+            else:
+                gate_beats = min(
+                    float(settings.gate_beats), note.length * step_quarters
+                )
+            gate_seconds = max(_MIN_GATE_SECONDS, gate_beats * beat_seconds)
 
-        if settings.gate_mode == "note":
-            gate_beats = note.length * step_quarters
-        else:
-            gate_beats = min(
-                float(settings.gate_beats), note.length * step_quarters
+            # CC 1 is channel state: the generated line sends none (the 9.1
+            # stream is unchanged), a note with mod points starts on its first
+            # value, and a resume attack clears the input's wheel state.
+            first_mod: int | None = None
+            if note.mod_points:
+                first_mod = 0
+                for offset, value in note.mod_points:
+                    if abs(offset) <= _POINT_EPSILON:
+                        first_mod = int(value)
+                        break
+            send_mod = bool(note.mod_points) or resumed
+            self._send_off(held)
+            self.output.pitch_bend(pitch.bend)
+            if send_mod:
+                self.output.control_change(
+                    1, 0 if first_mod is None else first_mod
+                )
+            self.output.note_on(
+                pitch.note, self._velocity_with_breath(int(note.velocity))
             )
-        self._schedule_gate(max(_MIN_GATE_SECONDS, gate_beats * beat_seconds))
+            self._held = int(pitch.note)
+            self._step_started_at = self._now()
+            self._step_gate_seconds = gate_seconds
+            if resumed:
+                self._resumed_for = token
+
+            player = None
+            if note.bend_points or note.mod_points:
+                player = _ExpressionPlayer(
+                    self.output,
+                    self._lock,
+                    note,
+                    int(pitch.note),
+                    config.bend_range_semitones,
+                    beat_seconds,
+                    initial_bend=int(pitch.bend),
+                    initial_mod=(first_mod if send_mod else None),
+                    now=self._now,
+                )
+                self._expression = player
+            self._schedule_gate(gate_seconds)
+            if player is not None:
+                player.start()
+
+        if expression is not None:
+            expression.cancel()
 
         callback = self._on_note
         if callback is not None:
@@ -2276,6 +2670,15 @@ class LeadScheduler:
         if timer is not None:
             timer.cancel()
 
+    def _cancel_expression_locked(self) -> _ExpressionPlayer | None:
+        """Stop the curve *before* the lock is released (no send can slip in)."""
+
+        player = self._expression
+        self._expression = None
+        if player is not None:
+            player.cancel()
+        return player
+
     def _gate_fire(self, token: int) -> None:
         with self._lock:
             if token != self._gate_token or self._stop.is_set():
@@ -2284,6 +2687,9 @@ class LeadScheduler:
             self._gate_token += 1
             held = self._held
             self._held = None
+            expression = self._cancel_expression_locked()
+        if expression is not None:
+            expression.cancel()
         self._send_off(held)
 
     def _send_off(self, note: int | None) -> None:
@@ -2433,25 +2839,34 @@ class LeadRig:
         """Switch who drives Bus 5 and start/stop the scheduler accordingly.
 
         ``generated``/``played`` run the sequencer (gated by the transport);
-        ``live``/``record`` stop it immediately -- never mute it, so no stale
-        gates or interleaved bends can survive.
+        ``record`` stops it immediately -- never mute it, so no stale gates or
+        interleaved bends can survive.  ``live`` is a **deprecated alias** for
+        the 9.1 model: the input always overrides now, so it maps to ``played``
+        when a take exists and to ``generated`` otherwise.
         """
 
         source = validate_source(name)
+        if source == "live":
+            print("[LEAD] source=live is deprecated; input always overrides")
+            source = "played" if self.engine.motif.source == "played" else "generated"
         if source == self._source:
             if source in ("generated", "played"):
                 self._sync_scheduler(at_time=at_time)
             return self._source
         self._source = source
-        if source in ("live", "record"):
+        # An expression curve belongs to the line that is leaving, and an
+        # override belongs to the input note that the caller is releasing.
+        self.scheduler.clear_override()
+        self.scheduler.cancel_expression()
+        if source == "record":
             if self.scheduler.is_running:
                 step = self.scheduler.step_index
                 self.scheduler.stop()
                 print(
-                    f"[LEAD-IN] live on (sequencer paused at step {step})"
+                    f"[LEAD-IN] record on (sequencer paused at step {step})"
                 )
             else:
-                print("[LEAD-IN] live on (sequencer paused)")
+                print("[LEAD-IN] record on (sequencer paused)")
         else:
             self._sync_scheduler(at_time=at_time)
         print(f"[LEAD] source={source}")
@@ -2584,6 +2999,23 @@ class LeadRig:
     ) -> LeadMotif:
         return self.engine.on_set(ratios, anchor, fundamental)
 
+    # -- Stage 9.2: input override --------------------------------------
+
+    def override_from_input(self) -> None:
+        """The input takes Bus 5 (called before its own note-on)."""
+
+        self.scheduler.override()
+
+    def release_input_override(self) -> None:
+        """The input's last note ended: give the loop back (resume attack)."""
+
+        self.scheduler.release_override()
+
+    def clear_input_override(self) -> None:
+        """The input's note is being released by an exit path (no resume)."""
+
+        self.scheduler.clear_override()
+
     def set_note_callback(
         self, callback: Callable[[float, int, int], None] | None
     ) -> None:
@@ -2605,6 +3037,7 @@ __all__ = [
     "ACCENT_BOOST",
     "BASE_OCTAVE_MAX",
     "BASE_OCTAVE_MIN",
+    "BEND_CENTS_LIMIT",
     "DEFAULT_BEND_RANGE_SEMITONES",
     "DEFAULT_CONFIG_PATH",
     "DEFAULT_DENSITY",
@@ -2642,6 +3075,7 @@ __all__ = [
     "OCTAVE_RANGE_MIN",
     "PHRASE_BARS_MAX",
     "PHRASE_BARS_MIN",
+    "POINTS_MAX",
     "SEED_MAX",
     "SOURCES",
     "VARIATIONS",
@@ -2652,6 +3086,8 @@ __all__ = [
     "generate_motif",
     "grid_quarters",
     "load_config",
+    "normalize_bend_points",
+    "normalize_mod_points",
     "normalize_setting_name",
     "place_steps",
     "steps_per_bar",

@@ -1469,7 +1469,67 @@ def test_lead_play_section() -> None:
     # A played section always has notes; an empty one is a generated line.
     empty = state_module.LeadPlaySection.create(notes=(), source="played")
     assert empty.source == "generated" and empty.notes == ()
+
+    # Stage 9.2: the bend/mod curves are inline, optional and validated.
+    curve = LeadNote(
+        step=0,
+        length=4,
+        degree=2,
+        octave=0,
+        ratio_hint=1.25,
+        velocity=104,
+        bend_points=((0.0, -12.0), (0.3125, 0.0)),
+        mod_points=((0.0, 64),),
+    )
+    with_curve = replace(
+        base,
+        lead_play=state_module.LeadPlaySection.create(
+            notes=(curve,), base_notes=(curve,), source="played"
+        ),
+    )
+    document = with_curve.to_mapping()
+    assert document["lead"]["notes"][0]["bend_points"] == [
+        [0.0, -12.0],
+        [0.3125, 0.0],
+    ]
+    assert document["lead"]["notes"][0]["mod_points"] == [[0.0, 64]]
+    assert document["version"] == 1
+    recalled = state_module.PerformanceState.from_mapping(document)
+    assert recalled.lead_play.notes[0].bend_points == ((0.0, -12.0), (0.3125, 0.0))
+    assert recalled.lead_play.notes[0].mod_points == ((0.0, 64),)
+    # Old states without the two keys load with empty curves.
+    plain = with_curve.to_mapping()
+    for key in ("bend_points", "mod_points"):
+        plain["lead"]["notes"][0].pop(key)
+        plain["lead"]["base_notes"][0].pop(key)
+    legacy = state_module.PerformanceState.from_mapping(plain)
+    assert legacy.lead_play.notes[0].bend_points == ()
+    assert legacy.lead_play.notes[0].mod_points == ()
+    # Any bad curve aborts the whole load.
+    for mutate in (
+        lambda doc: doc["lead"]["notes"][0].__setitem__(
+            "bend_points", [[0.5, 0.0], [0.25, 1.0]]
+        ),
+        lambda doc: doc["lead"]["notes"][0].__setitem__(
+            "bend_points", [[-1.0, 0.0]]
+        ),
+        lambda doc: doc["lead"]["notes"][0].__setitem__(
+            "mod_points", [[0.0, 128]]
+        ),
+        lambda doc: doc["lead"]["notes"][0].__setitem__(
+            "bend_points", [[0.0, float("nan")]]
+        ),
+    ):
+        broken = with_curve.to_mapping()
+        mutate(broken)
+        try:
+            state_module.PerformanceState.from_mapping(broken)
+        except state_module.StateError:
+            pass
+        else:
+            raise AssertionError("an invalid inline curve was accepted")
     print("  round trip, optional keys, note/step/history validation, version 1")
+    print("  inline bend/mod curves, old states empty, a bad point aborts")
 
 
 def run() -> None:

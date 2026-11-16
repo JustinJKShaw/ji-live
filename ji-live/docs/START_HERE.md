@@ -167,36 +167,51 @@ their fallback degree). `hold` sounds exactly as before. The top-row `Drone`
 switch is still the only drone mute. Details:
 [docs/README_stage8_3d.md](README_stage8_3d.md).
 
-### Lead input — play, record, save a melody (Stage 9.1, runtime, no command)
+### Lead input — play, record, save a melody (Stage 9.1/9.2, runtime, no command)
 
 Start with **both** flags: `--lead --lead-in`. The input is off by default;
 `--lead` alone is exactly the old generated-line rig, and `--lead-in` without
 `--lead` prints one line and is ignored. The controller is configured in
 `config/lead_input_config.json` (`port`, `match`, `channel`, `quantize`,
-`count_in`, `bars`, `velocity_scale`, `octave_shift`) or overridden with
-`--lead-in-port "<name>"` / `--lead-in-config <path>`. Melodies are saved in
-`melodies/` (override with `--melody-dir`); the folder is created on the first
-save.
+`count_in`, `bars`, `velocity_scale`, `octave_shift`, `bend_range_semitones`)
+or overridden with `--lead-in-port "<name>"` / `--lead-in-config <path>`.
+Melodies are saved in `melodies/` (override with `--melody-dir`); the folder is
+created on the first save.
 
 | Control | What it does |
 |---|---|
 | `Port` + `Refresh` | the controller the bridge opened (e.g. `Launchkey 49`); `Refresh` closes/re-opens it after editing the config |
-| `Keys` | QWERTY play: `a w s e d f t g y h u j`, `z`/`x` shift the octave. GUI-local; keys only sound while `Live` or `Rec` is on |
-| `Live` | monitor the input: the sequencer **stops** and the keys sound as the nearest class of the current set. Off resumes the phrase on the next bar line |
-| `Rec` | record from the next bar line (needs Play); a silent `Count-in` first (`off`/`1 beat`/`1 bar`/`2 bars`) |
+| `Keys` | QWERTY play: `a w s e d f t g y h u j`, `z`/`x` shift the octave. GUI-local; the input always monitors, and a played key takes the lead |
+| `Rec` | record from the next bar line (needs Play); an **audible** `Count-in` first (`off`/`1 beat`/`1 bar`/`2 bars`) |
 | `Stop` | cancel the count-in, or keep the partial take |
 | `Revert` | restore the recorded base (all variations undone) |
 | `Clear` | drop the melody and return to the generated line |
 | `Quant` | 0–100 %: how hard onsets/lengths snap to the (swung) grid |
-| `Count-in`, `Bars` | the silent count and the take length (1–8 bars) |
+| `Count-in`, `Bars` | the audible count and the take length (1–8 bars) |
 | `Melody`, `Name`, `Save`, `Load`, `Del` | the named melody library |
 
-**Procedure.** Press Play, tick `Live`, play a few notes. Press `Rec`; the
-count-in is silent and the take opens on the next bar line and closes by itself
-after `Bars`. The take plays back quantised (and on the swung grid when the
-groove swings); `Vary` / `Var every` keep transforming it, `Revert` puts the
-recorded take back. Type a name and press `Save`; after a bridge restart press
-`Refresh` and `Load`. `Clear` returns to the generated line and clears `Live`.
+**No Live toggle (9.2).** The input always monitors: a played key overrides the
+lead immediately (the loop's sounding note stops, the input sounds), and on
+release the loop's current note attacks again if it was still sounding, else the
+next step enters. The pedal keeps the override until pedal-up. `Record` still
+stops the sequencer so the take is clean.
+
+**Pitch bend + mod wheel (9.2).** The class is the note from the key; the wheel
+is added on top of it and sent as MPE pitch bend on Bus 5 (no re-attack, no
+class snap). The mod wheel is CC 1 on the same channel. The controller's bend
+range must match `bend_range_semitones` (default 2); set it in the controller's
+own settings if it differs. The movement is recorded with the take, plays back
+with the phrase, and round-trips through melodies and states. The status line
+shows it: `Input: Launchkey 49 - idle - 13 notes - bend +12 ¢ - mod 64`.
+
+**Procedure.** Press Play and play: the first key takes the lead, releasing it
+returns to the loop. Press `Rec`; the count-in is audible and the take opens on
+the next bar line (a note held across the line is in the take from step 0) and
+closes by itself after `Bars`. The take plays back quantised (and on the swung
+grid when the groove swings) with the recorded bend/mod movement; `Vary` /
+`Var every` keep transforming it, `Revert` puts the recorded take back. Type a
+name and press `Save`; after a bridge restart press `Refresh` and `Load`.
+`Clear` returns to the generated line.
 
 Pitch mapping is **pitch-faithful**: a key sounds the nearest frequency class
 of the current set in the register played (a key on a class is exact). There is
@@ -474,7 +489,7 @@ canonical tempo/meter/transport when it installs.
 | `--lead-config <path>` | package default | alternative `config/lead_config.json` |
 | `--lead-in` / `--no-lead-in` | **off** | Stage 9.1 MIDI/QWERTY input for the lead. Needs `--lead`; without it the input is ignored. A missing/failing controller disables only the input |
 | `--lead-in-port <name>` | config | controller name/substring, overriding `config/lead_input_config.json` |
-| `--lead-in-config <path>` | package default | alternative `config/lead_input_config.json` (port, match, channel, quantize, count-in, bars, velocity scale, octave shift) |
+| `--lead-in-config <path>` | package default | alternative `config/lead_input_config.json` (port, match, channel, quantize, count-in, bars, velocity scale, octave shift, bend range) |
 | `--melody-dir <path>` | `melodies/` | Stage 9.1 melody library folder; created on the first save. A relative path resolves from `ji-live/` |
 | `--drone-config <path>` | package default | alternative `config/drone_config.json` (mode + pad parameters; the bus stays `--mpe-config`'s `drone_port`) |
 | `--bridge-args "<flags>"` | empty | extra bridge flags, quoted: `--bridge-args "--change-count 2 --temperature 0.2"` |
@@ -642,10 +657,19 @@ without restarting the interpreter changes the control-bus numbering — re-run
 | `[LEAD-IN] disabled: 2 inputs matched "MIDI"` | The configured substring is ambiguous; use a longer, unique name (the line lists the matches) |
 | `[LEAD-IN] input lost: …` | The controller was unplugged/renamed. Reconnect it and press `Refresh`; the rest of the rig keeps running |
 | A played note sounds twice | Ableton is also listening to the controller. Turn off its Track input (Live → Preferences → MIDI Ports); CoreMIDI allows several apps to open one source |
-| Keys do nothing | `Keys` is off, `Live`/`Rec` is off, a text box has focus, a modifier is held, or the input port is not open. The status line says `… - live` only while monitoring |
+| Keys do nothing | `Keys` is off, the Lead switch is off, a text box has focus, a modifier is held, or the input port is not open. The status line shows `no input port` or an `idle` phase when the input is up |
 | `Rec` is greyed out | The transport is stopped or the input port is not open. Press Play; `Port:` must show the controller |
 | `[LEAD-IN] record needs the transport (press Play)` | The beat clock is frozen while stopped; recording always needs a running transport |
-| The count-in is silent | Correct: no note is captured or sounded before the take's bar line |
+| The count-in is silent | 9.2 made it audible: anything before this build is a stale bridge. Playing during the count-in sounds; notes that end before the bar line are not stored |
+| A played key does not take the lead | The input needs `--lead-in --lead`, an open port, the Lead switch on, and the `Keys` toggle for QWERTY. `source` is irrelevant (there is no Live mode) |
+| The loop note keeps sounding while a key is held | A stale bridge from 9.1 is running (no override). Restart `run/ji_station.py`; the log line is `[LEAD-IN] override on at step N` |
+| The wheel barely moves the pitch / it jumps too far | The **controller's** pitch-bend range does not match `bend_range_semitones` in `config/lead_input_config.json` (default 2). Set it in the controller, or edit the config and press `Refresh` |
+| The pitch bend is very subtle / barely audible | The rig sends **±341** of the 14-bit bend at a full wheel (±200 ¢ at the input). That is **±2 st** at a 48 st instrument but only **±8.3 ¢** at a 2 st instrument — a full wheel must sound like a whole tone. If it does not, the Lead instrument's MPE pitch-bend range is not 48: set the instrument/MPE zone to **48 st** (the range `config/lead_config.json` assumes), or set `bend_range_semitones` in `config/lead_config.json` to the instrument's actual range (e.g. 2) and restart. The same mismatch makes the JI lead's bends 24× too small (at 2 st it plays essentially 12-TET), so fixing it also restores the lead's tuning. `--check` prints both ranges and the resulting interval |
+| I want a wider bend than ±2 st | Raise `bend_range_semitones` in `config/lead_input_config.json` (0–48, the full wheel's span in semitones) and restart. It scales the sent bend proportionally: 12 gives ±12 st at a 48 st instrument. At a 2 st instrument the maximum possible is 2 st whatever the setting |
+| The pitch wheel does nothing | Triage in this order. **1)** Hold a key and move the wheel: the bridge log must print `[LEAD-IN] wheel: pitch bend …` once, and `[LEAD-IN] wheel: sent pitch bend … while note … sounds` once per gesture. **2)** No `wheel:` line: run the read-only probe `uv run --with mido --with python-rtmidi python run/midi_probe.py` and move the wheel — no `pitchwheel` line means the controller is not sending it (check its pitch-wheel assignment/MIDI channel). **3)** The probe prints `pitchwheel` but the bridge does not: the `channel` in `config/lead_input_config.json` is filtering it (0 = omni). **4)** The log says `sent pitch bend …` but you hear nothing: the Lead track/instrument is not applying bend — the track must be MPE-enabled (or have its own bend range set) with a **48 st** range, and the instrument must follow pitch bend; the same range is in `config/lead_config.json`. The GUI status line shows the received wheel (`bend +NN ¢ - mod N`) at ~10 Hz while you move it |
+| The mod wheel does nothing | The rig sends literal CC 1 on Bus 5. Watch the log for `[LEAD-IN] wheel: CC 1 (mod) … received` (one line) and the status line's `mod N`. If the instrument maps a different CC (MPE timbre is 74), remap it in Ableton |
+| The mod wheel does nothing | CC 1 is forwarded literally. If the instrument maps a different CC (e.g. MPE timbre 74), remap it in Ableton; the rig sends only CC 1 |
+| A recorded take has no bend/mod movement | The wheel must move while the note is held during the take (a take keeps the movement from its raw note-on). The log reports `N bend curves, M mod curves` |
 | A take stops early / `recording aborted (transport stop)` | The transport stopped mid-take. The notes played so far are kept and loaded; press Play to hear/continue |
 | `Revert` is greyed out | There is no played line (`source` is `generated`). Record or load a melody first |
 | `Save` is greyed out | Type a melody name; a played take is required (record or load first) |
@@ -653,8 +677,8 @@ without restarting the interpreter changes the control-bus numbering — re-run
 | A melody is gone after a restart | Melodies live in `melodies/` (or `--melody-dir`). Check `[LEAD-IN] melody dir=… melodies=N` at bridge start and the `--melody-dir` path |
 | `Melody` combo is empty | No saved melodies, or the bridge has not replied yet. Press `Refresh`/`Load` after `/ji/lead/melody/list`; check `[LEAD-IN] melody dir=…` |
 | Editing a melody name plays notes | The QWERTY handler ignores keys while a `QLineEdit`/`QComboBox`/spin box has focus; if it still happens, click outside the box first (a stale GUI is the usual cause) |
-| `Live` never comes back after a record | A normal take returns to `played` (the checkbox clears); pressing `Live` again re-enters monitoring. A transport-stop abort keeps `live` |
-| Played notes are stuck after closing the GUI | Closing the GUI does not stop the bridge; but every exit path (Live off, source change, bridge stop) sends note-off + CC 123. If a note hangs, press `Live` off/on or restart the bridge |
+| There is no `Live` checkbox | Correct from 9.2: the input always overrides. A stale GUI may still send the old toggle; the bridge treats it as monitor on/off only |
+| Played notes are stuck after closing the GUI | Closing the GUI does not stop the bridge; but every exit path (source change, Lead off, bridge stop, port loss) sends note-off + CC 123 and clears the override. If a note hangs, restart the bridge |
 | A state recall loses the played line | States saved before 9.1 have no inline notes and load as a generated line. Re-save the state after recording; the new `lead.notes` keys are self-contained |
 | The Fretboard group is missing after an update | A stale GUI process is still running. Close it and restart `run/ji_station.py` (closing the window does **not** stop the bridge) |
 

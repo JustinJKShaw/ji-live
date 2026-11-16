@@ -2536,11 +2536,12 @@ def test_bridge_ui_status() -> None:
         assert lead_args[14] == 1 and lead_args[15] == 0
         assert lead_args[16] == "beat"
         input_args = ui_client.sent[13][1]
-        assert len(input_args) == 14, input_args
+        assert len(input_args) == 16, input_args
         assert input_args[0] == 0 and input_args[1] == 0
         assert input_args[3] == 1.0 and input_args[4] == "1 bar"
         assert input_args[5] == 2 and input_args[6] == 0
         assert input_args[9] == "generated"
+        assert input_args[14] == 0.0 and input_args[15] == 0
         assert ui_client.sent[14][1] == [0]
         melody_state_args = ui_client.sent[15][1]
         assert melody_state_args == [0, "", "", ""]
@@ -3919,7 +3920,8 @@ def run_qt_tests() -> int:
     # --- Stage 9.1 Lead input group -------------------------------------
     assert window.lead_input_port_label.text() == "--"
     assert window.lead_input_keys_checkbox.isChecked() is False
-    assert window.lead_input_live_checkbox.isChecked() is False
+    # Stage 9.2: the Live checkbox is gone (the input always overrides).
+    assert not hasattr(window, "lead_input_live_checkbox")
     assert window.lead_input_quant_knob.value() == 1.0
     assert window.lead_input_count_in_combo.currentText() == "1 bar"
     assert window.lead_input_bars_spin.value() == 2
@@ -3940,8 +3942,8 @@ def run_qt_tests() -> int:
     window._on_status_message("/ji/rhythm/state", [120.0, 4, 4, 1, 1, 1.0])
     window._on_status_message(
         "/ji/lead/input/state",
-        [0, 1, "Launchkey 49", 0.6, "2 bars", 3, 0, 0.0, 13, "played",
-         "intro line", 61, 61, 13.7],
+        [1, 1, "Launchkey 49", 0.6, "2 bars", 3, 0, 0.0, 13, "played",
+         "intro line", 61, 61, 13.7, 12.0, 64],
     )
     assert window.lead_input_port_label.text() == "Launchkey 49"
     assert window.lead_input_count_in_combo.currentText() == "2 bars"
@@ -3951,22 +3953,23 @@ def run_qt_tests() -> int:
     assert not window.lead_input_stop_button.isEnabled()
     assert window.lead_input_revert_button.isEnabled()
     assert window.lead_input_clear_button.isEnabled()
-    assert "Input: Launchkey 49 - idle - 13 notes" in (
-        window.lead_input_status_label.text()
+    assert window.lead_input_status_label.text() == (
+        "Input: Launchkey 49 - idle - 13 notes - bend +12 ¢ - mod 64"
     ), window.lead_input_status_label.text()
     assert window.melody_status_label.text() == (
         "Melody: intro line (13 notes) - played"
     )
     assert not [c for c in fake.calls if str(c[0]).startswith(("set_lead_input", "lead_input", "melody"))], fake.calls
 
-    # Live on (not recording) turns the checkbox on; source changes release keys.
+    # A 14-value (9.1) payload still syncs: bend/mod default to zero.
     window._on_status_message(
         "/ji/lead/input/state",
-        [1, 1, "Launchkey 49", 0.6, "2 bars", 3, 0, 0.0, 13, "live",
-         "", 61, 61, 13.7],
+        [1, 1, "Launchkey 49", 0.6, "2 bars", 3, 0, 0.0, 13, "played",
+         "intro line", 61, 61, 13.7],
     )
-    assert window.lead_input_live_checkbox.isChecked() is True
-    assert "live" in window.lead_input_status_label.text()
+    assert window.lead_input_status_label.text() == (
+        "Input: Launchkey 49 - idle - 13 notes"
+    ), window.lead_input_status_label.text()
 
     # A count-in/recording state enables Stop and shows the phase.
     window._on_status_message(
@@ -3986,10 +3989,6 @@ def run_qt_tests() -> int:
 
     # Buttons send immediately; the quant knob coalesces at ~30 Hz.
     fake.calls.clear()
-    window.lead_input_live_checkbox.setChecked(True)
-    assert ("set_lead_input_enabled", True) in fake.calls, fake.calls
-    window.lead_input_live_checkbox.setChecked(False)
-    assert ("set_lead_input_enabled", False) in fake.calls
     window.lead_input_refresh_button.click()
     assert ("refresh_lead_input",) in fake.calls
     window.lead_input_record_button.click()
@@ -5355,6 +5354,39 @@ def test_lead_input_builders_and_parsers() -> None:
         else:
             raise AssertionError(f"accepted a bad lead input state: {bad}")
 
+    # Stage 9.2: 16 values append the bend cents and the mod wheel; 14 still
+    # parse (bend 0 / mod 0), 15 and 17 are rejected.
+    extended = osc_control.parse_lead_input_state(
+        [1, 1, "Launchkey 49", 0.8, "1 bar", 2, 0, 0.0, 13, "played",
+         "intro line", 61, 61, 13.7, 12.0, 64]
+    )
+    assert extended.last_bend_cents == 12.0 and extended.last_mod == 64
+    assert extended.input_line() == (
+        "Launchkey 49 - idle - 13 notes - bend +12 ¢ - mod 64"
+    ), extended.input_line()
+    assert status.input_line() == "Launchkey 49 - count 3 - 13 notes"
+    for bad_length in (15, 17):
+        try:
+            osc_control.parse_lead_input_state([0] * bad_length)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"accepted a {bad_length}-value input state")
+    # Bend only / mod only stay compact; both zero omit both.
+    assert osc_control.parse_lead_input_state(
+        [1, 1, "L", 1.0, "off", 1, 0, 0.0, 0, "generated", "", -1, -1, 0.0,
+         -7.0, 0]
+    ).input_line() == "L - idle - 0 notes - bend -7 ¢"
+    assert osc_control.parse_lead_input_state(
+        [1, 1, "L", 1.0, "off", 1, 0, 0.0, 0, "generated", "", -1, -1, 0.0,
+         0.0, 5]
+    ).input_line() == "L - idle - 0 notes - mod 5"
+    # The compatibility toggle still exists as a builder (a stale GUI may send
+    # it); it toggles the input monitor only.
+    assert osc_control.build_set_lead_input_enabled(False) == (
+        "/ji/lead/input/set_enabled",
+        [0],
+    )
     assert osc_control.parse_melody_list([2, "Alpha", "zeta"]) == (
         "Alpha",
         "zeta",
@@ -5391,6 +5423,9 @@ def test_lead_input_builders_and_parsers() -> None:
     ui_source = (_ROOT / "ui" / "ji_ui.py").read_text(encoding="utf-8")
     assert "from control.lead_input import key_midi" in ui_source, ui_source[:200]
     assert "key_midi(text, self._keyboard_octave)" in ui_source
+    # Stage 9.2: the Live checkbox and its handler are gone.
+    assert "lead_input_live_checkbox" not in ui_source, "the Live widget is back"
+    assert "_on_lead_input_live" not in ui_source
     print("  builders, validators, 16/17-value lead state, 14-value input state,")
     print("  melody list/state, status lines and store, QWERTY helper import")
 

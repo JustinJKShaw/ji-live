@@ -344,8 +344,43 @@ def test_lead_in_flags() -> None:
     text = out.getvalue() + err.getvalue()
     assert code in (0, 1), code
     assert "lead input config ok" in text, text
+    assert "bend=2 st" in text, text
+    assert "[CHECK] lead bend:" in text, text
+    assert "must equal the Lead instrument's MPE pitch-bend range" in text, text
+    assert "8.3 ¢ if the instrument is 2 st" in text, text
     assert "melody dir ok" in text and "melodies=0" in text, text
     print("  defaults, forwarding, ignored warning, dry-run, --check")
+
+
+def test_midi_probe_helpers() -> None:
+    print("\n=== Test 5b: the read-only controller probe stays mido-free ===")
+    import types
+
+    before = "mido" in sys.modules
+    from run import midi_probe
+
+    assert ("mido" in sys.modules) == before, "run/midi_probe imported mido eagerly"
+    names = ("Launchkey 49 MIDI", "Launchkey 49 DAW", "Other")
+    assert midi_probe.choose_port(names, "DAW") == "Launchkey 49 DAW"
+    assert midi_probe.choose_port(names, "launchkey 49 midi", "exact") == (
+        "Launchkey 49 MIDI"
+    )
+    for needle, match in (("Nope", "contains"), ("Launchkey", "contains"), ("launchkey", "exact")):
+        try:
+            midi_probe.choose_port(names, needle, match)
+        except ValueError as exc:
+            assert "available" in str(exc) or "more specific" in str(exc), exc
+        else:
+            raise AssertionError(f"probe resolved {needle!r} ({match})")
+    wheel = types.SimpleNamespace(type="pitchwheel", channel=0, pitch=-4096)
+    assert "pitchwheel" in midi_probe.format_message(wheel)
+    assert "-4096" in midi_probe.format_message(wheel)
+    mod = types.SimpleNamespace(type="control_change", channel=0, control=1, value=64)
+    assert "mod wheel" in midi_probe.format_message(mod)
+    assert midi_probe.format_message(
+        types.SimpleNamespace(type="clock", channel=0)
+    ) == ""
+    print("  port matching, message formatting, no eager mido import")
 
 
 def test_format_command() -> None:
@@ -487,6 +522,18 @@ def test_readme_links() -> None:
     assert "docs/README_stage8_5.md" in text
     assert "docs/README_stage9_0.md" in text
     assert "docs/README_stage9_1.md" in text
+    assert "docs/README_stage9_2.md" in text
+    stage92_doc = ROOT / "docs" / "README_stage9_2.md"
+    assert stage92_doc.exists(), stage92_doc
+    stage92 = stage92_doc.read_text(encoding="utf-8")
+    for heading in (
+        "Human acceptance checklist",
+        "override",
+        "bend_for_frequency",
+        "bend_points",
+        "count-in",
+    ):
+        assert heading in stage92, heading
     stage91_doc = ROOT / "docs" / "README_stage9_1.md"
     assert stage91_doc.exists(), stage91_doc
     stage91 = stage91_doc.read_text(encoding="utf-8")
@@ -528,7 +575,7 @@ def test_readme_links() -> None:
         "ji-performance-state",
     ):
         assert heading in body, heading
-    print("  README links START_HERE + 8.3d/8.5/9.0; stage docs have the checklists")
+    print("  README links START_HERE + 8.3d/8.5/9.0/9.2; stage docs have checklists")
 
 
 def run() -> None:
@@ -538,6 +585,7 @@ def run() -> None:
     test_extra_args()
     test_dry_run()
     test_check_mode_is_side_effect_free()
+    test_midi_probe_helpers()
     test_format_command()
     test_ji_start_scd()
     test_lead_in_flags()

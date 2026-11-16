@@ -122,7 +122,7 @@ try:  # Support both ``python -m control.ji_bridge`` and direct execution.
         PHASE_STATE,
         BeatQuantizer,
     )
-    from .rhythm import RhythmEngine, RhythmState, bar_quarters
+    from .rhythm import RhythmEngine, RhythmState
 except ImportError:  # pragma: no cover - exercised only by direct execution
     import arp as arp_module  # type: ignore[no-redef]
     import bass as bass_module  # type: ignore[no-redef]
@@ -162,7 +162,7 @@ except ImportError:  # pragma: no cover - exercised only by direct execution
         PHASE_STATE,
         BeatQuantizer,
     )
-    from rhythm import RhythmEngine, RhythmState, bar_quarters  # type: ignore[no-redef]
+    from rhythm import RhythmEngine, RhythmState  # type: ignore[no-redef]
 
 FUNDAMENTAL = 220.0
 INITIAL_RATIOS = [1.0, 9.0 / 8.0, 5.0 / 4.0, 4.0 / 3.0, 3.0 / 2.0, 5.0 / 3.0, 15.0 / 8.0]
@@ -393,6 +393,8 @@ class JIBridge:
             -1,
             -1,
             0.0,
+            0.0,
+            0,
         ]
         self.server = MutationOSCServer(
             self.engine,
@@ -1449,38 +1451,27 @@ class JIBridge:
         self._send_ui_message(LEAD_INPUT_STATE_ADDRESS, args)
 
     def _on_lead_input_enabled(self, enabled: bool) -> None:
-        """The Live toggle: immediate, and the scheduler is stopped not muted."""
+        """Compatibility ``set_enabled``: input monitor on/off, never a source.
 
-        rig = self._lead_rig()
-        if self.lead_input is None or rig is None:
+        The Live toggle is gone (9.2): the input always overrides.  A stale GUI
+        may still send this; it only mutes/unmutes the input monitor and can
+        never start or stop the sequencer.  One log line, then ``input/state``.
+        """
+
+        if self.lead_input is None:
             print(
                 "[LEAD-IN] input unavailable: start with --lead-in --lead",
                 file=sys.stderr,
             )
             self._send_lead_input_state()
             return
-        if enabled:
-            rig.set_source("live")
-        else:
-            if self.lead_input is not None:
-                self.lead_input.release_all()
-            name = "played" if rig.engine.motif.source == "played" else "generated"
-            at_time: float | None = None
-            if self.rhythm.running:
-                state = self.rhythm.state
-                bar = max(1e-9, bar_quarters(state.meter_num, state.meter_den))
-                target = math.ceil(
-                    (self.rhythm.beat_at() + 1e-9) / bar
-                ) * bar
-                at_time = self.rhythm.clock.time_of_beat(target)
-                print(
-                    f"[LEAD-IN] live off; phrase resumes at bar "
-                    f"{int(round(target / bar)) + 1}"
-                )
-            else:
-                print("[LEAD-IN] live off; phrase resumes on Play")
-            rig.set_source(name, at_time=at_time)
-        self._send_lead_state()
+        try:
+            active = self.lead_input.set_monitor(bool(enabled))
+        except Exception as exc:  # input is never fatal
+            print(f"[LEAD-IN] monitor change failed: {exc}", file=sys.stderr)
+            self._send_lead_input_state()
+            return
+        print(f"[LEAD-IN] input monitor {'on' if active else 'off'}")
         self._send_lead_input_state()
 
     def _set_lead_input_setting(

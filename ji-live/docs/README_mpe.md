@@ -193,13 +193,22 @@ leaves everything else running.
 Because Bus 5 is a separate port, it is a ready FX insert point: route it to an
 Ableton **Lead** track with any instrument and any chain.
 
-**Stage 9.1 input is Python-only.** The MIDI controller / QWERTY input is read
-by the Python bridge (lazy `mido` input); it adds no MPE channel, no bus and no
-sclang change, and plays the same Bus 5 output described here. Keep Ableton's
-Track input for that controller off so notes do not double. The lead is
-transport-gated (starts on a transport start at phrase step 0, stops with
+**Stage 9.1/9.2 input is Python-only.** The MIDI controller / QWERTY input is
+read by the Python bridge (lazy `mido` input); it adds no MPE channel, no bus
+and no sclang change, and plays the same Bus 5 output described here. Keep
+Ableton's Track input for that controller off so notes do not double. The lead
+is transport-gated (starts on a transport start at phrase step 0, stops with
 note-off + CC 123) and groove-linked (the drum groove's swing is pushed once per
 change).
+
+**Stage 9.2 expression rides the same member channel.** Pitch bend and CC 1
+(mod wheel) are sent on Bus 5's existing member channel 2; there is no extra
+channel or bus and nothing to change in the MPE zone. The input's controller
+bend range (`bend_range_semitones` in `config/lead_input_config.json`, default
+2) is separate from Bus 5's MPE range (48 in `config/lead_config.json`); the
+wheel value is converted relative to the note number already sounding. The
+bend/mod curves are recorded with a played take and replayed on the same
+channel, so Ableton sees exactly the same MPE stream shape.
 
 **Drone modes (same Bus 1, same member channel 2, 48 st).**
 

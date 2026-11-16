@@ -119,6 +119,8 @@ def _as_float(value: Any, label: str) -> float:
 
 
 def _note_mapping(note: LeadNote) -> dict[str, Any]:
+    """One note; the Stage 9.2 curves are always written (may be [])."""
+
     return {
         "step": int(note.step),
         "length": int(note.length),
@@ -126,11 +128,20 @@ def _note_mapping(note: LeadNote) -> dict[str, Any]:
         "octave": int(note.octave),
         "ratio_hint": float(note.ratio_hint),
         "velocity": int(note.velocity),
+        "bend_points": [
+            [float(offset), float(cents)]
+            for offset, cents in note.bend_points
+        ],
+        "mod_points": [
+            [float(offset), int(value)] for offset, value in note.mod_points
+        ],
     }
 
 
 def _note_from_mapping(value: Any, label: str) -> LeadNote:
     data = _as_mapping(value, label)
+    bend_raw = data.get("bend_points")
+    mod_raw = data.get("mod_points")
     try:
         note = LeadNote(
             step=_as_int(data.get("step"), f"{label}.step"),
@@ -139,6 +150,8 @@ def _note_from_mapping(value: Any, label: str) -> LeadNote:
             octave=_as_int(data.get("octave"), f"{label}.octave"),
             ratio_hint=_as_float(data.get("ratio_hint"), f"{label}.ratio_hint"),
             velocity=_as_int(data.get("velocity"), f"{label}.velocity"),
+            bend_points=() if bend_raw is None else bend_raw,
+            mod_points=() if mod_raw is None else mod_raw,
         )
     except MelodyError:
         raise

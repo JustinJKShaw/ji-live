@@ -3852,23 +3852,17 @@ class MainWindow(QMainWindow):
         self.lead_input_keys_checkbox = QCheckBox("Keys")
         self.lead_input_keys_checkbox.setToolTip(
             "QWERTY a w s e d f t g y h u j play the mapped line; z/x shift the "
-            "octave. GUI-local: keys only sound while Live or Rec is on."
+            "octave. GUI-local: the input always monitors, and a played key "
+            "takes the lead from the loop."
         )
         self.lead_input_keys_checkbox.toggled.connect(self._on_lead_input_keys)
         row.addWidget(self.lead_input_keys_checkbox)
 
-        self.lead_input_live_checkbox = QCheckBox("Live")
-        self.lead_input_live_checkbox.setToolTip(
-            "Monitor the input: the sequencer stops while Live is on and "
-            "resumes on the next bar line when it is turned off."
-        )
-        self.lead_input_live_checkbox.toggled.connect(self._on_lead_input_live)
-        row.addWidget(self.lead_input_live_checkbox)
-
         self.lead_input_record_button = QPushButton("Rec")
         self.lead_input_record_button.setMinimumHeight(24)
         self.lead_input_record_button.setToolTip(
-            "Record the played line from the next bar line (needs Play)."
+            "Record the played line from the next bar line (needs Play); the "
+            "count-in is audible and the take starts on the bar."
         )
         self.lead_input_record_button.clicked.connect(self._on_lead_input_record)
         row.addWidget(self.lead_input_record_button)
@@ -3921,7 +3915,8 @@ class MainWindow(QMainWindow):
             LEAD_INPUT_COUNT_IN_DEFAULT
         )
         self.lead_input_count_in_combo.setToolTip(
-            "Silent count-in before the take starts on the next bar line."
+            "Audible count-in: keys sound through it and a note held across the "
+            "bar line is in the take from step 0."
         )
         self.lead_input_count_in_combo.currentTextChanged.connect(
             self._on_lead_input_count_in
@@ -3995,7 +3990,6 @@ class MainWindow(QMainWindow):
             self.lead_input_port_label,
             self.lead_input_refresh_button,
             self.lead_input_keys_checkbox,
-            self.lead_input_live_checkbox,
             self.lead_input_record_button,
             self.lead_input_stop_button,
             self.lead_input_revert_button,
@@ -4023,12 +4017,6 @@ class MainWindow(QMainWindow):
         if not checked:
             self._release_keys()
         self._set_message(f"Keys {'on' if checked else 'off'}")
-
-    def _on_lead_input_live(self, checked: bool) -> None:
-        if self._lead_input_sync:
-            return
-        self._guard(self.controller.set_lead_input_enabled, bool(checked))
-        self._set_message(f"Live {'on' if checked else 'off'}")
 
     def _on_lead_input_record(self) -> None:
         self._guard(self.controller.lead_input_record)
@@ -4069,12 +4057,10 @@ class MainWindow(QMainWindow):
         try:
             if status is not None:
                 self.lead_input_port_label.setText(status.port_name or "(none)")
-                self.lead_input_live_checkbox.setChecked(bool(status.live))
                 if status.count_in in LEAD_INPUT_COUNT_INS:
                     self.lead_input_count_in_combo.setCurrentText(status.count_in)
                 self.lead_input_bars_spin.setValue(int(status.bars))
                 self.lead_input_quant_knob.set_value(status.quantize, emit=False)
-            live = bool(status.live) if status is not None else False
             port_ok = bool(status.port_ok) if status is not None else False
             source = status.source if status is not None else "generated"
             rhythm = self.store.rhythm
@@ -4085,9 +4071,8 @@ class MainWindow(QMainWindow):
             )
             self.lead_input_revert_button.setEnabled(source == "played")
             self.lead_input_clear_button.setEnabled(source == "played")
-            self.lead_input_live_checkbox.setEnabled(port_ok)
             self.lead_input_refresh_button.setEnabled(True)
-            if not live:
+            if not port_ok:
                 self._release_keys()
         finally:
             self._lead_input_sync = False

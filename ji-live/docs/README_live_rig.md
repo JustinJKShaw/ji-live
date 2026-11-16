@@ -272,7 +272,7 @@ keeps its own `lastTarget`.
 The first four BlackHole channels are used. The remaining 12 Stage 5 output
 channels are unused by this rig.
 
-### Lead input (Stage 9.1) adds no bus
+### Lead input (Stage 9.1/9.2) adds no bus
 
 The Stage 9.1 lead input (MIDI controller / QWERTY) is **Python-only**. It
 plays the existing lead output on `IAC Driver Bus 5` and adds no audio bus, no
@@ -280,7 +280,9 @@ MIDI bus and no sclang address. The controller is opened by the bridge's lazy
 `mido` input adapter; its notes are mapped to the current JI set and sent to
 Bus 5 exactly like the generated lead. Ableton must **not** listen to the same
 controller (Track input off) or its raw note doubles the snapped Bus 5 note.
-See `docs/README_stage9_1.md`.
+Stage 9.2 (override + pitch-bend/mod-wheel expression) reuses the same
+`IAC Driver Bus 5` output and member channel; it also adds no bus. See
+`docs/README_stage9_1.md` and `docs/README_stage9_2.md`.
 
 ### Private loop FX buses (Stage 9.0)
 

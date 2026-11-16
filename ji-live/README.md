@@ -13,7 +13,9 @@ a per-loop post-`PitchShift` FX bus with a harmonic-series delay (Cascade and
 continuous Delay, free or fixed musical time) and repairs the loop count-in.
 Stage 9.1 makes the lead playable — MIDI controller or QWERTY, nearest class of
 the current set, bar-aligned recording/quantisation, saved melodies, and the
-played phrase inside the existing lead Variation system with Revert.
+played phrase inside the existing lead Variation system with Revert. Stage 9.2
+lets the input override the loop live, makes the count-in audible, and adds
+recorded pitch-bend / mod-wheel expression.
 
 **Current status:** the owner reports the live GUI/audio/MIDI rig works well.
 Stage 7/7.1, Stage 8.1, and Stage 8.2 are human-tested, accepted, and in live
@@ -112,7 +114,7 @@ session-only. Design and checklist:
 [docs/README_stage9_0.md](docs/README_stage9_0.md). Prompt:
 [docs/prompts/PROMPT_stage9_0_harmonic_delay.md](docs/prompts/PROMPT_stage9_0_harmonic_delay.md).
 
-**Stage 9.1 is built (2026-11-14) and awaits the owner's acceptance.** It makes
+**Stage 9.1 is owner-confirmed functional (2026-11-14).** It makes
 the lead **playable**: a MIDI controller or the QWERTY keyboard plays notes that
 sound as the **nearest frequency class** of the current set (in the register
 played), the line records on a silent bar-line count-in and is quantised to the
@@ -127,6 +129,24 @@ sclang change. Start with `--lead --lead-in` (both off by default). Design,
 mapping maths, the quantiser, OSC and the human checklist:
 [docs/README_stage9_1.md](docs/README_stage9_1.md). Prompt:
 [docs/prompts/PROMPT_stage9_1_lead_input.md](docs/prompts/PROMPT_stage9_1_lead_input.md).
+
+**Stage 9.2 is built (2026-11-14) and awaits the owner's acceptance.** It makes
+the lead feel like one continuous instrument: the input **always overrides** the
+loop (no `Live` toggle — a played key releases the loop's sounding note and the
+loop's attack resumes on key-up when its gate is still open, else on the next
+step), the **count-in is audible** (a key held across the bar line is in the
+take from step 0), and **moving pitch bend and mod wheel** are output on top of
+the class chosen at key-down and **recorded with the take**, replayed by the
+scheduler with the phrase and round-tripped through melodies and performance
+states. `source=live` is a deprecated alias; `record` still stops the sequencer
+for a clean take. The `Lead` input group loses its `Live` checkbox and its
+status line shows `bend +12 ¢ - mod 64`; the window stays 1280×1258. The
+controller's bend range is `bend_range_semitones` in
+`config/lead_input_config.json` (default 2; Bus 5 stays 48 st). The input is
+**Python-only** and adds no bus, SynthDef or sclang change. Design, the exact
+override sequence, the bend maths, the data model and the human checklist:
+[docs/README_stage9_2.md](docs/README_stage9_2.md). Prompt:
+[docs/prompts/PROMPT_stage9_2_lead_override_expression.md](docs/prompts/PROMPT_stage9_2_lead_override_expression.md).
 
 **Stage 8.8 is built (2026-11-05) and awaits the owner's acceptance.** It adds a
 read-only **Fretboard** improvisation aid: for every ratio in the live JI set it
@@ -220,7 +240,8 @@ ji-live/
 ├── ji_start.scd               # NEW: the only sclang file you evaluate
 ├── startup.scd                # server/IO/SynthDefs (loaded by ji_start.scd)
 ├── run/
-│   └── ji_station.py          # NEW: the only Python command (bridge + GUI)
+│   ├── ji_station.py          # the only Python command (bridge + GUI)
+│   └── midi_probe.py          # Stage 9.2 read-only controller/wheel probe
 ├── synthdefs/                 # SuperCollider SynthDefs (do not edit casually)
 │   ├── ji_loop_voice.scd      # Stage 9.0 normal/reverse/varispeed/granular+morph+FX send
 │   ├── ji_harmonic_delay.scd  # Stage 9.0 per-loop Cascade/Delay harmonic FX
@@ -234,8 +255,9 @@ ji-live/
 │   ├── arp.py                 # Stage 6/8.3b/8.3c arp: settings, orders,
 │   │                          # beat sync, evolution
 │   ├── bass.py                # Stage 8.3a monophonic JI bass voice
-│   ├── lead.py                # Stage 8.3d/9.1 lead: motif, variations, played takes
-│   ├── lead_input.py          # Stage 9.1 nearest-class map, input port, recorder
+│   ├── lead.py                # Stage 8.3d/9.1/9.2 lead: motif, variations,
+│   │                          # played takes, override, expression playback
+│   ├── lead_input.py          # Stage 9.1/9.2 map, input port, recorder, bend/mod
 │   ├── melody.py              # Stage 9.1 melodies/<name>.json library
 │   ├── drone.py               # Stage 6 hold drone + Stage 8.3d pulse/bend
 │   ├── glide.py               # Stage 8.4.1 class-melt planner + scheduler
@@ -259,7 +281,8 @@ ji-live/
 │   ├── test_bass.py
 │   ├── test_arp.py            # arp settings/orders/timing/bridge
 │   ├── test_lead.py           # Stage 8.3d/9.1 lead: motif/consistency/scheduler
-│   ├── test_lead_input.py     # Stage 9.1 map/quantise/record/library/played motif
+│   ├── test_lead_input.py     # Stage 9.1/9.2 map/record/library/override order
+│   ├── test_lead_expression.py # Stage 9.2 bend maths/override/recorder/count-in
 │   ├── test_drone.py          # Stage 8.3d drone: hold/pulse/bend
 │   ├── test_home.py           # Stage 8.4 distance/plan/return/back/drift
 │   ├── test_glide.py          # Stage 8.4.1 class melt + bridge cancel/fan-out
@@ -292,6 +315,7 @@ ji-live/
     ├── README_stage8_8.md     # 12-TET fretboard improvisation aid
     ├── README_stage9_0.md     # loop FX bus + harmonic-series delay + count-in fix
     ├── README_stage9_1.md     # lead MIDI/QWERTY input, recording, melodies
+    ├── README_stage9_2.md     # lead override, audible count-in, bend/mod curves
     ├── START_HERE_stage8_1.txt … _stage8_3.txt   (archival)
     ├── README_live_rig.md
     ├── README_mpe.md
@@ -372,6 +396,7 @@ uv run --with python-osc python tests/test_bass.py
 uv run --with python-osc python tests/test_arp.py
 uv run --with python-osc python tests/test_lead.py
 uv run --with python-osc python tests/test_lead_input.py
+uv run --with python-osc python tests/test_lead_expression.py
 uv run --with python-osc python tests/test_drone.py
 uv run --with python-osc python tests/test_home.py
 uv run --with python-osc python tests/test_state.py
@@ -387,6 +412,9 @@ uv run python tests/test_fretboard.py          # Stage 8.8 (stdlib only)
 # Stage 9.1 lead input: tests/test_lead_input.py (mapping/quantiser/recorder/
 # port/rig/record machine/library/played motif/inline states) + test_lead,
 # test_state, test_ui --pure and test_startup additions
+# Stage 9.2 lead override + expression: tests/test_lead_expression.py (bend
+# maths/port/rig/recorder/validation/scheduler/override/count-in) + additive
+# test_lead_input, test_lead, test_state, test_ui --pure and test_startup checks
 # Stage 9.0 loop FX + count-in: tests/test_ui.py --pure (harm constants/parser/
 # builders/fx_fire, ceil count-in), the Qt Harm row, and the human-run
 # tests/sc/test_loop_edit.scd / test_live_rig.scd
@@ -409,6 +437,7 @@ python -m tests.test_ui --pure
 
 - [START HERE — start/stop/flag sheet](docs/START_HERE.md)
 - [GUI parameter reference — every control, one line each](docs/GUI_PARAMETERS.md)
+- [Stage 9.2 lead override, audible count-in, pitch-bend / mod-wheel expression](docs/README_stage9_2.md)
 - [Stage 9.1 lead MIDI/QWERTY input, recording, quantisation, saved melodies](docs/README_stage9_1.md)
 - [Stage 9.0 loop FX bus + harmonic-series delay + count-in repair](docs/README_stage9_0.md)
 - [Stage 8.8 12-TET fretboard improvisation aid](docs/README_stage8_8.md)
@@ -427,6 +456,7 @@ python -m tests.test_ui --pure
 - [Stage 8.4 home sets / journeys / smooth return prompt](docs/prompts/PROMPT_stage8_4_home_return.md)
 - [Stage 8.4.1 stepwise/replaced class-glide patch prompt](docs/prompts/PROMPT_stage8_4_1_stepwise_glide.md)
 - [Stage 8.5 performance state save/recall prompt](docs/prompts/PROMPT_stage8_5_state_recall.md)
+- [Stage 9.2 lead override + expression prompt](docs/prompts/PROMPT_stage9_2_lead_override_expression.md)
 - [Stage 9.1 lead input prompt](docs/prompts/PROMPT_stage9_1_lead_input.md)
 - [Stage 9.0 loop FX bus + harmonic-series delay prompt](docs/prompts/PROMPT_stage9_0_harmonic_delay.md)
 - [Stage 8.8 12-TET fretboard improvisation aid prompt](docs/prompts/PROMPT_stage8_8_fretboard.md)

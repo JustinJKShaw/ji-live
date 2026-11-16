@@ -821,6 +821,8 @@ _STATE_NOTE_STEPS = 1_000_000
 
 
 def _lead_note_mapping(note: lead_module.LeadNote) -> dict[str, Any]:
+    """One inline note; the Stage 9.2 curves are always written (may be [])."""
+
     return {
         "step": int(note.step),
         "length": int(note.length),
@@ -828,11 +830,26 @@ def _lead_note_mapping(note: lead_module.LeadNote) -> dict[str, Any]:
         "octave": int(note.octave),
         "ratio_hint": float(note.ratio_hint),
         "velocity": int(note.velocity),
+        "bend_points": [
+            [float(offset), float(cents)]
+            for offset, cents in note.bend_points
+        ],
+        "mod_points": [
+            [float(offset), int(value)] for offset, value in note.mod_points
+        ],
     }
 
 
 def _lead_note_from(value: Any, label: str) -> lead_module.LeadNote:
     data = _as_mapping(value, label)
+    if "bend_points" in data and data["bend_points"] is not None:
+        bend_points: Any = data["bend_points"]
+    else:
+        bend_points = ()
+    if "mod_points" in data and data["mod_points"] is not None:
+        mod_points: Any = data["mod_points"]
+    else:
+        mod_points = ()
     try:
         note = lead_module.LeadNote(
             step=_as_int(data.get("step"), f"{label}.step"),
@@ -841,6 +858,8 @@ def _lead_note_from(value: Any, label: str) -> lead_module.LeadNote:
             octave=_as_int(data.get("octave"), f"{label}.octave"),
             ratio_hint=_as_float(data.get("ratio_hint"), f"{label}.ratio_hint"),
             velocity=_as_int(data.get("velocity"), f"{label}.velocity"),
+            bend_points=bend_points,
+            mod_points=mod_points,
         )
     except StateError:
         raise

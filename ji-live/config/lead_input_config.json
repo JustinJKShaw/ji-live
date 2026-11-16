@@ -6,5 +6,6 @@
   "count_in": "1 bar",
   "bars": 2,
   "velocity_scale": 1.0,
-  "octave_shift": 0
+  "octave_shift": 0,
+  "bend_range_semitones": 2.0
 }

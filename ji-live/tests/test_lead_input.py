@@ -36,6 +36,7 @@ import control.lead_input as input_module
 import control.melody as melody_module
 import control.state as state_module
 import ui.osc_control  # noqa: F401 - import-time behaviour is under test
+import ui.osc_control as ui_osc_control
 from control.lead import (
     LeadConfig,
     LeadEngine,
@@ -125,6 +126,7 @@ class FakeMido:
         channel: int = 0,
         control: int = 0,
         value: int = 0,
+        pitch: int = 0,
     ) -> None:
         assert self.callback is not None
         self.callback(
@@ -135,6 +137,7 @@ class FakeMido:
                 channel=channel,
                 control=control,
                 value=value,
+                pitch=pitch,
             )
         )
 
@@ -187,6 +190,8 @@ def _mapper(midi: int, velocity: int) -> MappedNote:
 def _lead(output=None) -> LeadRig:
     rig = LeadRig(LeadConfig(), output=output if output is not None else FakePort())
     rig.engine.on_set(RATIOS, 1.0, FUNDAMENTAL)
+    # Stage 9.2: note entry is gated by port_ok + monitor + Lead enabled.
+    rig.engine.set_enabled(True)
     return rig
 
 
@@ -502,13 +507,18 @@ def test_port_adapter() -> None:
     fake.feed("note_on", note=60, velocity=0)
     fake.feed("note_off", note=62, velocity=64)
     fake.feed("control_change", control=64, value=127)
-    fake.feed("pitchwheel", value=100)
+    fake.feed("pitchwheel", pitch=-2048)
+    fake.feed("control_change", control=1, value=64)
+    fake.feed("control_change", control=74, value=99)
+    fake.feed("aftertouch", value=40)
     fake.feed("clock")
     assert events == [
         ("on", 60, 100),
         ("off", 60, 0),
         ("off", 62, 0),
         ("sustain", 64, 127),
+        ("bend", -2048, 0),
+        ("mod", 1, 64),
     ], events
     port.close()
     assert fake.closed == 1
@@ -540,7 +550,15 @@ def test_port_adapter() -> None:
     channel_port.open()
     fake2.feed("note_on", note=60, velocity=100, channel=0)
     fake2.feed("note_on", note=61, velocity=100, channel=1)
-    assert filtered == [("on", 61, 100)]
+    fake2.feed("pitchwheel", pitch=200, channel=0)
+    fake2.feed("pitchwheel", pitch=200, channel=1)
+    fake2.feed("control_change", control=1, value=90, channel=0)
+    fake2.feed("control_change", control=1, value=90, channel=1)
+    assert filtered == [
+        ("on", 61, 100),
+        ("bend", 200, 0),
+        ("mod", 1, 90),
+    ], filtered
 
     # A disappearing device is one [LEAD-IN] line, never a fatal error.
     lost = MidiInputPort("Launchkey", callback=lambda *a: None, port=FakeMido())
@@ -554,6 +572,7 @@ def test_port_adapter() -> None:
     assert text.count("input lost") == 1, text
     assert "the rest of the rig continues" in text
     print("  contains/exact, 0/>1 matches raise, velocity 0 off, sustain, channel,")
+    print("  pitchwheel/CC1 translated with the channel filter, others ignored")
     print("  lost device reported once")
 
 
@@ -566,22 +585,20 @@ def test_input_rig_notes() -> None:
     print("\n=== Test 6: input rig note ownership (fake output + fake port) ===")
     rig, lead, rhythm, fake = _input_rig()
     output = lead.output
-    # Silent while the source is generated.
-    rig.note_on(61, 100)
-    assert output._output.messages == []
-    lead.set_source("live")
+    # Stage 9.2: a key sounds at any time (no Live toggle); with the mod wheel
+    # at 0 the note-on is preceded by CC 1 0 (the input always states it).
     rig.note_on(61, 100)
     kinds = output._output.types()
-    assert kinds == ["pitchwheel", "note_on"], kinds
+    assert kinds == ["pitchwheel", "control_change", "note_on"], kinds
     # The bend precedes the note-on and the mapped frequency is the nearest class.
     note_on = output._output.with_type("note_on")[0]
     assert note_on.note == 61
     assert note_on.channel == 1  # member channel 2 -> mido index 1
 
-    # Retrigger releases the held note before the next bend/note-on.
+    # Retrigger releases the held note before the next bend/CC/note-on.
     rig.note_on(64, 90)
     kinds = output._output.types()
-    assert kinds[-3:] == ["note_off", "pitchwheel", "note_on"], kinds
+    assert kinds[-4:] == ["note_off", "pitchwheel", "control_change", "note_on"], kinds
 
     # A mismatched note-off is ignored (the held note keeps sounding).
     before = len(output._output.messages)
@@ -602,7 +619,6 @@ def test_input_rig_notes() -> None:
 
     # Velocity scaling and octave-base mapping still use the set.
     rig2, lead2, _rhythm2, _fake2 = _input_rig(velocity_scale=0.5)
-    lead2.set_source("live")
     rig2.note_on(69, 127)
     note = lead2.output._output.with_type("note_on")[-1]
     assert note.velocity == 64, note.velocity
@@ -613,7 +629,6 @@ def test_input_rig_notes() -> None:
 def test_input_rig_sustain() -> None:
     print("\n=== Test 7: sustain (CC 64) defers the note-off ===")
     rig, lead, _rhythm, fake = _input_rig()
-    lead.set_source("live")
     rig.note_on(60, 100)
     fake.feed("control_change", control=64, value=127)
     fake.feed("note_off", note=60)
@@ -633,7 +648,6 @@ def test_record_state_machine() -> None:
     print("\n=== Test 8: record state machine ===")
     # Count-in ceil is pure and covered above; here: skip, cancel, keep, abort.
     rig, lead, rhythm, fake = _input_rig()
-    lead.set_source("live")
     rhythm._beat = 0.0
     assert rig.start_record()
     assert rig.state == "recording", rig.state
@@ -650,7 +664,6 @@ def test_record_state_machine() -> None:
 
     # Second Rec during the count-in skips it (window opens at the next bar).
     rig, lead, rhythm, _fake = _input_rig(count_in="2 bars")
-    lead.set_source("live")
     rhythm._beat = 4.2
     assert rig.start_record()
     assert rig.state == "count_in"
@@ -664,7 +677,6 @@ def test_record_state_machine() -> None:
 
     # Stop during the count-in cancels without a take or a log line.
     rig, lead, rhythm, _fake = _input_rig(count_in="1 bar")
-    lead.set_source("live")
     rhythm._beat = 1.0
     assert rig.start_record()
     assert rig.state == "count_in"
@@ -677,7 +689,6 @@ def test_record_state_machine() -> None:
 
     # A transport stop finishes the take, keeps it and does not auto-play.
     rig, lead, rhythm, fake = _input_rig()
-    lead.set_source("live")
     rhythm._beat = 0.0
     assert rig.start_record()
     fake.feed("note_on", note=61, velocity=100)
@@ -688,13 +699,12 @@ def test_record_state_machine() -> None:
         rig.transport_stopped()
     assert "recording aborted (transport stop); take kept" in buffer.getvalue()
     assert len(rig.take_notes) == 1
-    assert lead.source == "live"  # the Live toggle was on
+    assert lead.source == "played"  # the take is ready for the next Play
     assert not lead.scheduler.is_running
     rig.stop()
 
     # A transport stop during a count-in cancels it (no silent take).
     rig, lead, rhythm, _fake = _input_rig(count_in="1 bar")
-    lead.set_source("live")
     rhythm._beat = 1.0
     assert rig.start_record() and rig.state == "count_in"
     rhythm.set_running(False)
@@ -706,7 +716,6 @@ def test_record_state_machine() -> None:
 
     # An empty take keeps the current line (never installs a silent motif).
     rig, lead, rhythm, _fake = _input_rig()
-    lead.set_source("live")
     rhythm._beat = 0.0
     assert rig.start_record() and rig.state == "recording"
     rhythm.set_running(False)
@@ -715,12 +724,11 @@ def test_record_state_machine() -> None:
         assert rig.finish_recording() == ()
     assert "recorded 0 notes" in buffer.getvalue()
     assert lead.engine.motif.source == "generated"
-    assert lead.source == "played"
+    assert lead.source == "generated"  # the label matches the line that stayed
     rig.stop()
 
     # A take can be loaded as the motif and reverted.
     rig, lead, rhythm, fake = _input_rig()
-    lead.set_source("live")
     rhythm._beat = 0.0
     assert rig.start_record()
     fake.feed("note_on", note=61, velocity=100)
@@ -1174,6 +1182,133 @@ def test_no_mido_import() -> None:
     print("  lead_input, melody, lead, ji_bridge and osc_control import cleanly")
 
 
+def test_stage92_count_in_override_and_state() -> None:
+    print("\n=== Test 14: Stage 9.2 count-in, override order, 16-value state ===")
+    # The count-in is audible; a key held at the bar line is seeded at step 0.
+    rig, lead, rhythm, fake = _input_rig(count_in="1 bar")
+    rhythm._beat = 0.0
+    assert rig.start_record() and rig.state == "count_in"
+    output = lead.output._output
+    fake.feed("note_on", note=61, velocity=108)
+    assert output.with_type("note_on"), "the count-in must sound"
+    rig._begin_recording()
+    rhythm._beat = rig._start_beat + 4.0
+    notes = rig.finish_recording()
+    assert len(notes) == 1 and notes[0].step == 0
+    assert notes[0].velocity == 108
+    rig.stop()
+
+    # Override call order: the first key calls override() before its bend and
+    # the last key-up sends the note-off before release_override().
+    class SpyScheduler:
+        def __init__(self, output, log) -> None:
+            self.output = output
+            self.log = log
+            self.is_running = False
+            self.step_index = 3
+
+        def override(self) -> None:
+            self.log.append(("override", len(self.output.messages)))
+
+        def release_override(self) -> None:
+            self.log.append(("release_override", len(self.output.messages)))
+
+        def clear_override(self) -> None:
+            self.log.append(("clear_override", len(self.output.messages)))
+
+        def cancel_expression(self) -> None:
+            pass
+
+        def start(self, at_time=None) -> None:
+            pass
+
+        def stop(self) -> None:
+            pass
+
+    rig, lead, _rhythm, _fake = _input_rig()
+    log: list[tuple[str, int]] = []
+    lead.scheduler = SpyScheduler(lead.output._output, log)
+    lead._source = "generated"
+    rig.note_on(61, 100)
+    assert log and log[0][0] == "override" and log[0][1] == 0, log
+    # Retriggering a held key must not override again.
+    rig.note_on(64, 100)
+    assert [entry[0] for entry in log] == ["override"], log
+    rig.note_off(64)
+    assert [entry[0] for entry in log] == ["override", "release_override"], log
+    # The input note-off is already in the stream before release_override().
+    last = lead.output._output.messages[-1]
+    assert last.type == "note_off"
+    # A mismatched key-up never releases the override.
+    rig.note_on(61, 100)
+    log.clear()
+    rig.note_off(99)
+    assert log == []
+    rig.note_off(61)
+    assert [entry[0] for entry in log] == ["release_override"]
+    rig.stop()
+
+    # /ji/lead/input/state is 16 values; 15/16 are the wheel and the monitor.
+    rig, lead, _rhythm, _fake = _input_rig()
+    args = rig.state_args()
+    assert len(args) == 16, args
+    assert args[14] == 0.0 and args[15] == 0
+    rig.bend(4096)
+    rig.mod(64)
+    args = rig.state_args()
+    assert abs(args[14] - 100.0) < 1e-9 and args[15] == 64, args
+    # The GUI layer parses the live 16 values and the legacy 14.
+    parsed = ui_osc_control.parse_lead_input_state(list(args))
+    assert abs(parsed.last_bend_cents - 100.0) < 1e-9 and parsed.last_mod == 64
+    legacy = ui_osc_control.parse_lead_input_state(list(args[:14]))
+    assert legacy.last_bend_cents == 0.0 and legacy.last_mod == 0
+    # ``live`` is the monitor flag (port open + the compatibility flag on),
+    # not a source: it stays 1 whatever the lead is doing.
+    assert args[0] == 1
+    lead.set_source("played")
+    assert rig.state_args()[9] == "played"
+    lead.set_source("live")  # deprecated alias, mapped at the boundary
+    assert rig.state_args()[9] in ("generated", "played")
+    assert rig.state_args()[0] == 1
+    assert rig.set_monitor(False) is False
+    assert rig.state_args()[0] == 0
+    rig.note_on(61, 100)
+    assert not lead.output._output.with_type("note_on"), "monitor off must be silent"
+    assert rig.set_monitor(True) is True
+    rig.stop()
+
+    # bend_range_semitones: shipped default, valid range, 0 disables, a bad
+    # value disables only the input (config load raises and the bridge logs it).
+    from control.lead_input import DEFAULT_INPUT_CONFIG_PATH, validate_bend_range
+
+    assert input_module.load_config(DEFAULT_INPUT_CONFIG_PATH).bend_range_semitones == 2.0
+    assert validate_bend_range(0) == 0.0
+    assert validate_bend_range(48) == 48.0
+    for bad in (-0.1, 48.1, float("nan")):
+        try:
+            validate_bend_range(bad)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"accepted bend range {bad!r}")
+    try:
+        _settings(bend_range_semitones=99)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("a bad bend range reached the settings")
+    settings = _settings(bend_range_semitones=0.0)
+    assert settings.bend_range_semitones == 0.0
+    assert settings.with_change("bend_range_semitones", 12.0).bend_range_semitones == 12.0
+    # Bend disabled: the wheel is reported but no bend is sent.
+    rig, lead, _rhythm, _fake = _input_rig(bend_range_semitones=0.0)
+    rig.bend(8191)
+    rig.note_on(69, 100)
+    assert all(message.pitch == 0 for message in lead.output._output.with_type("pitchwheel"))
+    rig.stop()
+    print("  audible count-in + seed, override order, 16 values, bend config")
+
+
 def run() -> None:
     print("JI Stage 9.1 lead input tests")
     test_mapping_worked_values()
@@ -1189,6 +1324,7 @@ def run() -> None:
     test_gate_mode()
     test_state_inline_notes()
     test_bridge_melody_actions()
+    test_stage92_count_in_override_and_state()
     test_no_mido_import()
     print("\nALL LEAD INPUT TESTS PASSED")
 
